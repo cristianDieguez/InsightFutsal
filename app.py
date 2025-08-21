@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+import os
 
 # =========================
 # CONFIG
@@ -90,6 +91,81 @@ def grid3_counts(df: pd.DataFrame) -> pd.DataFrame:
     tmp["gy"] = (tmp["ny"] * 3).clip(0, 2.9999).astype(int)
     return tmp.groupby(["gy","gx"]).size().reset_index(name="n").sort_values("n", ascending=False)
 
+@st.cache_data(show_spinner=False)
+def parse_asxml_file(file_path: str) -> pd.DataFrame:
+    """
+    Lee un XML (NacSport asXML/TotalValues) desde disco y devuelve un DataFrame
+    con columnas: start, end, duration, code, labels(list), pos_x, pos_y.
+    """
+    try:
+        tree = ET.parse(file_path)
+        root = tree.getroot()
+        rows = []
+        # intentamos ambos paths comunes de NacSport
+        instances = root.findall(".//ALL_INSTANCES/instance")
+        if not instances:
+            instances = root.findall(".//instance")
+        for inst in instances:
+            start = inst.findtext("start")
+            end = inst.findtext("end")
+            code = inst.findtext("code") or ""
+            px = inst.findtext("pos_x")
+            py = inst.findtext("pos_y")
+            labels = [l.findtext("text") for l in inst.findall(".//label") if l.findtext("text")]
+            rows.append({
+                "start": float(start) if start else np.nan,
+                "end": float(end) if end else np.nan,
+                "duration": (float(end) - float(start)) if start and end else np.nan,
+                "code": code,
+                "pos_x": float(px) if px else np.nan,
+                "pos_y": float(py) if py else np.nan,
+                "labels": labels
+            })
+        return pd.DataFrame(rows)
+    except Exception as e:
+        st.error(f"Error leyendo {file_path}: {e}")
+        return pd.DataFrame(columns=["start","end","duration","code","pos_x","pos_y","labels"])
+
+def _has_label(labels, needle: str) -> bool:
+    if not isinstance(labels, list): return False
+    t = " | ".join(labels).lower()
+    return needle.lower() in t
+
+@st.cache_data(show_spinner=False)
+def compute_match_stats(df: pd.DataFrame) -> dict:
+    """
+    Ajustá las cadenas de 'code' y labels a tus etiquetas del notebook.
+    """
+    if df.empty:
+        return dict(posesion_ferro_pct=0, posesion_rival_pct=0,
+                    tiros_ferro=0, tiros_rival=0,
+                    goles_favor=0, goles_rival=0)
+
+    # POSESIÓN por duración (ajustá a tus 'code' exactos del notebook)
+    pos_ferro = df.loc[df["code"].str.contains("Posecion Ferro", case=False, na=False), "duration"].sum()
+    pos_rival = df.loc[df["code"].str.contains("Posecion Rival", case=False, na=False), "duration"].sum()
+    total_pos = pos_ferro + pos_rival
+    pf = (pos_ferro / total_pos * 100) if total_pos > 0 else 0
+    pr = 100 - pf if total_pos > 0 else 0
+
+    # TIROS (ajustá el texto del label a lo que uses en NacSport)
+    tiro_mask = df["labels"].apply(lambda L: _has_label(L, "Finalizacion jugada cTiro") or _has_label(L, "tiro"))
+    tiros_ferro = df[tiro_mask & df["code"].str.contains("Ferro", case=False, na=False)].shape[0]
+    tiros_rival = df[tiro_mask & df["code"].str.contains("Rival", case=False, na=False)].shape[0]
+
+    # GOLES (deduplico por (start,end) por si el gol aparece en varias instancias)
+    goles_favor_times = set(df.loc[df["labels"].apply(lambda L: _has_label(L, "Goles a favor")), ["start","end"]].itertuples(index=False, name=None))
+    goles_rival_times = set(df.loc[df["labels"].apply(lambda L: _has_label(L, "Gol Rival")), ["start","end"]].itertuples(index=False, name=None))
+
+    return dict(
+        posesion_ferro_pct=round(pf,1),
+        posesion_rival_pct=round(pr,1),
+        tiros_ferro=int(tiros_ferro),
+        tiros_rival=int(tiros_rival),
+        goles_favor=len(goles_favor_times),
+        goles_rival=len(goles_rival_times),
+    )
+
 # =========================
 # SIDEBAR — menú y carga
 # =========================
@@ -174,15 +250,47 @@ elif page == "🗺️ Mapa 3x3":
             st.dataframe(g, use_container_width=True)
 
 elif page == "📊 Estadísticas":
-    st.subheader("Estadísticas simples (MVP)")
-    # Ejemplos básicos: total instancias, % con coords, % tiros/goles
-    total = len(df)
-    with_coords = int(df.dropna(subset=["pos_x","pos_y"]).shape[0])
-    shots = shots_table(df)
-    goals = shots["is_goal"].sum() if not shots.empty else 0
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Instancias", total)
-    c2.metric("% con coords", f"{(with_coords/total*100):.1f}%" if total else "0%")
-    c3.metric("Tiros detectados", 0 if shots.empty else len(shots))
-    c4.metric("Goles detectados", int(goals))
-    st.caption("Esta página es solo un placeholder. Vamos a conectar tus métricas reales (xG, posesión, etc.).")
+    st.subheader("Estadísticas de partido (desde data/minutos)")
+    base_dir = "data/minutos"
+    if not os.path.isdir(base_dir):
+        st.warning(f"No existe la carpeta {base_dir} en el repo.")
+    else:
+        files = sorted([f for f in os.listdir(base_dir) if f.lower().endswith(".xml")])
+        if not files:
+            st.info(f"No hay XML en {base_dir}. Subí tus archivos ahí.")
+        else:
+            col1, col2 = st.columns([2,1])
+            with col1:
+                file_selected = st.selectbox("Elegí el partido (XML)", files, index=0)
+            with col2:
+                rival_name = st.text_input("Nombre del rival (solo etiqueta)", value="Rival")
+
+            xml_path = os.path.join(base_dir, file_selected)
+            df_match = parse_asxml_file(xml_path)
+            if df_match.empty:
+                st.warning("No pude parsear el XML o está vacío.")
+            else:
+                stats = compute_match_stats(df_match)
+
+                c1,c2,c3,c4,c5,c6 = st.columns(6)
+                c1.metric("Posesión propia", f"{stats['posesion_ferro_pct']}%")
+                c2.metric("Posesión rival", f"{stats['posesion_rival_pct']}%")
+                c3.metric("Tiros propios", stats["tiros_ferro"])
+                c4.metric("Tiros rival", stats["tiros_rival"])
+                c5.metric("Goles a favor", stats["goles_favor"])
+                c6.metric("Goles en contra", stats["goles_rival"])
+
+                # Pie de posesión
+                pie_df = pd.DataFrame({
+                    "Equipo": [f"Ferro vs {rival_name}", rival_name],
+                    "Posesión": [stats['posesion_ferro_pct'], stats['posesion_rival_pct']]
+                })
+                fig_pie = px.pie(pie_df, names="Equipo", values="Posesión", title="Posesión (%)")
+                st.plotly_chart(fig_pie, use_container_width=True)
+
+                if show_debug:
+                    st.subheader("Tabla base (debug)")
+                    st.dataframe(df_match.head(200), use_container_width=True)
+
+    st.caption("Ajustamos etiquetas de 'code' y 'labels' a las que uses en tu NacSport/Notebook.")
+
