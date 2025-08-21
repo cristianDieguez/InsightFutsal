@@ -1,250 +1,277 @@
-# app.py — InsightFutsal (Estadísticas de Partido desde data/minutos, sin uploader)
-import os
-import re
-import glob
+# app.py — InsightFutsal: Panel "KEY STATS" desde data/minutos (sin uploader)
+import os, re, glob, math
+from typing import List, Dict, Tuple, Optional
+
 import numpy as np
 import pandas as pd
-import plotly.express as px
 import streamlit as st
-from lxml import etree
+import matplotlib.pyplot as plt
 from PIL import Image
+from lxml import etree
 
 # =========================
-# CONFIG
+# CONFIG BÁSICA
 # =========================
 st.set_page_config(page_title="InsightFutsal", page_icon="⚽", layout="wide")
 
-# Banner si existe
-def _try_show_banner():
-    banner_dir = "images/banner"
-    if os.path.isdir(banner_dir):
-        # busca jpg/png/webp en orden
-        candidates = []
-        for ext in ("*.png","*.jpg","*.jpeg","*.webp"):
-            candidates += glob.glob(os.path.join(banner_dir, ext))
-        if candidates:
-            try:
-                img = Image.open(candidates[0])
-                st.image(img, use_container_width=True)
-            except Exception:
-                pass
+DATA_DIR = "data/minutos"
+BADGE_DIR = "images/equipos"
+BANNER_DIR = "images/banner"
 
-_try_show_banner()
-st.title("InsightFutsal — Estadísticas de Partido")
-
-# =========================
-# AJUSTES DE ETIQUETAS EXACTAS (CAMBIAR AQUÍ SI TU NOTEBOOK USA OTRAS)
-# =========================
-# Códigos para posesión (en 'code')
+# ===== AJUSTES DE ETIQUETAS EXACTAS =====
+# Cambiá estas cadenas para calzar 1:1 con tu notebook/NacSport.
 CODE_POSESION_FERRO = "Tiempo Posecion Ferro"
 CODE_POSESION_RIVAL = "Tiempo Posecion Rival"
 
-# Labels (en 'labels') para detección de eventos
-LABEL_TIRO_1 = "Finalizacion jugada cTiro"     # tiro propio estándar
-LABEL_TIRO_2 = "sTiro"                          # si usás sTiro en algunos
-LABEL_GOL_FAVOR = "Goles a favor en cancha"
-LABEL_GOL_RIVAL = "Gol Rival en cancha"
+LABELS = {
+    # nombre_metric: (lista_keywords_ferro, lista_keywords_rival, tipo, es_porcentaje)
+    # tipo: "count" (conteo de instancias que contengan esos labels)
+    #       "sum"   (suma de valores si existieran; por defecto no se usa)
+    # es_porcentaje: True si debemos mostrar % y no valor absoluto
+    "Posesión %": ([], [], "percent_possession", True),
+
+    "Pases totales": (["pases totales", "pase total"], ["pases totales rival", "pase total rival"], "count", False),
+    "Pases OK %": (["pase ok"], ["pase ok rival"], "ratio_pases_ok", True),
+    "Pases último tercio": (["pase ultimo tercio"], ["pase ultimo tercio rival"], "count", False),
+    "Pases al área": (["pase al area"], ["pase al area rival"], "count", False),
+
+    "Tiros": (["tiro", "finalizacion jugada ctiro", "stiro"], ["tiro rival"], "count", False),
+    "Tiros al arco": (["tiro al arco"], ["tiro al arco rival"], "count", False),
+
+    "Recuperaciones": (["recuperacion"], ["recuperacion rival"], "count", False),
+    "Duelos ganados": (["duelo ganado"], ["duelo ganado rival"], "count", False),
+    "% Duelos ganados": (["duelo ganado"], ["duelo ganado rival"], "ratio_duelos", True),
+
+    "Corners": (["corner"], ["corner rival"], "count", False),
+    "Faltas": (["falta"], ["falta rival"], "count", False),
+    "Goles": (["goles a favor en cancha", "gol a favor"], ["gol rival en cancha", "gol rival"], "count_unique_goal", False),
+    "Asistencias": (["asistencia"], ["asistencia rival"], "count", False),
+    "Pases clave": (["pase clave"], ["pase clave rival"], "count", False),
+}
+
+TITLE_HOME = "FERRO"   # cómo querés mostrar al equipo local (para el título grande)
+PANEL_BG = "#0f5b33"   # verde panel
+COLOR_HOME = "#ff8c2a" # barras propias (naranja similar a tu ejemplo)
+COLOR_AWAY = "#96a1a1" # barras rival (gris)
 
 # =========================
-# HELPERS
+# UTILIDADES
 # =========================
-@st.cache_data(show_spinner=False)
-def list_xml_matches(base_dir: str = "data/minutos") -> list[str]:
-    """Busca archivos con 'TotalValues.xml' dentro de data/minutos."""
+def list_xml_files(base_dir: str) -> List[str]:
     if not os.path.isdir(base_dir):
         return []
-    files = [f for f in os.listdir(base_dir)
-             if f.lower().endswith(".xml") and "totalvalues" in f.lower()]
+    files = [f for f in os.listdir(base_dir) if f.lower().endswith(".xml") and "totalvalues" in f.lower()]
     files.sort()
     return files
 
-def _labels_text(labels):
-    if isinstance(labels, list):
-        return " | ".join([str(x) for x in labels]).lower()
-    return ""
+def open_any(path: str) -> Optional[Image.Image]:
+    try:
+        return Image.open(path)
+    except Exception:
+        return None
 
-def _has_label(labels, needle: str) -> bool:
-    return needle.lower() in _labels_text(labels)
+def first_banner() -> Optional[Image.Image]:
+    if not os.path.isdir(BANNER_DIR):
+        return None
+    for ext in ("png", "jpg", "jpeg", "webp"):
+        for p in glob.glob(os.path.join(BANNER_DIR, f"*.{ext}")):
+            img = open_any(p)
+            if img: return img
+    return None
 
+def badge_for(team: str) -> Optional[Image.Image]:
+    if not os.path.isdir(BADGE_DIR):
+        return None
+    name = team.strip().lower()
+    # probá exacto y "slug"
+    candidates = []
+    for ext in ("png", "jpg", "jpeg", "webp"):
+        candidates.append(os.path.join(BADGE_DIR, f"{name}.{ext}"))
+        candidates.append(os.path.join(BADGE_DIR, f"{re.sub(r'\\s+', '_', name)}.{ext}"))
+        candidates.append(os.path.join(BADGE_DIR, f"{re.sub(r'\\s+', '', name)}.{ext}"))
+    for p in candidates:
+        if os.path.isfile(p):
+            img = open_any(p)
+            if img: return img
+    return None
+
+def extract_rival(fname: str) -> str:
+    rival = re.sub(r"(?i)^fecha\\s*\\d+\\s*-\\s*", "", fname)
+    rival = re.sub(r"(?i)\\s*-\\s*xml\\s*totalvalues\\.xml$", "", rival)
+    return rival.strip()
+
+def labels_text_list(node) -> List[str]:
+    return [t.text for t in node.findall(".//label/text") if t is not None and t.text]
+
+def normtext(s: str) -> str:
+    return (s or "").strip().lower()
+
+# =========================
+# PARSER asXML TotalValues → DataFrame
+# =========================
 @st.cache_data(show_spinner=False)
-def parse_asxml_totalvalues(xml_path: str) -> pd.DataFrame:
-    """
-    Parser robusto para NacSport asXML / asXML TotalValues.
-    Devuelve DataFrame con: start, end, duration, code, labels(list), pos_x, pos_y.
-    """
+def parse_asxml(xml_path: str) -> pd.DataFrame:
     try:
         with open(xml_path, "rb") as fh:
             xml_bytes = fh.read()
         root = etree.fromstring(xml_bytes)
+        inst = root.findall(".//ALL_INSTANCES/instance")
+        if not inst: inst = root.findall(".//instance")
+
         rows = []
+        for it in inst:
+            start = it.findtext("start"); end = it.findtext("end")
+            code  = normtext(it.findtext("code"))
+            px = it.findtext("pos_x"); py = it.findtext("pos_y")
+            labs = [normtext(x) for x in labels_text_list(it)]
 
-        # Dos variantes comunes:
-        instances = root.findall(".//ALL_INSTANCES/instance")
-        if not instances:
-            instances = root.findall(".//instance")
-
-        for inst in instances:
-            start = inst.findtext("start")
-            end = inst.findtext("end")
-            code = inst.findtext("code") or ""
-            px = inst.findtext("pos_x")
-            py = inst.findtext("pos_y")
-
-            # labels: pueden venir como <label><text>..</text></label>
-            labels = [t.text for t in inst.findall(".//label/text") if t is not None and t.text]
-
-            row = {
+            rows.append({
                 "start": float(start) if start else np.nan,
                 "end": float(end) if end else np.nan,
-                "duration": (float(end) - float(start)) if (start and end) else np.nan,
+                "dur": (float(end)-float(start)) if start and end else np.nan,
                 "code": code,
                 "pos_x": float(px) if px else np.nan,
                 "pos_y": float(py) if py else np.nan,
-                "labels": labels,
-            }
-            rows.append(row)
-        df = pd.DataFrame(rows)
-        return df
+                "labels": labs
+            })
+        return pd.DataFrame(rows)
     except Exception as e:
-        st.error(f"No pude parsear '{xml_path}': {e}")
-        return pd.DataFrame(columns=["start","end","duration","code","pos_x","pos_y","labels"])
-
-@st.cache_data(show_spinner=False)
-def compute_match_stats(df: pd.DataFrame) -> dict:
-    """
-    Calcula: posesión propia/rival (por duración), tiros propios/rival, goles favor/rival.
-    Ajustado a las etiquetas configuradas arriba.
-    """
-    if df.empty:
-        return dict(
-            posesion_ferro_pct=0.0,
-            posesion_rival_pct=0.0,
-            tiros_ferro=0, tiros_rival=0,
-            goles_favor=0, goles_rival=0,
-        )
-
-    # Posesión por duración de instancias
-    pos_ferro = df.loc[df["code"].str.contains(CODE_POSESION_FERRO, case=False, na=False), "duration"].sum()
-    pos_rival = df.loc[df["code"].str.contains(CODE_POSESION_RIVAL, case=False, na=False), "duration"].sum()
-    total = pos_ferro + pos_rival
-    pf = (pos_ferro / total * 100) if total > 0 else 0.0
-    pr = 100 - pf if total > 0 else 0.0
-
-    # Tiros: buscamos por labels, y tratamos de asignarlos a lado Ferro/Rival
-    tiro_mask = df["labels"].apply(lambda L:
-        _has_label(L, LABEL_TIRO_1) or _has_label(L, LABEL_TIRO_2) or _has_label(L, " tiro")
-    )
-    # Heurística de lado: tomamos la intersección con bloques de posesión
-    tiros_ferro = int( (df[tiro_mask & df["code"].str.contains(CODE_POSESION_FERRO, case=False, na=False)]).shape[0] )
-    tiros_rival = int( (df[tiro_mask & df["code"].str.contains(CODE_POSESION_RIVAL, case=False, na=False)]).shape[0] )
-
-    # Goles: deduplicamos por (start,end) por si el mismo gol aparece replicado
-    gf_times = set(df.loc[df["labels"].apply(lambda L: _has_label(L, LABEL_GOL_FAVOR)),
-                          ["start","end"]].itertuples(index=False, name=None))
-    gr_times = set(df.loc[df["labels"].apply(lambda L: _has_label(L, LABEL_GOL_RIVAL)),
-                          ["start","end"]].itertuples(index=False, name=None))
-    goles_favor = len(gf_times)
-    goles_rival = len(gr_times)
-
-    return dict(
-        posesion_ferro_pct=round(pf,1),
-        posesion_rival_pct=round(pr,1),
-        tiros_ferro=tiros_ferro,
-        tiros_rival=tiros_rival,
-        goles_favor=goles_favor,
-        goles_rival=goles_rival,
-    )
-
-def extract_rival_from_filename(fname: str) -> str:
-    """
-    Extrae el rival desde 'Fecha N° - Rival - XML TotalValues.xml'
-    """
-    rival = re.sub(r"(?i)^fecha\s*\d+\s*-\s*", "", fname)  # quita 'Fecha N - '
-    rival = re.sub(r"(?i)\s*-\s*xml\s*totalvalues\.xml$", "", rival)  # quita sufijo
-    return rival.strip()
-
-def try_team_badge(team_name: str):
-    """
-    Muestra escudo del equipo si existe en images/equipos/<team>.(png|jpg|webp)
-    """
-    base = "images/equipos"
-    for ext in ("png","jpg","jpeg","webp"):
-        p = os.path.join(base, f"{team_name}.{ext}")
-        if os.path.isfile(p):
-            try:
-                return Image.open(p)
-            except Exception:
-                return None
-    return None
+        st.error(f"Error parseando {xml_path}: {e}")
+        return pd.DataFrame(columns=["start","end","dur","code","pos_x","pos_y","labels"])
 
 # =========================
-# LAYOUT
+# CÁLCULO DE KPI (ajustado con LABELS/CODES)
 # =========================
-with st.sidebar:
-    st.header("Selección de partido")
-    base_dir = "data/minutos"
-    files = list_xml_matches(base_dir)
-    if not files:
-        st.error(f"No hay XML con 'TotalValues' en {base_dir}. Subí tus partidos allí.")
-        st.stop()
-    match = st.selectbox("Partido", files, index=0)
-    rival_name = extract_rival_from_filename(match)
+def _has_any(labels: List[str], needles: List[str]) -> bool:
+    if not needles: return False
+    tt = " | ".join(labels)
+    return any(n.lower() in tt for n in needles)
 
-# Encabezado con escudos si existen
-colA, colB, colC = st.columns([1,2,1])
-with colA:
-    ferro_badge = try_team_badge("Ferro")
-    if ferro_badge: st.image(ferro_badge, caption="Ferro", use_container_width=True)
-with colB:
-    st.subheader(f"Fecha / Rival: {rival_name}")
-with colC:
-    rival_badge = try_team_badge(rival_name)
-    if rival_badge: st.image(rival_badge, caption=rival_name, use_container_width=True)
+def compute_possession(df: pd.DataFrame) -> Tuple[float,float]:
+    own = df.loc[df["code"].str.contains(normtext(CODE_POSESION_FERRO), na=False), "dur"].sum()
+    away = df.loc[df["code"].str.contains(normtext(CODE_POSESION_RIVAL), na=False), "dur"].sum()
+    total = own + away
+    if total <= 0: return 0.0, 0.0
+    p_own = round(own/total*100, 1); p_away = 100 - p_own
+    return p_own, round(p_away,1)
+
+def count_by_labels(df: pd.DataFrame, keywords: List[str]) -> int:
+    if not keywords: return 0
+    return int(df["labels"].apply(lambda L: _has_any(L, keywords)).sum())
+
+def count_unique_goal(df: pd.DataFrame, keywords: List[str]) -> int:
+    sub = df[df["labels"].apply(lambda L: _has_any(L, keywords))][["start","end"]].dropna()
+    if sub.empty: return 0
+    pairs = set(sub.itertuples(index=False, name=None))
+    return len(pairs)
+
+def ratio(a:int, b:int) -> float:
+    return round((a/b*100.0),1) if b>0 else 0.0
+
+def compute_kpis(df: pd.DataFrame) -> Dict[str, Tuple[float,float,bool]]:
+    """
+    Devuelve dict metric -> (valor_home, valor_away, es_porcentaje)
+    """
+    out = {}
+    # Posesión
+    own_pos, away_pos = compute_possession(df)
+    out["Posesión %"] = (own_pos, away_pos, True)
+
+    # Pases totales + Pases OK %
+    pases_home = count_by_labels(df, LABELS["Pases totales"][0])
+    pases_away = count_by_labels(df, LABELS["Pases totales"][1])
+    out["Pases totales"] = (pases_home, pases_away, False)
+
+    pases_ok_home = count_by_labels(df, LABELS["Pases OK %"][0])
+    pases_ok_away = count_by_labels(df, LABELS["Pases OK %"][1])
+    out["Pases OK %"] = (ratio(pases_ok_home, max(pases_home,1e-9)),
+                         ratio(pases_ok_away, max(pases_away,1e-9)), True)
+
+    # Resto genérico (conteos)
+    for key in [
+        "Pases último tercio","Pases al área","Tiros","Tiros al arco",
+        "Recuperaciones","Duelos ganados","Corners","Faltas","Asistencias","Pases clave"
+    ]:
+        own = count_by_labels(df, LABELS[key][0])
+        away = count_by_labels(df, LABELS[key][1])
+        out[key] = (own, away, LABELS[key][3])
+
+    # % Duelos ganados -> usa duelos ganados / (duelos ganados propios + rivales)
+    own_duelos = out["Duelos ganados"][0]
+    away_duelos = out["Duelos ganados"][1]
+    total_duelos = own_duelos + away_duelos
+    own_duelos_pct = round(own_duelos/total_duelos*100,1) if total_duelos>0 else 0.0
+    away_duelos_pct = 100 - own_duelos_pct if total_duelos>0 else 0.0
+    out["% Duelos ganados"] = (own_duelos_pct, away_duelos_pct, True)
+
+    # Goles (únicos por start/end)
+    own_goals = count_unique_goal(df, LABELS["Goles"][0])
+    away_goals = count_unique_goal(df, LABELS["Goles"][1])
+    out["Goles"] = (own_goals, away_goals, False)
+
+    return out
 
 # =========================
-# CÁLCULO
+# RENDER DEL PANEL (estilo imagen de ejemplo)
 # =========================
-xml_path = os.path.join(base_dir, match)
-df = parse_asxml_totalvalues(xml_path)
+def draw_key_stats_panel(home_name: str, away_name: str, kpis: Dict[str, Tuple[float,float,bool]],
+                         home_badge: Optional[Image.Image], away_badge: Optional[Image.Image]):
+    # Orden de métricas (podés editar para coincidir exactamente con tu diseño)
+    order = [
+        "Posesión %","Pases totales","Pases OK %","Pases último tercio","Pases al área",
+        "Tiros","Tiros al arco","Recuperaciones","Duelos ganados","% Duelos ganados",
+        "Corners","Faltas","Goles","Asistencias","Pases clave"
+    ]
 
-if df.empty:
-    st.warning("No se pudo leer el XML o no tiene instancias.")
-    st.stop()
+    n = len(order)
+    h = 1.2 + n*0.42 + 1.0
+    fig = plt.figure(figsize=(10, h), dpi=200)
+    ax = plt.gca()
+    ax.set_facecolor(PANEL_BG)
+    fig.patch.set_facecolor(PANEL_BG)
+    ax.axis("off")
 
-stats = compute_match_stats(df)
+    # Título
+    title = f"{home_name.upper()} vs {away_name.upper()}"
+    ax.text(0.5, 1.02, title, ha="center", va="top", color="white",
+            fontsize=22, fontweight="bold", transform=ax.transAxes)
+    ax.text(0.5, 0.98, "KEY STATS", ha="center", va="top", color="white",
+            fontsize=13, transform=ax.transAxes)
 
-# =========================
-# MÉTRICAS + GRÁFICOS
-# =========================
-c1,c2,c3,c4,c5,c6 = st.columns(6)
-c1.metric("Posesión propia", f"{stats['posesion_ferro_pct']}%")
-c2.metric("Posesión rival", f"{stats['posesion_rival_pct']}%")
-c3.metric("Tiros propios", stats["tiros_ferro"])
-c4.metric("Tiros rival", stats["tiros_rival"])
-c5.metric("Goles a favor", stats["goles_favor"])
-c6.metric("Goles en contra", stats["goles_rival"])
+    # Escudos
+    if home_badge:
+        ax.imshow(home_badge, extent=[0.02, 0.12, 0.93, 1.05], aspect="auto")
+    if away_badge:
+        ax.imshow(away_badge, extent=[0.88, 0.98, 0.93, 1.05], aspect="auto")
 
-# Pie de posesión
-pie_df = pd.DataFrame({
-    "Equipo": [f"Ferro vs {rival_name}", rival_name],
-    "Posesión": [stats['posesion_ferro_pct'], stats['posesion_rival_pct']]
-})
-fig_pie = px.pie(pie_df, names="Equipo", values="Posesión", title="Posesión (%)")
-st.plotly_chart(fig_pie, use_container_width=True)
+    # Barras
+    y0 = 0.90
+    y_step = 0.042
+    bar_len = 0.28
+    for i, key in enumerate(order):
+        if key not in kpis: continue
+        own, away, is_pct = kpis[key]
 
-# Barras tiros & goles
-bars_df = pd.DataFrame({
-    "Equipo": ["Ferro", rival_name],
-    "Tiros": [stats["tiros_ferro"], stats["tiros_rival"]],
-    "Goles": [stats["goles_favor"], stats["goles_rival"]],
-})
-fig_bar_tiros = px.bar(bars_df, x="Equipo", y="Tiros", text="Tiros", title="Tiros por equipo")
-fig_bar_goles = px.bar(bars_df, x="Equipo", y="Goles", text="Goles", title="Goles por equipo")
-st.plotly_chart(fig_bar_tiros, use_container_width=True)
-st.plotly_chart(fig_bar_goles, use_container_width=True)
+        # Etiquetas laterales
+        left_txt  = f"★  {own:.1f}%" if is_pct else f"★  {int(own)}"
+        right_txt = f"{away:.1f}%  ★" if is_pct else f"{int(away)}  ★"
 
-# Debug opcional
-with st.expander("Ver tabla base (debug)"):
-    st.dataframe(df.head(300), use_container_width=True)
+        y = y0 - i*y_step
+        ax.text(0.07, y, left_txt, color="white", fontsize=9, ha="left", va="center")
+        ax.text(0.93, y, right_txt, color="white", fontsize=9, ha="right", va="center")
 
-st.caption("Ajustá las etiquetas en la sección 'AJUSTES DE ETIQUETAS EXACTAS' si tu notebook usa strings distintas.")
+        # Barra central + nombre métrica
+        ax.text(0.5, y+0.013, key, color="white", fontsize=10, ha="center", va="center")
+
+        # escala 0..100 si es porcentaje; si no, normalizamos con el máximo entre ambos
+        if is_pct:
+            own_norm = min(own, 100)/100.0
+            away_norm = min(away,100)/100.0
+        else:
+            m = max(own, away, 1)
+            own_norm = own/m
+            away_norm = away/m
+
+        # barras (propia a la izquierda, rival a la derecha)
+        ax.barh(y-0.012, own_norm, height=0.010, color=COLOR_HOME, left=0.36-own_norm*bar_len, align="center")
+        ax.barh(y-0.012, away_norm, height=0.010, color=COLOR_AWAY, left=
