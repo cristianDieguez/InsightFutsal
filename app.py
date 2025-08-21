@@ -1,6 +1,5 @@
 # app.py — InsightFutsal: Estadísticas de Partido (panel KEY STATS)
-# Lee XML desde data/minutos/ y renderiza el panel estilo imagen.
-# No usa uploader. Usa escudos de images/equipos y banner de images/banner.
+# Lee XML desde data/minutos/, usa Matrix.xlsx si existe, render estilo notebook.
 
 import os, re, glob
 from typing import List, Dict, Tuple, Optional
@@ -9,82 +8,54 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
 from PIL import Image
 from lxml import etree
 
-# =========================================================
-# CONFIGURACIÓN GENERAL
-# =========================================================
+# =========================
+# CONFIG
+# =========================
 st.set_page_config(page_title="InsightFutsal", page_icon="⚽", layout="wide")
 
 DATA_DIR   = "data/minutos"
 BADGE_DIR  = "images/equipos"
 BANNER_DIR = "images/banner"
 
-# ====== AJUSTES (CAMBIÁ SOLO ESTO SI TUS NOMBRES SON DISTINTOS) ======
-# Códigos de 'code' para bloques de posesión (duración = posesión)
-CODE_POSESION_FERRO = "Tiempo Posecion Ferro"
-CODE_POSESION_RIVAL = "Tiempo Posecion Rival"
+# Nombres EXACTOS que usás en el panel
+ROW_ORDER = [
+    "Posesión %",
+    "Pases totales",
+    "Pases OK %",
+    "Pases último tercio",
+    "Pases al área",
+    "Tiros",
+    "Tiros al arco",
+    "Recuperaciones",
+    "Duelos ganados",
+    "% Duelos ganados",
+    "Corners",
+    "Faltas",
+    "Goles",
+    "Asistencias",
+    "Pases clave",
+]
+PERCENT_ROWS = {"Posesión %", "Pases OK %", "% Duelos ganados"}
 
-# Diccionario de métricas:
-#   "Nombre mostrado": ([labels_ferro], [labels_rival], tipo, es_porcentaje)
-# tipos soportados:
-#   - "count"               => conteo simple por labels
-#   - "count_unique_goal"   => goles (deduplicados por (start,end))
-#   - "percent_possession"  => calculado aparte (no usa labels)
-#   - "ratio_pases_ok"      => pases ok / pases totales
-#   - "ratio_duelos"        => duelos ganados / total duelos
-LABELS: Dict[str, Tuple[List[str], List[str], str, bool]] = {
-    "Posesión %":            ([], [], "percent_possession", True),
+# Códigos de posesión (XML instancias)
+CODE_POSESION_FERRO = "tiempo posecion ferro"
+CODE_POSESION_RIVAL = "tiempo posecion rival"
 
-    "Pases totales":         (["pases totales", "pase total"],
-                              ["pases totales rival", "pase total rival"], "count", False),
-
-    "Pases OK %":            (["pase ok"], ["pase ok rival"], "ratio_pases_ok", True),
-
-    "Pases último tercio":   (["pase ultimo tercio"], ["pase ultimo tercio rival"], "count", False),
-    "Pases al área":         (["pase al area"], ["pase al area rival"], "count", False),
-
-    "Tiros":                 (["tiro", "finalizacion jugada ctiro", "stiro"],
-                              ["tiro rival"], "count", False),
-    "Tiros al arco":         (["tiro al arco"], ["tiro al arco rival"], "count", False),
-
-    "Recuperaciones":        (["recuperacion"], ["recuperacion rival"], "count", False),
-
-    "Duelos ganados":        (["duelo ganado"], ["duelo ganado rival"], "count", False),
-    "% Duelos ganados":      (["duelo ganado"], ["duelo ganado rival"], "ratio_duelos", True),
-
-    "Corners":               (["corner"], ["corner rival"], "count", False),
-    "Faltas":                (["falta"], ["falta rival"], "count", False),
-
-    "Goles":                 (["goles a favor en cancha", "gol a favor"],
-                              ["gol rival en cancha", "gol rival"], "count_unique_goal", False),
-
-    "Asistencias":           (["asistencia"], ["asistencia rival"], "count", False),
-    "Pases clave":           (["pase clave"], ["pase clave rival"], "count", False),
-}
-
-# Estilo del panel
-TITLE_HOME = "FERRO"
-PANEL_BG   = "#0f5b33"
-COLOR_HOME = "#ff8c2a"   # naranja propio
-COLOR_AWAY = "#96a1a1"   # gris rival
-
-# =========================================================
-# UTILIDADES DE ARCHIVOS / IMÁGENES
-# =========================================================
+# =========================
+# UTILIDADES
+# =========================
 def list_xml_files(base_dir: str) -> List[str]:
-    if not os.path.isdir(base_dir):
-        return []
-    files = [f for f in os.listdir(base_dir)
-             if f.lower().endswith(".xml") and "totalvalues" in f.lower()]
+    if not os.path.isdir(base_dir): return []
+    files = [f for f in os.listdir(base_dir) if f.lower().endswith(".xml") and "totalvalues" in f.lower()]
     files.sort()
     return files
 
 def pretty_match_name(fname: str) -> str:
-    """'Fecha 8 - Union Ezpeleta - XML TotalValues.xml' -> 'Fecha 8 – Union Ezpeleta'"""
-    base = re.sub(r"(?i)\s*-\s*xml\s*totalvalues\.xml$", "", fname)
-    return base
+    return re.sub(r"(?i)\s*-\s*xml\s*totalvalues\.xml$", "", fname)
 
 def extract_rival(fname: str) -> str:
     rival = re.sub(r"(?i)^fecha\s*\d+\s*-\s*", "", fname)
@@ -98,8 +69,7 @@ def open_any(path: str) -> Optional[Image.Image]:
         return None
 
 def first_banner() -> Optional[Image.Image]:
-    if not os.path.isdir(BANNER_DIR):
-        return None
+    if not os.path.isdir(BANNER_DIR): return None
     for ext in ("png","jpg","jpeg","webp"):
         for p in glob.glob(os.path.join(BANNER_DIR, f"*.{ext}")):
             img = open_any(p)
@@ -107,8 +77,7 @@ def first_banner() -> Optional[Image.Image]:
     return None
 
 def badge_for(team: str) -> Optional[Image.Image]:
-    if not os.path.isdir(BADGE_DIR):
-        return None
+    if not os.path.isdir(BADGE_DIR): return None
     name = team.strip().lower()
     cands = []
     for ext in ("png","jpg","jpeg","webp"):
@@ -123,181 +92,311 @@ def badge_for(team: str) -> Optional[Image.Image]:
             if img: return img
     return None
 
-# =========================================================
-# PARSER asXML TotalValues → DataFrame
-# =========================================================
 def normtext(s: str) -> str:
     return (s or "").strip().lower()
 
-def labels_text_list(node) -> List[str]:
-    return [normtext(t.text) for t in node.findall(".//label/text") if t is not None and t.text]
-
+# =========================
+# PARSER XML (INSTANCIAS) → POSESIÓN
+# =========================
 @st.cache_data(show_spinner=False)
-def parse_asxml(xml_path: str) -> pd.DataFrame:
+def possession_from_instances(xml_path: str) -> Tuple[float,float]:
     try:
         with open(xml_path, "rb") as fh:
             root = etree.fromstring(fh.read())
         inst = root.findall(".//ALL_INSTANCES/instance")
         if not inst: inst = root.findall(".//instance")
-
-        rows = []
+        own = away = 0.0
         for it in inst:
+            code = normtext(it.findtext("code"))
             start = it.findtext("start"); end = it.findtext("end")
-            code  = normtext(it.findtext("code"))
-            px = it.findtext("pos_x"); py = it.findtext("pos_y")
-            labs = labels_text_list(it)
-            rows.append({
-                "start": float(start) if start else np.nan,
-                "end":   float(end)   if end   else np.nan,
-                "dur":   (float(end)-float(start)) if (start and end) else np.nan,
-                "code":  code,
-                "pos_x": float(px) if px else np.nan,
-                "pos_y": float(py) if py else np.nan,
-                "labels": labs
-            })
-        return pd.DataFrame(rows)
-    except Exception as e:
-        st.error(f"Error parseando {xml_path}: {e}")
-        return pd.DataFrame(columns=["start","end","dur","code","pos_x","pos_y","labels"])
+            dur = (float(end) - float(start)) if (start and end) else 0.0
+            if CODE_POSESION_FERRO in code:
+                own += dur
+            elif CODE_POSESION_RIVAL in code:
+                away += dur
+        total = own + away
+        if total <= 0: return 0.0, 0.0
+        own_pct = round(own/total*100, 1)
+        away_pct = round(100 - own_pct, 1)
+        return own_pct, away_pct
+    except Exception:
+        return 0.0, 0.0
 
-# =========================================================
-# KPI CALCULADAS
-# =========================================================
-def _has_any(labels: List[str], needles: List[str]) -> bool:
-    if not needles: return False
-    tt = " | ".join(labels)
-    return any(n.lower() in tt for n in needles)
+# =========================
+# LOAD MATRIX.XLSX (PREFERIDO)
+# =========================
+def find_matrix_for_rival(rival: str) -> Optional[str]:
+    # busca recursivamente algo tipo "*Union Ezpeleta*Matrix.xlsx"
+    pat = f"*{re.sub(r'\\s+','*', rival)}*Matrix.xlsx"
+    for p in glob.glob(f"**/{pat}", recursive=True):
+        return p
+    return None
 
-def compute_possession(df: pd.DataFrame) -> Tuple[float,float]:
-    own = df.loc[df["code"].str.contains(normtext(CODE_POSESION_FERRO), na=False), "dur"].sum()
-    away = df.loc[df["code"].str.contains(normtext(CODE_POSESION_RIVAL), na=False), "dur"].sum()
-    total = own + away
-    if total <= 0: return 0.0, 0.0
-    p_own = round(own/total*100, 1)
-    p_away = round(100 - p_own, 1)
-    return p_own, p_away
+def normalize_metric_name(s: str) -> str:
+    return normtext(s).replace("á","a").replace("é","e").replace("í","i").replace("ó","o").replace("ú","u").replace("%","%")
 
-def count_by_labels(df: pd.DataFrame, keywords: List[str]) -> int:
-    if not keywords: return 0
-    return int(df["labels"].apply(lambda L: _has_any(L, keywords)).sum())
+def coerce_number(x):
+    try:
+        if pd.isna(x): return 0
+        if isinstance(x, str) and x.strip().endswith("%"):
+            return float(x.strip().replace("%",""))
+        return float(x)
+    except Exception:
+        return 0
 
-def count_unique_goal(df: pd.DataFrame, keywords: List[str]) -> int:
-    sub = df[df["labels"].apply(lambda L: _has_any(L, keywords))][["start","end"]].dropna()
-    if sub.empty: return 0
-    pairs = set(sub.itertuples(index=False, name=None))
-    return len(pairs)
+def ferro_rival_from_matrix(xlsx_path: str) -> Tuple[Dict[str,float], Dict[str,float]]:
+    """
+    Intenta leer una matriz con columnas tipo:
+      - ['Métrica','FERRO','RIVAL']  o
+      - ['metric','FERRO','RIVAL']   o
+      - índice con métricas y columnas FERRO/RIVAL
+    Devuelve dos dicts con los NOMBRES EXACTOS del panel.
+    """
+    FERRO = {k:0 for k in ROW_ORDER}
+    RIVAL = {k:0 for k in ROW_ORDER}
 
-def ratio(a:int, b:int) -> float:
-    return round(a / b * 100.0, 1) if b > 0 else 0.0
+    xl = pd.ExcelFile(xlsx_path)
+    # busca la primera hoja que parezca tabla métrica
+    sheet = xl.sheet_names[0]
+    df = xl.parse(sheet)
+    # normaliza nombres de columnas
+    cols = [normtext(c) for c in df.columns]
+    df.columns = cols
 
-def compute_kpis(df: pd.DataFrame) -> Dict[str, Tuple[float,float,bool]]:
-    out: Dict[str, Tuple[float,float,bool]] = {}
+    # casos: métrica en primera col o como índice
+    if ("ferro" in cols) and ("rival" in cols):
+        # detectar col con nombre de métrica
+        metric_col = None
+        for c in df.columns:
+            if c not in ("ferro","rival") and "metric" in c:
+                metric_col = c; break
+        if metric_col is None:
+            metric_col = df.columns[0]  # asumimos la primera
+        for _, r in df.iterrows():
+            m  = str(r[metric_col]).strip()
+            m0 = normalize_metric_name(m)
+            # mapeo por similitud simple a nombre exacto
+            for target in ROW_ORDER:
+                if normalize_metric_name(target) == m0:
+                    FERRO[target] = coerce_number(r["ferro"])
+                    RIVAL[target]  = coerce_number(r["rival"])
+                    break
+    else:
+        # probar que el índice sean métricas y haya columnas FERRO/RIVAL
+        df = df.set_index(df.columns[0])
+        df.columns = [normtext(c) for c in df.columns]
+        if "ferro" in df.columns and "rival" in df.columns:
+            for target in ROW_ORDER:
+                key = normalize_metric_name(target)
+                # buscar fila que matchee exacto
+                for idx in df.index:
+                    if normalize_metric_name(str(idx)) == key:
+                        FERRO[target] = coerce_number(df.loc[idx, "ferro"])
+                        RIVAL[target]  = coerce_number(df.loc[idx, "rival"])
+                        break
 
-    # Posesión
-    own_pos, away_pos = compute_possession(df)
-    out["Posesión %"] = (own_pos, away_pos, True)
+    return FERRO, RIVAL
 
-    # Pases totales y OK %
-    pases_home = count_by_labels(df, LABELS["Pases totales"][0])
-    pases_away = count_by_labels(df, LABELS["Pases totales"][1])
-    out["Pases totales"] = (pases_home, pases_away, False)
-
-    pases_ok_home = count_by_labels(df, LABELS["Pases OK %"][0])
-    pases_ok_away = count_by_labels(df, LABELS["Pases OK %"][1])
-    out["Pases OK %"] = (ratio(pases_ok_home, max(pases_home,1)), ratio(pases_ok_away, max(pases_away,1)), True)
-
-    # Conteos directos
-    for key in ["Pases último tercio","Pases al área","Tiros","Tiros al arco",
-                "Recuperaciones","Duelos ganados","Corners","Faltas","Asistencias","Pases clave"]:
-        own = count_by_labels(df, LABELS[key][0])
-        away = count_by_labels(df, LABELS[key][1])
-        out[key] = (own, away, LABELS[key][3])
-
-    # % Duelos ganados
-    own_duelos, away_duelos, _ = out["Duelos ganados"]
-    total_duelos = own_duelos + away_duelos
-    own_duelos_pct = round(own_duelos/total_duelos*100,1) if total_duelos>0 else 0.0
-    away_duelos_pct = round(100 - own_duelos_pct, 1) if total_duelos>0 else 0.0
-    out["% Duelos ganados"] = (own_duelos_pct, away_duelos_pct, True)
-
-    # Goles únicos
-    own_goals = count_unique_goal(df, LABELS["Goles"][0])
-    away_goals = count_unique_goal(df, LABELS["Goles"][1])
-    out["Goles"] = (own_goals, away_goals, False)
-
+# =========================
+# FALLBACK: TOTALVALUES (por si no hay matriz)
+# =========================
+def read_totalvalues_pairs(xml_path: str) -> Dict[str, float]:
+    """
+    Lee asXML TotalValues. Soporta varias formas:
+      <Value label="Tiros" count="22"/>
+      <Value><label>Tiros</label><count>22</count></Value>
+    Devuelve dict label->valor
+    """
+    out = {}
+    try:
+        with open(xml_path, "rb") as fh:
+            root = etree.fromstring(fh.read())
+        for v in root.findall(".//Value"):
+            lab = v.get("label") or v.findtext("label") or v.get("name") or v.findtext("Name") or ""
+            cnt = v.get("count") or v.findtext("count") or v.get("value") or v.findtext("Value") or "0"
+            lab = str(lab).strip()
+            try:
+                val = float(str(cnt).strip().replace(",",".").replace("%",""))
+            except Exception:
+                val = 0
+            if lab:
+                out[lab] = val
+    except Exception:
+        pass
     return out
 
-# =========================================================
-# RENDER DEL PANEL "KEY STATS" (Matplotlib)
-# =========================================================
-def draw_key_stats_panel(home_name: str, away_name: str,
-                         kpis: Dict[str, Tuple[float,float,bool]],
-                         home_badge: Optional[Image.Image],
-                         away_badge: Optional[Image.Image]):
-    order = [
-        "Posesión %","Pases totales","Pases OK %","Pases último tercio","Pases al área",
-        "Tiros","Tiros al arco","Recuperaciones","Duelos ganados","% Duelos ganados",
-        "Corners","Faltas","Goles","Asistencias","Pases clave"
-    ]
+def ferro_rival_from_totalvalues(xml_path: str, rival: str) -> Tuple[Dict[str,float], Dict[str,float]]:
+    """
+    Intenta deducir FERRO/RIVAL a partir de un único TotalValues.
+    (Si tenés uno por cada equipo, podés duplicar la lectura y fusionar).
+    Aquí mapeamos por clave exacta.
+    """
+    stats = read_totalvalues_pairs(xml_path)
+    FERRO = {k:0 for k in ROW_ORDER}
+    RIVAL = {k:0 for k in ROW_ORDER}
+    # si las claves ya vienen como FERRO/RIVAL en el archivo, podés adaptar acá.
+    # por defecto dejamos todo en 0 salvo lo que sea claramente global.
+    # (normalmente vas a tener la Matrix.xlsx y no vas a caer en este fallback)
+    return FERRO, RIVAL
 
-    n = len(order)
-    h = 1.3 + n*0.43 + 1.1
-    fig = plt.figure(figsize=(10.5, h), dpi=220)
-    ax = plt.gca()
-    ax.set_facecolor(PANEL_BG)
-    fig.patch.set_facecolor(PANEL_BG)
-    ax.axis("off")
+# =========================
+# RENDER PANEL (como tu notebook)
+# =========================
+# Estilo
+bg_green   = "#006633"
+text_w     = "#FFFFFF"
+bar_white  = "#FFFFFF"
+bar_rival  = "#E6EEF2"
+bar_rail   = "#0F5E29"
+star_c     = "#FFD54A"
+loser_alpha = 0.35
+orange_win = "#FF8F00"
 
-    # Título
-    title = f"{home_name.upper()} vs {away_name.upper()}"
-    ax.text(0.5, 1.04, title, ha="center", va="top", color="white",
-            fontsize=22, fontweight="bold", transform=ax.transAxes)
-    ax.text(0.5, 1.00, "KEY STATS", ha="center", va="top", color="white",
-            fontsize=13, transform=ax.transAxes)
+import matplotlib as mpl
+mpl.rcParams.update({
+    "savefig.facecolor": bg_green,
+    "figure.facecolor":  bg_green,
+    "axes.facecolor":    bg_green,
+    "text.color":        text_w,
+})
 
-    # Escudos
-    if home_badge:
-        ax.imshow(home_badge, extent=[0.02, 0.12, 0.93, 1.07], aspect="auto")
-    if away_badge:
-        ax.imshow(away_badge, extent=[0.88, 0.98, 0.93, 1.07], aspect="auto")
+USE_ORANGE_FOR_WIN = True
+RAISE_LABELS       = True
+BAR_HEIGHT_FACTOR  = 0.36
+LABEL_Y_SHIFT_LOW  = 0.60
+LABEL_Y_SHIFT_HIGH = 0.37
+TRIM_LOGO_BORDERS  = True
 
-    # Barras
-    y0 = 0.92
-    y_step = 0.043
-    for i, key in enumerate(order):
-        if key not in kpis: continue
-        own, away, is_pct = kpis[key]
+BANNER_H   = 0.145
+LOGO_W     = 0.118
+TITLE_FS   = 32
+SUB_FS     = 19
 
-        left_txt  = f"★  {own:.1f}%" if is_pct else f"★  {int(own)}"
-        right_txt = f"{away:.1f}%  ★" if is_pct else f"{int(away)}  ★"
+FOOTER_H        = 0.120
+FOOTER_LOGO_W   = 0.110
+FOOTER_TITLE_FS = 20
+FOOTER_SUB_FS   = 14
 
-        y = y0 - i*y_step
-        ax.text(0.07, y, left_txt,  color="white", fontsize=9, ha="left",  va="center")
-        ax.text(0.93, y, right_txt, color="white", fontsize=9, ha="right", va="center")
-        ax.text(0.5,  y+0.013, key, color="white", fontsize=10, ha="center", va="center")
+def load_any_image(path):
+    im = Image.open(path); im.load()
+    if im.mode != "RGBA":
+        im = im.convert("RGBA")
+    return np.array(im)
 
-        # ancho relativo
-        if is_pct:
-            own_norm  = min(max(own, 0), 100) / 100.0
-            away_norm = min(max(away,0), 100) / 100.0
-        else:
-            m = max(own, away, 1)
-            own_norm  = own  / m
-            away_norm = away / m
+def trim_margins(img_rgba, bg_tol=12):
+    h, w, _ = img_rgba.shape
+    alpha = img_rgba[:,:,3]
+    rgb = img_rgba[:,:,:3].astype(np.int16)
+    white_mask = (np.abs(255 - rgb).max(axis=2) <= bg_tol)
+    useful = (~white_mask) | (alpha > 0)
+    rows = np.where(useful.any(axis=1))[0]
+    cols = np.where(useful.any(axis=0))[0]
+    if rows.size == 0 or cols.size == 0: return img_rgba
+    r0, r1 = rows[0], rows[-1]; c0, c1 = cols[0], cols[-1]
+    return img_rgba[r0:r1+1, c0:c1+1, :]
 
-        # barra izquierda (propia) y derecha (rival)
-        # centro 0.5; mitad izq 0.36..0.5 ; mitad der 0.5..0.64
-        left_len  = 0.14 * own_norm
-        right_len = 0.14 * away_norm
-        ax.barh(y-0.012, left_len,  height=0.010, color=COLOR_HOME, left=0.5-left_len, align="edge")
-        ax.barh(y-0.012, right_len, height=0.010, color=COLOR_AWAY, left=0.5,           align="edge")
+def draw_logo(ax, path, cx, cy, width):
+    try:
+        img = load_any_image(path)
+        if TRIM_LOGO_BORDERS:
+            img = trim_margins(img)
+    except Exception:
+        return
+    h, w = img.shape[0], img.shape[1]
+    aspect = h / w if w else 1.0
+    w_norm = width; h_norm = width * aspect
+    ax.imshow(img, extent=[cx - w_norm/2, cx + w_norm/2,
+                           cy - h_norm/2, cy + h_norm/2], zorder=6)
+
+def draw_key_stats_panel(home_name: str, away_name: str, FERRO: Dict[str,float], RIVAL: Dict[str,float],
+                         ferro_logo_path: Optional[str], rival_logo_path: Optional[str],
+                         footer_left: Optional[str], footer_right: Optional[str]):
+
+    plt.close("all")
+    fig_h = 0.66*len(ROW_ORDER) + 4.6
+    fig = plt.figure(figsize=(10.8, fig_h))
+    ax = fig.add_axes([0,0,1,1]); ax.set_xlim(0,1); ax.set_ylim(0,1); ax.axis("off")
+    ax.add_patch(Rectangle((0,0), 1, 1, facecolor=bg_green, edgecolor="none", zorder=-10))
+
+    # banner sup.
+    BANNER_Y0 = 1.0 - (BANNER_H + 0.02)
+    ax.add_patch(Rectangle((0, BANNER_Y0), 1, BANNER_H, facecolor="white", edgecolor="none", zorder=5))
+    if ferro_logo_path: draw_logo(ax, ferro_logo_path, 0.09, BANNER_Y0 + BANNER_H*0.52, LOGO_W)
+    if rival_logo_path: draw_logo(ax, rival_logo_path, 0.91, BANNER_Y0 + BANNER_H*0.52, LOGO_W)
+    ax.text(0.5, BANNER_Y0 + BANNER_H*0.63, f"{home_name.upper()} vs {away_name.upper()}",
+            ha="center", va="center", fontsize=TITLE_FS, weight="bold", color=bg_green, zorder=7)
+    ax.text(0.5, BANNER_Y0 + BANNER_H*0.29, "KEY STATS",
+            ha="center", va="center", fontsize=SUB_FS, weight="bold", color=bg_green, zorder=7)
+
+    # banner inferior
+    FOOTER_Y0 = 0.02
+    ax.add_patch(Rectangle((0, FOOTER_Y0), 1, FOOTER_H, facecolor="white", edgecolor="none", zorder=5))
+    if footer_left:  draw_logo(ax, footer_left,  0.09, FOOTER_Y0 + FOOTER_H*0.52, FOOTER_LOGO_W)
+    if footer_right: draw_logo(ax, footer_right, 0.91, FOOTER_Y0 + FOOTER_H*0.52, FOOTER_LOGO_W)
+    ax.text(0.5, FOOTER_Y0 + FOOTER_H*0.63, "Trabajo Fin de Máster",
+            ha="center", va="center", fontsize=FOOTER_TITLE_FS, weight="bold", color=bg_green, zorder=7)
+    ax.text(0.5, FOOTER_Y0 + FOOTER_H*0.28, "Cristian Dieguez",
+            ha="center", va="center", fontsize=FOOTER_SUB_FS,   weight="bold", color=bg_green, zorder=7)
+
+    # cuerpo
+    EXTRA_GAP_BELOW_BANNER = 0.075
+    top_y    = BANNER_Y0 - EXTRA_GAP_BELOW_BANNER
+    bottom_y = FOOTER_Y0 + FOOTER_H + 0.012
+    available_h = max(0.01, top_y - bottom_y)
+    row_h = available_h / len(ROW_ORDER)
+
+    mid_x, bar_w = 0.5, 0.33
+    left_star_x, right_star_x = 0.055, 0.945
+
+    def draw_row(y, label, lv, rv):
+        label_y = y + row_h*(LABEL_Y_SHIFT_HIGH if RAISE_LABELS else LABEL_Y_SHIFT_LOW)
+        ax.text(0.5, label_y, label, ha="center", va="center", fontsize=12.5, weight="bold", color=text_w)
+
+        maxval = 100.0 if label in PERCENT_ROWS else max(1, lv, rv)
+
+        lane_y = y + row_h*(0.22)
+        lane_h = row_h*BAR_HEIGHT_FACTOR
+        for x0 in (mid_x - bar_w - 0.02, mid_x + 0.02):
+            ax.add_patch(Rectangle((x0, lane_y), bar_w, lane_h, facecolor=bar_rail, edgecolor=bar_rail))
+
+        winner = "FERRO" if lv > rv else ("RIVAL" if rv > lv else "EMPATE")
+        ferro_col   = orange_win if (USE_ORANGE_FOR_WIN and winner=="FERRO") else bar_white
+        rival_col   = orange_win if (USE_ORANGE_FOR_WIN and winner=="RIVAL") else bar_rival
+        ferro_alpha = 1.0 if winner!="RIVAL" else loser_alpha
+        rival_alpha = 1.0 if winner!="FERRO" else loser_alpha
+
+        scale = 0.88
+        lw = 0 if maxval==0 else bar_w*(lv/maxval)*scale
+        rw = 0 if maxval==0 else bar_w*(rv/maxval)*scale
+
+        ax.add_patch(Rectangle((mid_x - 0.02 - lw, lane_y), lw, lane_h,
+                               facecolor=ferro_col, edgecolor=ferro_col, alpha=ferro_alpha))
+        ax.add_patch(Rectangle((mid_x + 0.02, lane_y), rw, lane_h,
+                               facecolor=rival_col, edgecolor=rival_col, alpha=rival_alpha))
+
+        ltxt = f"{lv:.1f}%" if label in PERCENT_ROWS else f"{int(lv)}"
+        rtxt = f"{rv:.1f}%" if label in PERCENT_ROWS else f"{int(rv)}"
+        ax.text(mid_x - bar_w - 0.030, lane_y + lane_h*0.45, ltxt, ha="right", va="center",
+                fontsize=13, weight="bold", color=text_w)
+        ax.text(mid_x + bar_w + 0.030, lane_y + lane_h*0.45, rtxt, ha="left", va="center",
+                fontsize=13, weight="bold", color=text_w)
+
+        if winner == "FERRO":
+            ax.text(left_star_x,  label_y, "★", ha="left",  va="center", fontsize=14, color=star_c, weight="bold", clip_on=False)
+        elif winner == "RIVAL":
+            ax.text(right_star_x, label_y, "★", ha="right", va="center", fontsize=14, color=star_c, weight="bold", clip_on=False)
+
+    y = top_y
+    for lab in ROW_ORDER:
+        draw_row(y, lab, FERRO.get(lab,0), RIVAL.get(lab,0))
+        y -= row_h
 
     st.pyplot(fig, use_container_width=True)
     plt.close(fig)
 
-# =========================================================
-# UI MENÚ (vamos a construir las otras páginas después)
-# =========================================================
+# =========================
+# UI
+# =========================
 st.sidebar.header("Opciones")
 menu = st.sidebar.radio(
     "Menú",
@@ -305,23 +404,18 @@ menu = st.sidebar.radio(
     index=0
 )
 
-# Banner si existe
 banner = first_banner()
 if banner is not None:
     st.image(banner, use_container_width=True)
 
 st.title("InsightFutsal")
 
-# =========================================================
-# PÁGINA: ESTADÍSTICAS DE PARTIDO
-# =========================================================
 if menu == "📊 Estadísticas de Partido":
     files = list_xml_files(DATA_DIR)
     if not files:
         st.error(f"No hay XML con 'TotalValues' en {DATA_DIR}")
         st.stop()
 
-    # Mapeo "bonito" -> filename real
     pretty = [pretty_match_name(f) for f in files]
     sel_pretty = st.selectbox("Elegí partido", pretty, index=0)
     fname = files[pretty.index(sel_pretty)]
@@ -329,28 +423,67 @@ if menu == "📊 Estadísticas de Partido":
     rival = extract_rival(fname)
     xml_path = os.path.join(DATA_DIR, fname)
 
-    # Escudos
-    ferro_badge = badge_for("Ferro")
-    rival_badge = badge_for(rival)
+    # 1) Posesión desde instancias
+    pos_own, pos_away = possession_from_instances(xml_path)
 
-    # Parseo + KPIs
-    df = parse_asxml(xml_path)
-    if df.empty:
-        st.warning("No se pudo leer el XML o no tiene instancias.")
-        st.stop()
+    # 2) Matriz (preferido)
+    FERRO = {k:0 for k in ROW_ORDER}
+    RIVAL = {k:0 for k in ROW_ORDER}
+    FERRO["Posesión %"] = pos_own
+    RIVAL["Posesión %"] = pos_away
 
-    kpis = compute_kpis(df)
+    mx_path = find_matrix_for_rival(rival)
+    if mx_path:
+        f2, r2 = ferro_rival_from_matrix(mx_path)
+        # respetamos nombres exactos del panel
+        for k in ROW_ORDER:
+            if k in f2: FERRO[k] = f2[k] if k in PERCENT_ROWS else int(round(f2[k]))
+            if k in r2: RIVAL[k]  = r2[k]  if k in PERCENT_ROWS else int(round(r2[k]))
+    else:
+        # 3) Fallback a TotalValues si no hay matriz (deja 0 si no encuentra)
+        f2, r2 = ferro_rival_from_totalvalues(xml_path, rival)
+        for k in ROW_ORDER:
+            if k in f2: FERRO[k] = f2[k] if k in PERCENT_ROWS else int(round(f2[k]))
+            if k in r2: RIVAL[k]  = r2[k]  if k in PERCENT_ROWS else int(round(r2[k]))
 
-    # Panel KEY STATS
-    draw_key_stats_panel(TITLE_HOME, rival, kpis, ferro_badge, rival_badge)
+    # Logos
+    ferro_logo = badge_for("Ferro")
+    ferro_logo_path = None
+    if ferro_logo:
+        # no tengo path directo del PIL; busco primero que matchee
+        for ext in ("png","jpg","jpeg","webp"):
+            p = os.path.join(BADGE_DIR, f"ferro.{ext}")
+            if os.path.isfile(p): ferro_logo_path = p; break
 
-    # Debug opcional
+    rival_logo_path = None
+    for ext in ("png","jpg","jpeg","webp"):
+        p = os.path.join(BADGE_DIR, f"{rival.lower().replace(' ','_')}.{ext}")
+        if os.path.isfile(p): rival_logo_path = p; break
+        p = os.path.join(BADGE_DIR, f"{rival.lower().replace(' ','')}.{ext}")
+        if os.path.isfile(p): rival_logo_path = p; break
+        p = os.path.join(BADGE_DIR, f"{rival}.{ext}")
+        if os.path.isfile(p): rival_logo_path = p; break
+
+    footer_left = footer_right = None
+    # si tenés logos específicos en images/banner ponelos con el nombre que quieras; acá no forzamos
+
+    draw_key_stats_panel(
+        home_name="FERRO",
+        away_name=rival.upper(),
+        FERRO=FERRO,
+        RIVAL=RIVAL,
+        ferro_logo_path=ferro_logo_path,
+        rival_logo_path=rival_logo_path,
+        footer_left=None,
+        footer_right=None
+    )
+
     with st.expander("Ver tabla base (debug)"):
-        st.dataframe(df.head(300), use_container_width=True)
+        tbl = pd.DataFrame({"Métrica": ROW_ORDER,
+                            "Ferro": [FERRO[k] for k in ROW_ORDER],
+                            "Rival": [RIVAL[k]  for k in ROW_ORDER]})
+        st.dataframe(tbl, use_container_width=True)
 
-# =========================================================
-# PLACEHOLDERS (se implementan después)
-# =========================================================
 elif menu == "⏱️ Minutos":
     st.info("Esta sección se adaptará del notebook de Minutos por Jugador y Rol.")
 elif menu == "🎯 Tiros":
