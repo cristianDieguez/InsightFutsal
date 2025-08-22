@@ -749,10 +749,7 @@ if menu == "📊 Estadísticas de partido":
                             "Rival": [RIVAL[k]  for k in ROW_ORDER]})
         st.dataframe(tbl, use_container_width=True)
 
-else:
-    st.info("Las demás secciones se irán conectando con tus notebooks en los próximos pasos.")
-
-elif menu == "🕒 Timeline":
+elif menu == "⏱️ Timeline de Partido":
     matches = list_matches()
     if not matches:
         st.warning("No encontré partidos en data/minutos con patrón: 'Fecha N° - Rival - XML TotalValues.xml'.")
@@ -779,3 +776,5 @@ elif menu == "🕒 Timeline":
         rival_logo_path=rival_logo
     )
 
+else:
+    st.info("Las demás secciones se irán conectando con tus notebooks en los próximos pasos.")
