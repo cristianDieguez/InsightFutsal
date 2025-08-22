@@ -1300,8 +1300,223 @@ elif menu == "🛡️ Pérdidas y Recuperaciones":
 # =========================
 # 🎯 MAPA DE TIROS
 # =========================
-elif menu == "🎯 Mapa de tiros":
-    st.info("⚠️ Esta sección está pendiente de integración (usa las coords de tiros del XML).")
+if menu == "🎯 Mapa de tiros":
+
+    # ---- UI: Partido ----
+    matches = list_matches()
+    if not matches:
+        st.warning("No encontré partidos en data/minutos con patrón: 'Fecha N° - Rival - XML TotalValues.xml'.")
+        st.stop()
+
+    sel = st.selectbox("Elegí partido", matches, index=0)
+    rival = rival_from_label(sel)
+    XML_PATH, _ = infer_paths_for_label(sel)
+
+    if not XML_PATH or not os.path.isfile(XML_PATH):
+        st.error("No encontré el XML de Jugadores/TotalValues para este partido.")
+        st.stop()
+
+    # ---- Helpers específicos del módulo de tiros (NO tocan nada del resto) ----
+    def _is_shot_from_row(row) -> bool:
+        # Dispara si en code/labels aparece "tiro" o "remate"
+        code = nlower(row.get("jugador", ""))
+        lbls = [nlower(l or "") for l in row.get("labels", [])]
+        patt = re.compile(r"\b(tiro|remate)\b", re.I)
+        if patt.search(code): return True
+        return any(patt.search(l) for l in lbls)
+
+    _ROLE_RE = re.compile(r"^\s*([^(]+?)\s*\(([^)]+)\)\s*$")
+
+    def _name_and_role(code: str) -> Tuple[str|None, str|None]:
+        m = _ROLE_RE.match(code or "")
+        if not m: return None, None
+        return ntext(m.group(1)).strip(), ntext(m.group(2)).strip()
+
+    # Clasificación estricta del resultado
+    _KEYS = {
+        "gol":        re.compile(r"\bgol\b", re.I),
+        "ataj":       re.compile(r"\bataj", re.I),
+        "al_arco":    re.compile(r"\btiro\s*al\s*arco\b", re.I),
+        "bloqueado":  re.compile(r"\bbloquead", re.I),
+        "desviado":   re.compile(r"\bdesviad", re.I),
+        "errado":     re.compile(r"\berrad", re.I),
+        "pifia":      re.compile(r"\bpifi", re.I),
+    }
+    def _shot_result_strict(code: str, labels: List[str]) -> str:
+        s = nlower(code or ""); ll = [nlower(l or "") for l in (labels or [])]
+        def _has(p): return bool(p.search(s) or any(p.search(x) for x in ll))
+        if _has(_KEYS["gol"]):                         return "Gol"
+        if _has(_KEYS["ataj"]) or _has(_KEYS["al_arco"]):  return "Tiro Atajado"
+        if _has(_KEYS["bloqueado"]):                   return "Tiro Bloqueado"
+        if _has(_KEYS["desviado"]):                    return "Tiro Desviado"
+        if _has(_KEYS["errado"]) or _has(_KEYS["pifia"]):  return "Tiro Errado - Pifia"
+        return "Sin clasificar"
+
+    # Característica del origen
+    _CHAR_PATTS = [
+        ("de Corner (desde Banda)", re.compile(r"corner\s*\(desde\s*banda\)", re.I)),
+        ("de Corner (centro)",      re.compile(r"corner\s*\(centro\)", re.I)),
+        ("de Jugada (centro)",      re.compile(r"jugada\s*\(centro\)", re.I)),
+        ("de Tiro Libre",           re.compile(r"tiro\s*libre", re.I)),
+        ("de Rebote",               re.compile(r"\brebote\b", re.I)),
+        ("de Lateral",              re.compile(r"\blateral\b", re.I)),
+        ("de Jugada",               re.compile(r"\bde\s*jugada\b", re.I)),
+    ]
+    def _shot_char(code: str, labels: List[str]) -> str:
+        s = nlower(code or "") + " " + " ".join(nlower(l or "") for l in (labels or []))
+        for name, patt in _CHAR_PATTS:
+            if patt.search(s): return name
+        return "de Jugada"
+
+    # Mapeo a cancha 35x20 (desde coords XML 0..20 x, 0..40 y)
+    FLIP_TO_RIGHT = True
+    FLIP_VERTICAL = True
+    GOAL_PULL = 0.60  # "tirón" hacia el arco derecho
+
+    def _map_raw_to_pitch(x_raw, y_raw, max_x, max_y, flip=True, pull=0.0, flip_v=False):
+        x = (y_raw / max_y) * ANCHO
+        y = (x_raw / max_x) * ALTO
+        if flip:    x = ANCHO - x
+        if flip_v:  y = ALTO - y
+        if pull and 0.0 < pull < 1.0:
+            x = x + pull * (ANCHO - x)
+        x = float(np.clip(x, 0.0, ANCHO))
+        y = float(np.clip(y, 0.0, ALTO))
+        return x, y
+
+    # ---- Cargar XML y preparar universe de filtros ----
+    df_raw = cargar_datos_nacsport(XML_PATH)  # ya la tenés en tu app
+    if df_raw.empty:
+        st.info("Sin instancias en el XML.")
+        st.stop()
+
+    # Solo eventos de jugadores (evita códigos de equipo/posesión)
+    df_raw = df_raw[df_raw["jugador"].apply(is_player_code)].copy()
+
+    # Armar listas de jugadores y roles presentes solo en TIROS
+    mask_shot = df_raw.apply(_is_shot_from_row, axis=1)
+    df_shot = df_raw[mask_shot].copy()
+
+    # Extraer nombre y rol desde "Nombre (Rol)"
+    name_role = df_shot["jugador"].apply(_name_and_role)
+    df_shot["player"] = name_role.apply(lambda t: t[0])
+    df_shot["role"]   = name_role.apply(lambda t: t[1])
+
+    players_present = sorted([p for p in df_shot["player"].dropna().unique()])
+    roles_present   = sorted([r for r in df_shot["role"].dropna().unique()])
+
+    # ---- UI: Filtros jugador/rol/característica ----
+    sel_players = st.multiselect("Jugadores", players_present, default=players_present)
+    sel_roles   = st.multiselect("Rol", roles_present, default=roles_present)
+    char_opts   = ["Todas"] + [n for (n,_) in _CHAR_PATTS]
+    sel_char    = st.selectbox("Característica del origen", char_opts, index=0)
+
+    # ---- Construir lista de tiros (origen = punto más lejano al arco derecho) ----
+    # Max X/Y reales del XML para escalar
+    max_x = max((max((lst or [0])) for lst in df_shot["pos_x_list"]), default=19)
+    max_y = max((max((lst or [0])) for lst in df_shot["pos_y_list"]), default=34)
+    max_x = float(max_x if max_x else 19)
+    max_y = float(max_y if max_y else 34)
+
+    shots = []
+    for _, r in df_shot.iterrows():
+        player, role = r.get("player"), r.get("role")
+        if player and sel_players and (player not in sel_players): continue
+        if role and sel_roles and (role not in sel_roles): continue
+
+        xs = r.get("pos_x_list") or []
+        ys = r.get("pos_y_list") or []
+        if not (xs and ys): continue
+
+        # Mapeo de toda la trayectoria
+        coords = [_map_raw_to_pitch(xr, yr, max_x, max_y,
+                                    flip=FLIP_TO_RIGHT, pull=GOAL_PULL, flip_v=FLIP_VERTICAL)
+                  for xr, yr in zip(xs, ys)]
+
+        # Origen = más lejano al arco derecho → menor X después del flip
+        origin = coords[0] if len(coords) == 1 else coords[int(np.argmin([c[0] for c in coords]))]
+
+        res = _shot_result_strict(r.get("jugador",""), r.get("labels", []))
+        ch  = _shot_char(r.get("jugador",""), r.get("labels", []))
+        if sel_char != "Todas" and ch != sel_char:
+            continue
+
+        shots.append({"x": origin[0], "y": origin[1], "result": res, "char": ch,
+                      "player": player, "role": role})
+
+    # ---- Plot ----
+    st.subheader("Mapa de tiros — Origen (punto más lejano al arco derecho)")
+    plt.close("all")
+    fig = plt.figure(figsize=(10.5, 7))
+    ax  = fig.add_axes([0.04, 0.06, 0.92, 0.88])
+    draw_futsal_pitch_grid(ax)
+
+    order = ["Gol","Tiro Atajado","Tiro Bloqueado","Tiro Desviado","Tiro Errado - Pifia","Sin clasificar"]
+    COLORS = {
+        "Gol":                "#FFD54F",
+        "Tiro Atajado":       "#FFFFFF",
+        "Tiro Bloqueado":     "#FF5252",
+        "Tiro Desviado":      "#FF7043",
+        "Tiro Errado - Pifia":"#6B6F76",
+        "Sin clasificar":     "#BDBDBD",
+    }
+
+    for res in order:
+        pts = [(s["x"], s["y"]) for s in shots if s["result"] == res]
+        if not pts: continue
+        xs, ys = zip(*pts)
+        if res == "Gol":
+            ax.scatter(xs, ys, s=160, c=COLORS[res], edgecolors="black", linewidths=0.6, zorder=5, label=res)
+        elif res == "Tiro Atajado":
+            ax.scatter(xs, ys, s=90,  c=COLORS[res], edgecolors="black", linewidths=0.6, zorder=4, label=res)
+        elif res == "Tiro Bloqueado":
+            ax.scatter(xs, ys, s=100, facecolors="none", edgecolors=COLORS[res], linewidths=1.8, zorder=4, label=res)
+        elif res == "Tiro Desviado":
+            ax.scatter(xs, ys, s=90,  facecolors="none", edgecolors=COLORS[res], linewidths=1.6, zorder=3, label=res)
+        elif res == "Tiro Errado - Pifia":
+            ax.scatter(xs, ys, s=110, marker='x', c=COLORS[res], linewidths=1.8, zorder=3, label=res)
+        elif res == "Sin clasificar":
+            ax.scatter(xs, ys, s=70,  c=COLORS[res], edgecolors="black", linewidths=0.4, zorder=2, label=res)
+
+    f_players = ", ".join(sel_players) if sel_players else "Todos"
+    f_roles   = ", ".join(sel_roles)   if sel_roles   else "Todos"
+    f_char    = sel_char
+    ax.set_title(
+        f"{sel} — SHOTS (origen) | Jugadores: {f_players} | Roles: {f_roles} | Característica: {f_char}",
+        fontsize=13, pad=6, weight="bold"
+    )
+    ax.legend(loc="upper left", frameon=True)
+    st.pyplot(fig, use_container_width=True)
+    plt.close(fig)
+
+    # ---- Tablas (conteos y %) ----
+    from collections import Counter
+    res_order = ["Gol","Tiro Atajado","Tiro Bloqueado","Tiro Desviado","Tiro Errado - Pifia"]
+    c_res = Counter(s["result"] for s in shots if s["result"] != "Sin clasificar")
+    total_res = sum(c_res.values())
+    df_res = pd.DataFrame({
+        "Categoría": res_order + (["TOTAL"] if True else []),
+        "Conteo": [c_res.get(k,0) for k in res_order] + [total_res],
+        "%": [f"{(c_res.get(k,0)/total_res*100 if total_res else 0):.1f}%" for k in res_order] + ["100.0%" if total_res else "0.0%"]
+    })
+
+    c_char = Counter(s["char"] for s in shots)
+    total_char = sum(c_char.values())
+    rows_char = sorted(c_char.items(), key=lambda kv: (-kv[1], kv[0]))
+    df_char = pd.DataFrame({
+        "Categoría": [k for k,_ in rows_char] + ["TOTAL"],
+        "Conteo": [v for _,v in rows_char] + [total_char],
+        "%": [f"{(v/total_char*100 if total_char else 0):.1f}%" for _,v in rows_char] + ["100.0%" if total_char else "0.0%"]
+    })
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("**Resultados del tiro**")
+        st.dataframe(df_res, use_container_width=True)
+    with col2:
+        st.markdown("**Característica del origen**")
+        st.dataframe(df_char, use_container_width=True)
+
 
 # =========================
 # 🗺️ MAPA 3x3
