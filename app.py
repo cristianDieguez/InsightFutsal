@@ -2397,52 +2397,60 @@ if menu == "📈 Radar comparativo":
     st.dataframe(tabla.sort_values("minutos", ascending=False), use_container_width=True)
 
 # =========================
-# 🏆 TABLA Y RESULTADOS
+# 🏆 TABLA & RESULTADOS — WEBALL
 # =========================
-elif menu == "🏆 Tabla & Resultados":
-    import requests, time
-    import pandas as pd
-    import streamlit as st
+if menu == "🏆 Tabla & Resultados":
+    import time, requests, pandas as pd
 
-    CLASIF_URL  = "https://api.weball.me/public/tournament/176/phase/150/group/613/clasification?instanceUUID=2d260df1-7986-49fd-95a2-fcb046e7a4fb"
+    # --- Endpoints (los que pasaste) ---
+    CLASIF_URL = "https://api.weball.me/public/tournament/176/phase/150/group/613/clasification?instanceUUID=2d260df1-7986-49fd-95a2-fcb046e7a4fb"
     MATCHES_URL = "https://api.weball.me/public/tournament/176/phase/150/matches?instanceUUID=2d260df1-7986-49fd-95a2-fcb046e7a4fb"
 
-    st.subheader("🏆 Tabla & Resultados")
+    TARGET_CATEGORY = "2016 PROMOCIONALES"
 
-    # ------------------ Helpers HTTP ------------------
-    def _req(method, url, *, json_payload=None, params=None, timeout=25, retries=3, backoff=0.8):
-        """Request con reintentos y backoff exponencial."""
-        for i in range(retries):
+    # --- Helper HTTP con reintentos/backoff ---
+    def _req(method: str, url: str, *, json=None, timeout=20, retries=2, sleep=1):
+        last_err = None
+        for i in range(retries + 1):
             try:
-                if method == "POST":
-                    r = requests.post(url, headers={"Content-Type":"application/json"},
-                                      json=(json_payload or {}), timeout=timeout)
-                else:
-                    r = requests.get(url, params=(params or {}), timeout=timeout)
-                if 500 <= r.status_code < 600:
-                    if i < retries - 1:
-                        time.sleep(backoff * (2 ** i))
-                        continue
+                r = requests.request(method, url, json=json, timeout=timeout)
                 r.raise_for_status()
-                try:
-                    return r.json()
-                except Exception:
-                    return {}
-            except requests.RequestException:
-                if i < retries - 1:
-                    time.sleep(backoff * (2 ** i))
-                    continue
-                raise
+                return r.json()
+            except Exception as e:
+                last_err = e
+                if i < retries:
+                    time.sleep(sleep * (i + 1))
+                else:
+                    raise last_err
 
+    # --- TABLA (Clasificación) ---
     @st.cache_data(ttl=300)
-    def fetch_table():
+    def fetch_table() -> pd.DataFrame:
         data = _req("GET", CLASIF_URL, timeout=25, retries=2)
+
         positions = None
+
+        # Respuestas tipo lista -> elegir el nodo de la categoría correcta
         if isinstance(data, list):
+            chosen = None
             for node in data:
-                if isinstance(node, dict) and "positions" in node:
-                    positions = node["positions"]
+                if not isinstance(node, dict):
+                    continue
+                cat_name = (
+                    (node.get("category") or {})
+                    .get("categoryInstance", {})
+                    .get("name", "")
+                )
+                if isinstance(cat_name, str) and TARGET_CATEGORY in cat_name.upper():
+                    chosen = node
                     break
+            # Fallback: si no lo encuentra, usa el índice 1 (como tu script original hacía)
+            if chosen is None and len(data) > 1 and isinstance(data[1], dict):
+                chosen = data[1]
+            if chosen and "positions" in chosen:
+                positions = chosen["positions"]
+
+        # Respuestas tipo dict simple
         elif isinstance(data, dict):
             positions = data.get("positions")
 
@@ -2451,147 +2459,160 @@ elif menu == "🏆 Tabla & Resultados":
 
         equipos = []
         for equipo in positions:
-            nombre = (equipo.get("labelTablePosition", {}) or {}).get("name") or equipo.get("name") or "¿Equipo?"
+            nombre = (equipo.get("labelTablePosition", {}) or {}).get("name") \
+                     or equipo.get("name") or "¿Equipo?"
             equipos.append({
                 "Equipo": nombre,
                 "Pts": equipo.get("pts"),
-                "PJ": equipo.get("pj"),
-                "PG": equipo.get("pg"),
-                "PE": equipo.get("pe"),
-                "PP": equipo.get("pp"),
-                "GF": equipo.get("gf"),
-                "GC": equipo.get("gc"),
-                "DG": equipo.get("dg"),
+                "PJ":  equipo.get("pj"),
+                "PG":  equipo.get("pg"),
+                "PE":  equipo.get("pe"),
+                "PP":  equipo.get("pp"),
+                "GF":  equipo.get("gf"),
+                "GC":  equipo.get("gc"),
+                "DG":  equipo.get("dg"),
             })
+
         df = pd.DataFrame(equipos)
         if df.empty:
             return df
-        df = df.sort_values(["Pts","DG","GF"], ascending=[False, False, False]).reset_index(drop=True)
+
+        df = df.sort_values(["Pts", "DG", "GF"], ascending=[False, False, False]).reset_index(drop=True)
         df.index = df.index + 1
         df.insert(0, "#", df.index)
         return df
 
-    @st.cache_data(ttl=180, show_spinner=False)
+    # --- RESULTADOS / FIXTURE ---
+    @st.cache_data(ttl=300)
     def fetch_matches():
-        """Devuelve (df_all, df_resultados, df_fixture)."""
         try:
-            j0 = _req("POST", MATCHES_URL, json_payload={}, timeout=25, retries=3)
-        except Exception:
-            try:
-                j0 = _req("GET", MATCHES_URL, params={}, timeout=25, retries=2)
-            except Exception:
-                empty = pd.DataFrame()
-                return empty, empty, empty
+            first = _req("POST", MATCHES_URL, json={}, timeout=25, retries=2)
+        except Exception as e:
+            st.error(f"Error consultando partidos: {e}")
+            return pd.DataFrame(), pd.DataFrame()
 
-        total_pages = int(j0.get("totalPages", 1) or 1)
-        total_pages = max(1, total_pages)
-
+        total_pages = int(first.get("totalPages", 1) or 1)
         partidos = []
+
         for page in range(1, total_pages + 1):
+            payload = {"page": page}
             try:
-                jd = _req("POST", MATCHES_URL, json_payload={"page": page}, timeout=25, retries=3)
+                res = _req("POST", MATCHES_URL, json=payload, timeout=25, retries=1)
             except Exception:
-                try:
-                    jd = _req("GET", MATCHES_URL, params={"page": page}, timeout=25, retries=2)
-                except Exception:
-                    st.info(f"No se pudo leer la página {page} (server 5xx).")
-                    continue
+                # si una página falla, seguimos con las demás
+                continue
 
-            page_data = jd.get("data", []) or []
+            page_data = res.get("data", []) or []
             for match in page_data:
-                categoria = (match.get("category", {})
-                                   .get("categoryInstance", {})
-                                   .get("name", "")) or ""
-                if "2016 PROMOCIONALES" not in categoria:
+                categoria = (match.get("category", {}) \
+                               .get("categoryInstance", {}) \
+                               .get("name", "")) or ""
+
+                # Filtrar la categoría objetivo
+                if TARGET_CATEGORY not in categoria.upper():
                     continue
 
+                # Extraer equipos (si falta alguno -> LIBRE)
                 try:
                     local = match['clubHome']['clubInscription']['club']['name']
                     visitante = match['clubAway']['clubInscription']['club']['name']
                 except Exception:
-                    local, visitante = "LIBRE", ""
+                    local = "LIBRE"
+                    visitante = ""
 
-                if local == "LIBRE" or visitante == "LIBRE":
+                # Omitir explícitamente “LIBRE”
+                if isinstance(local, str) and "LIBRE" in local.upper():
+                    continue
+                if isinstance(visitante, str) and "LIBRE" in visitante.upper():
                     continue
 
-                goles_local     = match.get("scoreHome")
+                goles_local = match.get("scoreHome")
                 goles_visitante = match.get("scoreAway")
-                status          = match.get("status")
-                estado          = status.get("label") if isinstance(status, dict) else str(status or "Desconocido")
-                contenedor      = match.get("containerItemsId", []) or []
-                jornada_id      = contenedor[0] if contenedor else None
-                fecha_tecnica   = match.get("updatedAt") or match.get("createdAt")
+                status = match.get("status")
+                estado = status.get("label") if isinstance(status, dict) else "Desconocido"
+
+                contenedor = match.get("containerItemsId", []) or []
+                jornada_id = contenedor[0] if contenedor else None
+
+                fecha_tecnica = match.get("updatedAt") or match.get("createdAt")
 
                 partidos.append({
                     "Fecha Técnica": fecha_tecnica,
                     "Jornada ID": jornada_id,
-                    "Estado": estado,
+                    "Estado": (estado or "").strip(),
                     "Equipo Local": local,
                     "Equipo Visitante": visitante,
                     "Goles Local": goles_local,
                     "Goles Visitante": goles_visitante
                 })
 
-        df = pd.DataFrame(partidos)
-        if df.empty:
-            return df, df, df
+        df_partidos = pd.DataFrame(partidos)
+        if df_partidos.empty:
+            return pd.DataFrame(), pd.DataFrame()
 
-        ids_ordenados = sorted(df["Jornada ID"].dropna().unique())
+        # Mapear Jornada ID -> Fecha N (según orden ascendente de ids)
+        ids_ordenados = sorted(df_partidos["Jornada ID"].dropna().unique().tolist())
         mapa_fechas = {jid: f"Fecha {i+1}" for i, jid in enumerate(ids_ordenados)}
-        df["Fecha"] = df["Jornada ID"].map(mapa_fechas)
 
-        est = df["Estado"].astype(str).str.lower()
-        df_resultados = df[est.eq("finalizado")].copy()
-        df_fixture    = df[~est.isin(["finalizado", "cancelado"])].copy()
+        df_partidos["Fecha"] = None
+        # asignar fecha sólo a finalizados
+        mask_fin = df_partidos["Estado"].str.lower() == "finalizado"
+        df_partidos.loc[mask_fin, "Fecha"] = df_partidos.loc[mask_fin, "Jornada ID"].map(mapa_fechas)
 
+        # Split
+        df_resultados = df_partidos[mask_fin].copy()
+        df_fixture = df_partidos[~df_partidos["Estado"].str.lower().isin(["finalizado", "cancelado"])].copy()
+
+        # Orden agradable
         if "Fecha" in df_resultados.columns:
-            df_resultados["_ord"] = df_resultados["Fecha"].str.extract(r"(\d+)").astype(float)
-            df_resultados = df_resultados.sort_values(["_ord","Fecha Técnica"]).drop(columns=["_ord"])
-        else:
-            df_resultados = df_resultados.sort_values(["Fecha Técnica"])
+            # ordenar por número dentro de "Fecha N"
+            def _fnum(s):
+                try:
+                    return int(str(s).split()[-1])
+                except Exception:
+                    return 9999
+            df_resultados["FechaNum"] = df_resultados["Fecha"].apply(_fnum)
+            df_resultados = df_resultados.sort_values(["FechaNum", "Fecha Técnica"]).drop(columns=["FechaNum"])
 
         df_fixture = df_fixture.sort_values(["Jornada ID","Fecha Técnica"])
-        return df, df_resultados, df_fixture
 
-    # ------------------ UI ------------------
-    tabs = st.tabs(["📈 Tabla de posiciones", "📊 Resultados", "📆 Próximos partidos"])
+        return df_resultados, df_fixture
 
-    with tabs[0]:
+    # =========================
+    # UI
+    # =========================
+    st.subheader("🏆 Tabla de posiciones y resultados")
+
+    tab1, tab2, tab3 = st.tabs(["Tabla", "Resultados", "Fixture"])
+
+    with tab1:
         try:
             df_tabla = fetch_table()
             if df_tabla.empty:
-                st.info("No se pudo obtener la tabla ahora mismo.")
+                st.info("No se pudo obtener la tabla de posiciones para la categoría 2016 PROMOCIONALES.")
             else:
-                st.dataframe(df_tabla, use_container_width=True, height=480)
+                st.dataframe(df_tabla, use_container_width=True, hide_index=True)
         except Exception as e:
-            st.error(f"Error consultando tabla: {e}")
+            st.error(f"Error consultando la tabla: {e}")
 
-    with tabs[1]:
-        try:
-            _, df_res, _ = fetch_matches()
-            if df_res.empty:
-                st.warning("No hay resultados disponibles (el servicio podría estar en mantenimiento).")
-            else:
-                st.dataframe(
-                    df_res[["Fecha","Equipo Local","Goles Local","Goles Visitante","Equipo Visitante","Fecha Técnica"]],
-                    use_container_width=True, height=520
-                )
-        except Exception as e:
-            st.error(f"Error consultando partidos: {e}")
+    with tab2:
+        df_resultados, df_fixture = fetch_matches()
+        if df_resultados.empty:
+            st.info("No hay resultados finalizados disponibles.")
+        else:
+            st.dataframe(
+                df_resultados[[
+                    "Fecha","Equipo Local","Goles Local","Goles Visitante","Equipo Visitante","Fecha Técnica"
+                ]],
+                use_container_width=True,
+                hide_index=True
+            )
 
-        if st.button("🔄 Reintentar resultados"):
-            fetch_matches.clear()
-            st.rerun()
+    with tab3:
+        if df_fixture.empty:
+            st.info("No hay próximos partidos programados.")
+        else:
+            # Mostrar sin LIBRE (ya filtrado), ordenado por jornada
+            cols = ["Jornada ID","Equipo Local","Equipo Visitante","Fecha Técnica","Estado"]
+            st.dataframe(df_fixture[cols], use_container_width=True, hide_index=True)
 
-    with tabs[2]:
-        try:
-            _, _, df_fix = fetch_matches()
-            if df_fix.empty:
-                st.info("No hay próximos partidos para mostrar.")
-            else:
-                st.dataframe(
-                    df_fix[["Fecha","Equipo Local","Equipo Visitante","Fecha Técnica","Estado"]],
-                    use_container_width=True, height=520
-                )
-        except Exception as e:
-            st.error(f"Error consultando fixture: {e}")
