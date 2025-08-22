@@ -1149,10 +1149,12 @@ def draw_key_stats_panel(home_name: str, away_name: str,
 menu = st.sidebar.radio(
     "Menú",
     ["📊 Estadísticas de partido", "⏱️ Timeline de Partido", "🔥 Mapas de calor",
-     "🕓 Distribución de minutos","🔗 Red de Pases", "🛡️ Pérdidas y Recuperaciones",
-     "🎯 Mapa de tiros", "🗺️ Mapa 3x3", "⚡ Radar"],
+     "🕓 Distribución de minutos","🔗 Red de Pases", "📬 Destino de pases", 
+     "🛡️ Pérdidas y Recuperaciones","🎯 Mapa de tiros", "⚡ Radar"
+    ],
     index=0
 )
+
 
 # =========================
 # 📊 ESTADÍSTICAS DE PARTIDO
@@ -1525,10 +1527,245 @@ if menu == "🎯 Mapa de tiros":
 
 
 # =========================
-# 🗺️ MAPA 3x3
+# 📬 DESTINO DE PASES (equipo / jugador / jugador-rol + tipos de pase)
 # =========================
-elif menu == "🗺️ Mapa 3x3":
-    st.info("⚠️ Esta sección está pendiente de integración con las métricas por cuadrante.")
+if menu == "📬 Destino de pases":
+    # --- Partido ---
+    matches = list_matches()
+    if not matches:
+        st.warning("No encontré partidos en data/minutos con patrón: 'Fecha N° - Rival - XML TotalValues.xml'.")
+        st.stop()
+
+    sel = st.selectbox("Elegí partido", matches, index=0)
+    rival = rival_from_label(sel)
+    XML_PATH, _MATRIX_IGNORED = infer_paths_for_label(sel)
+    if not XML_PATH or not os.path.isfile(XML_PATH):
+        st.error("No encontré el XML del partido seleccionado.")
+        st.stop()
+
+    # --- Parámetros de dibujo ---
+    ANCHO, ALTO = 35.0, 20.0
+    st.write("**Parámetros de visualización**")
+    colA, colB, colC = st.columns([1,1,1])
+    with colA:
+        myteam_right = st.checkbox("Mi equipo ataca → (derecha)", value=True)
+    with colB:
+        show_rival = st.checkbox("Mostrar pases del rival", value=False)
+    with colC:
+        show_last_third = st.checkbox("Resaltar destino en último tercio", value=True)
+
+    # --- Alcance / filtros ---
+    scope = st.radio("Ámbito", ["Equipo", "Por jugador", "Por jugador (rol)"], horizontal=True)
+
+    # Parseo liviano para armar listas de jugadores/roles desde el XML
+    evs = parse_instances_jugadores(XML_PATH)
+    # La versión que tenés devuelve lista, no (lista,max_x,max_y); adapto robusto:
+    if isinstance(evs, tuple) and len(evs) >= 1:
+        events = evs[0]
+    else:
+        events = evs
+
+    jugadores_set, roles_set = set(), set()
+    for e in events:
+        code = e.get("code") or ""
+        if is_player_code(code):
+            m = _NAME_ROLE_RE.match(code)
+            if m:
+                jugadores_set.add(ntext(m.group(1)).strip())
+                roles_set.add(ntext(m.group(2)).strip())
+    jugadores = sorted(jugadores_set)
+    roles     = sorted(r for r in roles_set if r)
+
+    sel_players = []
+    sel_roles   = []
+    if scope != "Equipo":
+        colP, colR = st.columns(2)
+        with colP:
+            sel_players = st.multiselect("Jugador(es)", jugadores, default=[])
+        with colR:
+            if scope == "Por jugador (rol)":
+                sel_roles = st.multiselect("Rol(es)", roles, default=[])
+
+    # --- Tipos de pase ---
+    # Ajustá / ampliá estas etiquetas si tenés más taxonomía en labels
+    PASS_TYPES = {
+        "Asistencia":       [r"\b(asist|asistencia|assist|pase\s*de?\s*gol)\b"],
+        "Pase clave":       [r"\b(pase\s*clave|key\s*pass|keypass)\b"],
+        "Progresivo frontal":[r"\bprogresivo\b.*\bfrontal\b"],
+        "Progresivo lateral":[r"\bprogresivo\b.*\blateral\b"],
+        "Corto frontal":    [r"\bcorto\b.*\bfrontal\b"],
+        "Corto lateral":    [r"\bcorto\b.*\blateral\b"],
+        "Largo frontal":    [r"\blargo\b.*\bfrontal\b"],
+        "Largo lateral":    [r"\blargo\b.*\blateral\b"],
+        # Extras comunes en tu dataset (podés descomentar si querés mostrarlos)
+        # "Salida arco corto (mano)": [r"salida\s*de\s*arco.*cmano"],
+        # "Salida arco corto (pie)":  [r"salida\s*de\s*arco.*cpie"],
+    }
+    tipos_opciones = list(PASS_TYPES.keys())
+    selected_types = st.multiselect("Tipos de pase (vacío = todos)", tipos_opciones, default=[])
+
+    # --- Detectores / helpers ---
+    ASSIST_PAT  = re.compile(r"\b(asist|asistencia|assist|pase\s*de?\s*gol)\b", re.I)
+    KEYPASS_PAT = re.compile(r"\b(pase\s*clave|key\s*pass|keypass)\b", re.I)
+
+    def is_pass_attempt(ev) -> bool:
+        s = nlower(ev.get("code",""))
+        if re.match(r"^\s*pase\b", s): return True
+        return any(re.match(r"^\s*pase\b", nlower(l or "")) for l in ev.get("labels", []))
+
+    def is_rival_code(code: str) -> bool:
+        return nlower(code).startswith("categoria - equipo rival")
+
+    def match_pass_type(ev) -> set:
+        """Devuelve el set de tipos de pase que matchean este evento (según labels/código)."""
+        txt = nlower(ev.get("code","")) + " " + " ".join([nlower(l or "") for l in ev.get("labels",[])])
+        found = set()
+        if ASSIST_PAT.search(txt):  found.add("Asistencia")
+        if KEYPASS_PAT.search(txt): found.add("Pase clave")
+        for name, patt_list in PASS_TYPES.items():
+            if name in {"Asistencia","Pase clave"}:  # ya chequeados arriba
+                continue
+            for p in patt_list:
+                if re.search(p, txt):
+                    found.add(name); break
+        # Si no eligieron tipos, consideramos "cualquier pase"
+        return found
+
+    def map_raw_to_pitch(x_raw, y_raw) -> tuple[float,float] | tuple[None,None]:
+        """Mapea coords crudas del XML (x≈0..20, y≈0..35~40) a cancha 35x20, atacando → por defecto.
+           Se espeja X si el equipo NO ataca a la derecha.
+        """
+        if x_raw is None or y_raw is None:
+            return (None, None)
+        # y→X, x→Y (mismo criterio que en otros menús)
+        X = 35.0 - (float(y_raw) * (35.0 / 40.0))   # 0..40 → 0..35 e invierte eje cancha
+        Y = float(x_raw)                            # 0..20 → 0..20
+        if not myteam_right:
+            X = 35.0 - X
+        # Clip
+        X = max(0.0, min(35.0, X))
+        Y = max(0.0, min(20.0, Y))
+        return (X, Y)
+
+    def closer_to_goal(ax, bx):
+        """Devuelve True si 'b' está más cerca del arco rival que 'a' (sólo eje X)."""
+        if myteam_right:
+            return bx > ax
+        else:
+            return bx < ax
+
+    # --- Recolección ---
+    segs_yellow, segs_orange, segs_grey = [], [], []
+    dest_assist, dest_key, dest_last, dest_other = [], [], [], []
+
+    kept = 0
+    for ev in events:
+        if not is_pass_attempt(ev):
+            continue
+
+        # Equipo (mi equipo o rival según toggle)
+        if not show_rival and is_rival_code(ev.get("code","")):
+            continue
+        if show_rival and not is_rival_code(ev.get("code","")):
+            # si mostrás solo rival, filtrá aquí (o quitá este if para ambos)
+            pass
+
+        # Jugador / Rol (si aplica)
+        code = ev.get("code","")
+        m = _NAME_ROLE_RE.match(code) if code else None
+        nombre = ntext(m.group(1)).strip() if m else None
+        rol    = ntext(m.group(2)).strip() if m else None
+
+        if scope != "Equipo":
+            if sel_players and (nombre not in sel_players):  continue
+            if scope == "Por jugador (rol)":
+                if sel_roles and (rol not in sel_roles):    continue
+
+        # Tipos de pase (si seleccionaron alguno, matchear)
+        types_found = match_pass_type(ev)
+        if selected_types:
+            if len(types_found.intersection(selected_types)) == 0:
+                continue
+
+        # Coords
+        xs = ev.get("xs") or []
+        ys = ev.get("ys") or []
+        if not (xs and ys):  continue
+        x0r, y0r = xs[0], ys[0]
+        x1r, y1r = xs[-1], ys[-1]
+        x0,y0 = map_raw_to_pitch(x0r, y0r)
+        x1,y1 = map_raw_to_pitch(x1r, y1r)
+        if None in (x0,y0,x1,y1): continue
+
+        # Elegimos el DESTINO como el punto más cercano al arco rival
+        # (si el "end" no lo es, invertimos)
+        if closer_to_goal(x0, x1):
+            start_plot = (x0,y0); end_plot = (x1,y1)
+        elif closer_to_goal(x1, x0):
+            start_plot = (x1,y1); end_plot = (x0,y0)
+        else:
+            start_plot = (x0,y0); end_plot = (x1,y1)
+
+        kept += 1
+
+        # Coloreo por tipo: asistencia > key pass > resto
+        if "Asistencia" in types_found:
+            segs_yellow.append([start_plot, end_plot])
+            dest_assist.append(end_plot)
+        elif "Pase clave" in types_found:
+            segs_orange.append([start_plot, end_plot])
+            dest_key.append(end_plot)
+        else:
+            segs_grey.append([start_plot, end_plot])
+            # clasifico destino según último tercio
+            if show_last_third:
+                in_last = (end_plot[0] >= (2/3)*ANCHO) if myteam_right else (end_plot[0] <= (1/3)*ANCHO)
+                if in_last: dest_last.append(end_plot)
+                else:       dest_other.append(end_plot)
+            else:
+                dest_other.append(end_plot)
+
+    # --- Plot ---
+    plt.close("all")
+    fig = plt.figure(figsize=(10.6, 7.0))
+    ax  = fig.add_axes([0.04, 0.06, 0.92, 0.88])
+    draw_futsal_pitch_grid(ax)
+
+    from matplotlib.collections import LineCollection
+    if segs_grey:
+        ax.add_collection(LineCollection(segs_grey, colors="#9BA3AE", linewidths=1.4, alpha=0.65, zorder=3))
+    if segs_orange:
+        ax.add_collection(LineCollection(segs_orange, colors="#FFA726", linewidths=2.0, alpha=0.95, zorder=4))
+    if segs_yellow:
+        ax.add_collection(LineCollection(segs_yellow, colors="#FFB300", linewidths=2.4, alpha=0.95, zorder=5))
+
+    # Destinos (prioridad visual)
+    if dest_other:
+        xs, ys = zip(*dest_other)
+        ax.scatter(xs, ys, s=42, facecolors="#A0A7B2", edgecolors="black", linewidths=0.2, zorder=4, label="Destino (otros)")
+    if dest_last:
+        xs, ys = zip(*dest_last)
+        ax.scatter(xs, ys, s=52, facecolors="#2E86FF", edgecolors="black", linewidths=0.3, zorder=5, label="Destino (último tercio)")
+    if dest_key:
+        xs, ys = zip(*dest_key)
+        ax.scatter(xs, ys, s=64, facecolors="#FFD54F", edgecolors="black", linewidths=0.4, zorder=6, label="Pase clave (destino)")
+    if dest_assist:
+        xs, ys = zip(*dest_assist)
+        ax.scatter(xs, ys, marker='*', s=220, c="#FFEB3B", edgecolors="none", zorder=7, label="Asistencia (destino)")
+
+    # Título
+    who = "Equipo" if scope=="Equipo" else (
+        f"Jugadores: {', '.join(sel_players) if sel_players else 'Todos'}"
+        + (f" | Roles: {', '.join(sel_roles) if sel_roles else 'Todos'}" if scope=="Por jugador (rol)" else "")
+    )
+    ttypes = "Todos" if not selected_types else ", ".join(selected_types)
+    side = "→" if myteam_right else "←"
+    ax.set_title(f"Destino de pases — {who}  |  Tipos: {ttypes}  |  Ataque {side}", fontsize=13, pad=6, weight="bold")
+    ax.legend(loc="upper left", frameon=True)
+    st.pyplot(fig, use_container_width=True)
+    plt.close(fig)
+
+    st.caption(f"Pases plotteados: {kept}")
 
 # =========================
 # ⚡ RADAR
