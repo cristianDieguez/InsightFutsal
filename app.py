@@ -169,7 +169,7 @@ def build_timeline(xml_players_path):
         goals_M=np.zeros(M, int),  goals_R=np.zeros(M, int),
     )
     for ev in evs:
-        m = minute_bucket(ev.get("end", 0))
+        m = minute_bucket(ev.get("end", ev.get("start", 0.0)))
 
         # pases + último tercio
         if is_pass_attempt(ev):
@@ -249,8 +249,8 @@ def draw_timeline_panel(rival_name: str, tl: dict,
     # Banner sup
     BANNER_H_loc = 0.14; BANNER_Y0 = 1 - BANNER_H_loc
     ax.add_patch(Rectangle((0, BANNER_Y0), 1, BANNER_H_loc, facecolor=white, edgecolor="none"))
-    if ferro_logo_path: draw_logo(ax, ferro_logo_path, 0.075, BANNER_Y0+0.07, w=0.12)
-    if rival_logo_path: draw_logo(ax, rival_logo_path, 0.925, BANNER_Y0+0.07, w=0.12)
+    if ferro_logo_path: draw_logo(ax, ferro_logo_path, 0.075, BANNER_Y0+0.07, 0.12)
+    if rival_logo_path: draw_logo(ax, rival_logo_path, 0.925, BANNER_Y0+0.07, 0.12)
     ax.text(0.5, BANNER_Y0+0.085, f"FERRO vs {rival_name.upper()}", ha="center", va="center",
             color=bg_green, fontsize=30, weight="bold")
     ax.text(0.5, BANNER_Y0+0.040, "TIMELINE", ha="center", va="center",
@@ -259,8 +259,8 @@ def draw_timeline_panel(rival_name: str, tl: dict,
     # Banner inferior
     FOOT_H, FOOT_Y0 = 0.12, 0.00
     ax.add_patch(Rectangle((0, FOOT_Y0), 1, FOOT_H, facecolor=white, edgecolor="none"))
-    if os.path.isfile(FOOTER_LEFT_LOGO):  draw_logo(ax, FOOTER_LEFT_LOGO,  0.09, FOOT_Y0+FOOT_H*0.52, w=0.14)
-    if os.path.isfile(FOOTER_RIGHT_LOGO): draw_logo(ax, FOOTER_RIGHT_LOGO, 0.91, FOOT_Y0+FOOT_H*0.52, w=0.12)
+    if os.path.isfile(FOOTER_LEFT_LOGO):  draw_logo(ax, FOOTER_LEFT_LOGO,  0.09, FOOT_Y0+FOOT_H*0.52, 0.14)
+    if os.path.isfile(FOOTER_RIGHT_LOGO): draw_logo(ax, FOOTER_RIGHT_LOGO, 0.91, FOOT_Y0+FOOT_H*0.52, 0.12)
     ax.text(0.50, FOOT_Y0+FOOT_H*0.62, "TRABAJO FIN DE MÁSTER", ha="center", va="center",
             color=bg_green, fontsize=18, weight="bold")
     ax.text(0.50, FOOT_Y0+FOOT_H*0.32, "Cristian Dieguez", ha="center", va="center",
@@ -486,12 +486,30 @@ def parse_instances_jugadores(xml_path: str):
     out = []
     for inst in root.findall(".//instance"):
         code = ntext(inst.findtext("code"))
+        # NUEVO: tiempos
+        try:
+            st = float(inst.findtext("start") or "0")
+        except:
+            st = 0.0
+        try:
+            en = float(inst.findtext("end") or "0")
+        except:
+            en = st
+
         labels_lc = [nlower(t.text) for t in inst.findall("./label/text")]
         xs = [int(x.text) for x in inst.findall("./pos_x") if (x.text or "").isdigit()]
         ys = [int(y.text) for y in inst.findall("./pos_y") if (y.text or "").isdigit()]
         x_end, y_end = (xs[-1], ys[-1]) if xs and ys else (None, None)
-        out.append({"code": code, "labels_lc": labels_lc, "end_xy": (x_end, y_end)})
+
+        out.append({
+            "code": code,
+            "labels_lc": labels_lc,
+            "start": st,
+            "end": en,
+            "end_xy": (x_end, y_end)
+        })
     return out
+
 
 def is_pass_attempt(ev) -> bool:
     if re.match(r"^\s*pase\b", nlower(ev["code"])): return True
