@@ -1148,7 +1148,7 @@ def draw_key_stats_panel(home_name: str, away_name: str,
 # =========================
 menu = st.sidebar.radio(
     "Menú",
-    ["📊 Estadísticas de partido", "⏱️ Timeline de Partido", "🔥 Mapas de calor",
+    ["🏆 Tabla & Resultados","📊 Estadísticas de partido", "⏱️ Timeline de Partido", "🔥 Mapas de calor",
      "🕓 Distribución de minutos","🔗 Red de Pases", "📬 Destino de pases", 
      "🛡️ Pérdidas y Recuperaciones","🎯 Mapa de tiros", "📈 Radar comparativo"
     ],
@@ -2395,3 +2395,204 @@ if menu == "📈 Radar comparativo":
 
     st.markdown("**Tabla de métricas (promedios; abs normalizados a 40’ por partido antes de promediar)**")
     st.dataframe(tabla.sort_values("minutos", ascending=False), use_container_width=True)
+
+# ===============================
+# 🏆 TABLA & RESULTADOS (equipo)
+# ===============================
+if menu == "🏆 Tabla & Resultados":
+    import requests, pandas as pd, streamlit as st
+    from datetime import datetime
+    from functools import lru_cache
+
+    st.subheader("Tabla de posiciones y resultados (WebAll)")
+
+    # ---- Parámetros API (editables en la UI) ----
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        tournament_id = st.text_input("tournamentId", "176")
+    with c2:
+        phase_id = st.text_input("phaseId", "150")
+    with c3:
+        group_id = st.text_input("groupId (para tabla)", "613")
+    instance_uuid = st.text_input("instanceUUID", "2d260df1-7986-49fd-95a2-fcb046e7a4fb")
+
+    # filtro por categoría (tu dataset usa “2016 PROMOCIONALES”)
+    categoria_objetivo = st.text_input("Filtrar categoría (contiene):", "2016 PROMOCIONALES").strip()
+
+    # equipo a resaltar (opcional)
+    team_highlight = st.text_input("Resaltar equipo (exacto, opcional):", "")
+
+    # ---- helpers ----
+    def _dt(s):
+        try:
+            return datetime.fromisoformat(s.replace("Z","+00:00"))
+        except Exception:
+            return None
+
+    @st.cache_data(ttl=300, show_spinner=True)
+    def fetch_table(tournament_id, phase_id, group_id, instance_uuid):
+        url = f"https://api.weball.me/public/tournament/{tournament_id}/phase/{phase_id}/group/{group_id}/clasification"
+        params = {"instanceUUID": instance_uuid}
+        r = requests.get(url, params=params, timeout=20)
+        r.raise_for_status()
+        data = r.json()
+        # algunas fases vienen como lista con posiciones en data[1]['positions']
+        positions = None
+        if isinstance(data, list) and len(data) > 1 and isinstance(data[1], dict) and "positions" in data[1]:
+            positions = data[1]["positions"]
+        elif isinstance(data, dict) and "positions" in data:
+            positions = data["positions"]
+        else:
+            positions = []
+        equipos = []
+        for e in positions or []:
+            try:
+                nombre = e["labelTablePosition"]["name"]
+            except Exception:
+                nombre = e.get("name") or e.get("teamName") or "?"
+            equipos.append({
+                "Equipo": nombre,
+                "Pts": e.get("pts"),
+                "PJ":  e.get("pj"),
+                "PG":  e.get("pg"),
+                "PE":  e.get("pe"),
+                "PP":  e.get("pp"),
+                "GF":  e.get("gf"),
+                "GC":  e.get("gc"),
+                "DG":  e.get("dg"),
+            })
+        df = pd.DataFrame(equipos)
+        if not df.empty:
+            df = df.sort_values(by=["Pts","DG","GF"], ascending=[False, False, False]).reset_index(drop=True)
+            df.index = df.index + 1
+            df.insert(0, "Pos", df.index)
+        return df
+
+    @st.cache_data(ttl=300, show_spinner=True)
+    def fetch_matches(tournament_id, phase_id, instance_uuid):
+        url = f"https://api.weball.me/public/tournament/{tournament_id}/phase/{phase_id}/matches"
+        headers = {"Content-Type": "application/json"}
+        # primera página para saber totalPages
+        res0 = requests.post(url, headers=headers, json={"page": 1, "instanceUUID": instance_uuid}, timeout=25)
+        res0.raise_for_status()
+        js0 = res0.json()
+        total_pages = js0.get("totalPages", 1) or 1
+
+        partidos = []
+        for page in range(1, int(total_pages) + 1):
+            payload = {"page": page, "instanceUUID": instance_uuid}
+            r = requests.post(url, headers=headers, json=payload, timeout=25)
+            r.raise_for_status()
+            data = r.json().get("data", []) or []
+
+            for match in data:
+                # categoría
+                categoria = (match.get("category", {})
+                                   .get("categoryInstance", {})
+                                   .get("name", "")) or ""
+                if categoria_objetivo and categoria_objetivo.lower() not in categoria.lower():
+                    continue
+
+                # equipos
+                try:
+                    local = match["clubHome"]["clubInscription"]["club"]["name"]
+                    visitante = match["clubAway"]["clubInscription"]["club"]["name"]
+                except Exception:
+                    local, visitante = "LIBRE", ""
+
+                # score
+                gl = match.get("scoreHome")
+                gv = match.get("scoreAway")
+
+                # estado
+                status = match.get("status")
+                estado = status.get("label") if isinstance(status, dict) else str(status or "Desconocido")
+
+                # “jornada” (containerItemsId)
+                cont = match.get("containerItemsId", []) or []
+                jornada_id = cont[0] if cont else None
+
+                # fechas
+                f_tec = match.get("updatedAt") or match.get("createdAt")
+                dt_tec = _dt(f_tec)
+
+                # excluir LIBRE
+                if local == "LIBRE" or visitante == "LIBRE":
+                    continue
+
+                partidos.append({
+                    "Fecha Técnica": dt_tec,
+                    "Jornada ID": jornada_id,
+                    "Estado": estado,
+                    "Equipo Local": local,
+                    "Equipo Visitante": visitante,
+                    "Goles Local": gl,
+                    "Goles Visitante": gv,
+                    "Categoria": categoria
+                })
+
+        df = pd.DataFrame(partidos)
+        if not df.empty:
+            # mapear Fecha N solo a FINALIZADOS (mantiene vacío para el resto)
+            ids_ordenados = sorted(df.loc[df["Jornada ID"].notna(), "Jornada ID"].unique())
+            mapa_fechas = {jid: f"Fecha {i+1}" for i, jid in enumerate(ids_ordenados)}
+            df["Fecha"] = None
+            fin_mask = df["Estado"].astype(str).str.lower().eq("finalizado")
+            df.loc[fin_mask, "Fecha"] = df.loc[fin_mask, "Jornada ID"].map(mapa_fechas)
+            # ordenar
+            df = df.sort_values(["Fecha Técnica"], ascending=True)
+        return df
+
+    # ---- llamadas ----
+    try:
+        df_tabla = fetch_table(tournament_id, phase_id, group_id, instance_uuid)
+    except Exception as e:
+        st.error(f"Error consultando clasificación: {e}")
+        df_tabla = pd.DataFrame()
+
+    try:
+        df_partidos = fetch_matches(tournament_id, phase_id, instance_uuid)
+    except Exception as e:
+        st.error(f"Error consultando partidos: {e}")
+        df_partidos = pd.DataFrame()
+
+    # ---- render tabla de posiciones ----
+    st.markdown("### 📊 Tabla de posiciones")
+    if df_tabla.empty:
+        st.info("Sin datos de tabla.")
+    else:
+        df_show = df_tabla.copy()
+        if team_highlight:
+            # agrega una columna para destacar (opcional)
+            df_show["★"] = df_show["Equipo"].eq(team_highlight).map({True:"★", False:""})
+            cols = ["★"] + [c for c in df_show.columns if c != "★"]
+            df_show = df_show[cols]
+        st.dataframe(df_show, use_container_width=True)
+        st.download_button("⬇️ Descargar tabla (CSV)", df_tabla.to_csv(index=False), "tabla_posiciones.csv", "text/csv")
+
+    # ---- render resultados & fixture ----
+    st.markdown("### 🗓️ Partidos")
+    if df_partidos.empty:
+        st.info("Sin datos de partidos para la categoría seleccionada.")
+    else:
+        # separar jugados / próximos
+        estado_norm = df_partidos["Estado"].astype(str).str.lower()
+        df_resultados = df_partidos[estado_norm.eq("finalizado")].copy()
+        df_fixture    = df_partidos[~estado_norm.isin(["finalizado","cancelado"])].copy()
+
+        # columnas ordenadas bonitas
+        cols_res = ["Fecha","Fecha Técnica","Equipo Local","Goles Local","Goles Visitante","Equipo Visitante","Categoria","Jornada ID","Estado"]
+        cols_fix = ["Fecha Técnica","Equipo Local","Equipo Visitante","Categoria","Jornada ID","Estado"]
+        cols_res = [c for c in cols_res if c in df_resultados.columns]
+        cols_fix = [c for c in cols_fix if c in df_fixture.columns]
+
+        c1, c2 = st.columns(2)
+        with c1:
+            st.caption("Resultados (finalizados)")
+            st.dataframe(df_resultados[cols_res].sort_values(["Fecha Técnica"], ascending=True), use_container_width=True)
+            st.download_button("⬇️ CSV Resultados", df_resultados.to_csv(index=False), "resultados.csv", "text/csv")
+        with c2:
+            st.caption("Próximos partidos")
+            st.dataframe(df_fixture[cols_fix].sort_values(["Fecha Técnica"], ascending=True), use_container_width=True)
+            st.download_button("⬇️ CSV Fixture", df_fixture.to_csv(index=False), "fixture.csv", "text/csv")
+
