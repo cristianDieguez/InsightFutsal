@@ -2742,5 +2742,158 @@ if menu == "🏆 Tabla & Resultados":
 
             st.caption("Movimiento: comparación contra el snapshot inmediato anterior (▲ sube / ▼ baja / ＝ igual).  Racha: última secuencia viva (G/E/P).")
 
+                    # =========================
+            # 📈 Evolución ELO (gráfico)
+            # =========================
+            import numpy as np
+            import matplotlib.pyplot as plt
+            import matplotlib.dates as mdates
+
+            @st.cache_data(ttl=300)
+            def compute_elo_evolution(df_resultados: pd.DataFrame,
+                                      K: float = 40,
+                                      idx0: float = 1000.0,
+                                      bonus_local: float = 100.0) -> pd.DataFrame:
+                """
+                Calcula ELO por 'Fecha Técnica' a partir de df_resultados (finalizados).
+                Devuelve: Fecha Técnica, Equipo, Indice (ELO), Delta, Resultado (G/E/P).
+                """
+                if df_resultados is None or df_resultados.empty:
+                    return pd.DataFrame(columns=["Fecha Técnica","Equipo","Indice","Delta","Resultado"])
+
+                df = df_resultados.copy()
+                df["Fecha Técnica"] = pd.to_datetime(df["Fecha Técnica"], errors="coerce")
+                df = df.sort_values("Fecha Técnica")
+
+                equipos = pd.Series(df["Equipo Local"].tolist() + df["Equipo Visitante"].tolist()).unique()
+                indices = {e: float(idx0) for e in equipos}
+                evol = []
+
+                # iterar por fecha real
+                for ftec in df["Fecha Técnica"].unique():
+                    fecha_rows = df[df["Fecha Técnica"] == ftec]
+                    for _, r in fecha_rows.iterrows():
+                        local = r["Equipo Local"]; visitante = r["Equipo Visitante"]
+                        gl = int(r["Goles Local"]); gv = int(r["Goles Visitante"])
+
+                        il = indices[local]; iv = indices[visitante]
+                        # resultado real
+                        if gl > gv:
+                            rl, rv = 1.0, 0.0
+                        elif gl < gv:
+                            rl, rv = 0.0, 1.0
+                        else:
+                            rl = rv = 0.5
+
+                        # expected con ventaja de localía
+                        el = 1 / (1 + 10 ** ((iv - il + bonus_local) / 400.0))
+                        ev = 1 / (1 + 10 ** ((il - iv - bonus_local) / 400.0))
+
+                        adj_l = K * (rl - el)
+                        adj_v = K * (rv - ev)
+
+                        # margen (soft)
+                        dg = abs(gl - gv)
+                        mult = 1 + (dg / 4.0)
+
+                        # ajuste ofensivo/defensivo suave
+                        max_idx = max(indices.values()) if indices else 1.0
+                        of_l = (gl / (1 + gv)) * (iv / max_idx)
+                        de_l = (gv / (1 + gl)) * (1 - iv / max_idx)
+                        of_v = (gv / (1 + gl)) * (il / max_idx)
+                        de_v = (gl / (1 + gv)) * (1 - il / max_idx)
+
+                        total_l = (adj_l * mult) + of_l - de_l
+                        total_v = (adj_v * mult) + of_v - de_v
+
+                        indices[local] += total_l
+                        indices[visitante] += total_v
+
+                    # registrar valores tras procesar todos los partidos de esa fecha
+                    for e in equipos:
+                        evol.append({"Fecha Técnica": ftec, "Equipo": e, "Indice": round(indices[e], 2)})
+
+                df_evo = pd.DataFrame(evol).sort_values(["Equipo","Fecha Técnica"]).reset_index(drop=True)
+
+                # Delta + Resultado (según sus propios partidos jugados)
+                res_rows = []
+                for _, r in df.iterrows():
+                    ftec = r["Fecha Técnica"]; l = r["Equipo Local"]; v = r["Equipo Visitante"]
+                    gl = int(r["Goles Local"]); gv = int(r["Goles Visitante"])
+                    if gl > gv:
+                        res_rows.append((ftec, l, "G")); res_rows.append((ftec, v, "P"))
+                    elif gl < gv:
+                        res_rows.append((ftec, l, "P")); res_rows.append((ftec, v, "G"))
+                    else:
+                        res_rows.append((ftec, l, "E")); res_rows.append((ftec, v, "E"))
+                df_res = pd.DataFrame(res_rows, columns=["Fecha Técnica","Equipo","Resultado"])
+
+                df_evo = df_evo.merge(df_res, on=["Fecha Técnica","Equipo"], how="left")
+
+                # Delta por equipo
+                df_evo["Delta"] = 0.0
+                for e, g in df_evo.groupby("Equipo"):
+                    g = g.sort_values("Fecha Técnica")
+                    deltas = [g["Indice"].iloc[i] - (idx0 if i == 0 else g["Indice"].iloc[i-1]) for i in range(len(g))]
+                    df_evo.loc[g.index, "Delta"] = np.round(deltas, 2)
+
+                return df_evo.sort_values(["Fecha Técnica","Equipo"]).reset_index(drop=True)
+
+            # Construir ELO (desde los resultados finalizados ya obtenidos)
+            df_elo_evolucion = compute_elo_evolution(df_resultados)
+
+            st.markdown("### 📈 Evolución del índice ELO")
+            if df_elo_evolucion.empty:
+                st.info("No hay datos suficientes para calcular el ELO.")
+            else:
+                # Opciones de visualización
+                colE1, colE2 = st.columns([1,1])
+                with colE1:
+                    equipo_focus = st.text_input("Resaltar equipo (exacto)", value="FERRO CARRIL OESTE")
+                with colE2:
+                    show_labels = st.checkbox("Etiquetas finales", value=True)
+
+                df_plot = df_elo_evolucion.copy()
+                df_plot["Fecha Técnica"] = pd.to_datetime(df_plot["Fecha Técnica"])
+                # promedio final
+                ultimo = (df_plot.sort_values("Fecha Técnica")
+                                   .groupby("Equipo", as_index=False)
+                                   .tail(1))
+                promedio_final = ultimo["Indice"].mean()
+
+                # figura
+                fig = plt.figure(figsize=(11.5, 7.0))
+                ax = fig.add_subplot(111)
+
+                teams = df_plot["Equipo"].unique()
+                for team in teams:
+                    dft = df_plot[df_plot["Equipo"] == team].sort_values("Fecha Técnica")
+                    lw = 2.6 if team.strip().upper() == (equipo_focus or "").strip().upper() else 1.2
+                    color = "darkgreen" if team.strip().upper() == (equipo_focus or "").strip().upper() else None
+                    ax.plot(dft["Fecha Técnica"], dft["Indice"], label=team, linewidth=lw, color=color)
+
+                # línea de promedio
+                ax.axhline(promedio_final, linestyle="--", color="gray", linewidth=1.2, label="Promedio general")
+
+                # etiquetas finales opcionales
+                if show_labels:
+                    for team in teams:
+                        dft = df_plot[df_plot["Equipo"] == team].sort_values("Fecha Técnica")
+                        x = dft["Fecha Técnica"].iloc[-1]
+                        y = dft["Indice"].iloc[-1]
+                        ax.text(x + pd.Timedelta(days=2), y, team, fontsize=8, va='center')
+
+                ax.set_title("Evolución del Índice ELO por Fecha Real")
+                ax.set_xlabel("Fecha"); ax.set_ylabel("Índice ELO")
+                ax.grid(True, linestyle="--", alpha=0.5)
+                ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+                fig.autofmt_xdate()
+                ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0), fontsize=8, frameon=False)
+                plt.tight_layout()
+
+                st.pyplot(fig, use_container_width=True)
+                plt.close(fig)
+
+
 
 
