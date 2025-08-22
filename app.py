@@ -665,7 +665,7 @@ def fig_barh_minutos(labels, vals_sec, title, xlabel="Minutos"):
     return fig
 
 # ========= Minutos desde XML TotalValues (sin XML de Equipo) =========
- ========= Filtros de códigos =========
+# ========= Filtros de códigos =========
 _EXCLUDE_PREFIXES = tuple([  # normalizados a lower y sin tildes
     "categoria - equipo rival",
     "tiempo posecion ferro", "tiempo posesion ferro",
