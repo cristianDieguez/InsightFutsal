@@ -496,6 +496,118 @@ def fig_heatmap(df_xy: pd.DataFrame, titulo: str) -> plt.Figure:
     return fig
 
 # =========================
+# MINUTOS — helpers (desde tu notebook, adaptado)
+# =========================
+_NAME_ROLE_RE = re.compile(r"^\s*([^(]+?)\s*\(([^)]+)\)\s*$")
+
+def _split_name_role(code: str):
+    m = _NAME_ROLE_RE.match(str(code)) if code else None
+    return (m.group(1).strip(), m.group(2).strip()) if m else (None, None)
+
+def _merge_intervals(intervals):
+    ints = [(float(s), float(e)) for s, e in intervals if s is not None and e is not None and e > s]
+    if not ints: return []
+    ints.sort()
+    merged = [list(ints[0])]
+    for s, e in ints[1:]:
+        if s <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], e)
+        else:
+            merged.append([s, e])
+    return [(s, e) for s, e in merged]
+
+def cargar_equipo_presencias(xml_path: str) -> pd.DataFrame:
+    """Lee XML del equipo. Devuelve: code, nombre, rol, start_s, end_s, dur_s."""
+    if not xml_path or not os.path.isfile(xml_path):
+        return pd.DataFrame(columns=["code","nombre","rol","start_s","end_s","dur_s"])
+    root = ET.parse(xml_path).getroot()
+    rows = []
+    for inst in root.findall(".//instance"):
+        code = inst.findtext("code")
+        nombre, rol = _split_name_role(code)
+        if nombre is None:
+            continue
+        st = inst.findtext("start"); en = inst.findtext("end")
+        try:
+            s = float(st) if st is not None else None
+            e = float(en) if en is not None else None
+        except Exception:
+            s, e = None, None
+        if s is None or e is None or e <= s:
+            continue
+        rows.append({"code": code, "nombre": nombre, "rol": rol,
+                     "start_s": s, "end_s": e, "dur_s": e - s})
+    return pd.DataFrame(rows)
+
+def _format_mmss(seconds: float | int) -> str:
+    if seconds is None or not np.isfinite(seconds):
+        return "00:00"
+    s = int(round(float(seconds)))
+    mm, ss = divmod(s, 60)
+    return f"{mm:02d}:{ss:02d}"
+
+def minutos_por_presencia(df_pres: pd.DataFrame):
+    """Une solapes y suma minutos exactos por (nombre, rol) y por jugador."""
+    if df_pres.empty:
+        return (pd.DataFrame(columns=["nombre","rol","segundos","mmss","minutos","n_tramos"]),
+                pd.DataFrame(columns=["nombre","segundos","mmss","minutos","n_tramos"]))
+    out = []
+    for (nombre, rol), g in df_pres.groupby(["nombre","rol"], dropna=False):
+        intervals = list(zip(g["start_s"], g["end_s"]))
+        merged = _merge_intervals(intervals)
+        secs = sum(e - s for s, e in merged)
+        out.append({
+            "nombre": nombre,
+            "rol": rol,
+            "segundos": int(round(secs)),
+            "mmss": _format_mmss(secs),
+            "minutos": secs/60.0,
+            "n_tramos": len(merged)
+        })
+    df_por_rol = (pd.DataFrame(out)
+                    .sort_values(["segundos","nombre"], ascending=[False, True])
+                    .reset_index(drop=True))
+    df_por_rol["minutos"] = df_por_rol["minutos"].round(2)
+
+    df_por_jugador = (df_por_rol
+                      .groupby("nombre", as_index=False)
+                      .agg(segundos=("segundos","sum"),
+                           minutos=("minutos","sum"),
+                           n_tramos=("n_tramos","sum"))
+                      .assign(mmss=lambda d: d["segundos"].apply(_format_mmss))
+                      .sort_values(["segundos","nombre"], ascending=[False, True])
+                      .reset_index(drop=True))
+    df_por_jugador["minutos"] = df_por_jugador["minutos"].round(2)
+    return df_por_rol, df_por_jugador
+
+def _inside_bar_label(ax, bars, values_sec):
+    xlim = ax.get_xlim()[1] if ax.get_xlim()[1] > 0 else max(1, (np.array(values_sec)/60).max() if len(values_sec) else 1)
+    for b, secs in zip(bars, values_sec):
+        mmss = _format_mmss(secs)
+        x = b.get_width(); y = b.get_y() + b.get_height()/2
+        txt_x = x * 0.98
+        if x < 0.9:
+            txt_x = min(x + 0.1, xlim * 0.98)
+            ha = "left"; color = "black"; fw="bold"
+        else:
+            ha = "right"; color = "white"; fw="bold"
+        ax.text(txt_x, y, mmss, va="center", ha=ha, fontsize=9, color=color, fontweight=fw)
+
+def fig_barh_minutos(labels, vals_sec, title, xlabel="Minutos"):
+    vals_min = (np.array(vals_sec) / 60.0)
+    fig, ax = plt.subplots(figsize=(10, max(3.8, 0.48*len(labels))))
+    bars = ax.barh(labels, vals_min, alpha=0.9)
+    ax.invert_yaxis()
+    _inside_bar_label(ax, bars, vals_sec)
+    ax.set_xlabel(xlabel); ax.set_title(title)
+    ax.grid(axis="x", linestyle=":", alpha=0.35)
+    vmax = max(vals_min) if len(vals_min) else 1.0
+    ax.set_xlim(0, vmax * 1.12 + 0.4)
+    plt.tight_layout()
+    return fig
+
+
+# =========================
 # PARSERS SEGÚN TU NOTEBOOK
 # =========================
 def parse_possession_from_equipo(xml_path: str) -> Tuple[float, float]:
@@ -826,7 +938,7 @@ def badge_path_for(name: str) -> Optional[str]:
 # =========================
 menu = st.sidebar.radio(
     "Menú",
-    ["📊 Estadísticas de partido", "⏱️ Timeline de Partido", "🔥 Mapas de calor", "🎯 Tiros", "🗺️ Mapa 3x3", "🔗 Red de Pases", "⚡ Radar"],
+    ["📊 Estadísticas de partido", "⏱️ Timeline de Partido", "🔥 Mapas de calor", "🕓 Distribución de minutos", "🎯 Tiros", "🗺️ Mapa 3x3", "🔗 Red de Pases", "⚡ Radar"],
     index=0
 )
 
@@ -1012,6 +1124,81 @@ elif menu == "🔥 Mapas de calor":
                     fig = fig_heatmap(df_rot, f"{name} ({rol_cmp})")
                     with cols[i % 2]:
                         st.pyplot(fig, use_container_width=True)
-                        
+
+elif menu == "🕓 Distribución de minutos":
+    matches = discover_matches()
+    if not matches:
+        st.warning("No encontré partidos en data/minutos.")
+        st.stop()
+
+    labels = [m["label"] for m in matches]
+    sel = st.selectbox("Elegí partido", labels, index=0)
+    m = get_match_by_label(sel)
+    if not m:
+        st.error("No pude resolver el partido seleccionado.")
+        st.stop()
+
+    if not m.get("xml_equipo"):
+        st.warning("No encontré XML de Equipo para este partido (necesario para minutos por rol).")
+        st.stop()
+
+    # 1) Cargar presencias y calcular minutos
+    df_pres = cargar_equipo_presencias(m["xml_equipo"])
+    df_por_rol, df_por_jugador = minutos_por_presencia(df_pres)
+
+    cA, cB = st.columns(2)
+    with cA:
+        st.markdown("**Tabla — Minutos por jugador (rol)**")
+        st.dataframe(df_por_rol[["nombre","rol","mmss","minutos","n_tramos"]], use_container_width=True)
+        st.download_button(
+            "⬇️ Descargar CSV (por rol)",
+            df_por_rol.to_csv(index=False).encode("utf-8"),
+            file_name=f"{sel}_minutos_por_rol.csv",
+            mime="text/csv"
+        )
+    with cB:
+        st.markdown("**Tabla — Minutos por jugador (total)**")
+        st.dataframe(df_por_jugador[["nombre","mmss","minutos","n_tramos"]], use_container_width=True)
+        st.download_button(
+            "⬇️ Descargar CSV (total por jugador)",
+            df_por_jugador.to_csv(index=False).encode("utf-8"),
+            file_name=f"{sel}_minutos_por_jugador.csv",
+            mime="text/csv"
+        )
+
+    st.markdown("---")
+
+    # 2) Gráfico A — por jugador (rol)
+    if not df_por_rol.empty:
+        labels_A = [f"{n} ({r}) — n={t}" for n, r, t in zip(df_por_rol["nombre"], df_por_rol["rol"], df_por_rol["n_tramos"])]
+        vals_A   = df_por_rol["segundos"].tolist()
+        figA = fig_barh_minutos(labels_A, vals_A, "Minutos por jugador (por rol) — partido")
+        st.pyplot(figA, use_container_width=True)
+
+    # 3) Gráfico B — total por jugador
+    if not df_por_jugador.empty:
+        labels_B = [f"{n} — n={t}" for n, t in zip(df_por_jugador["nombre"], df_por_jugador["n_tramos"])]
+        vals_B   = df_por_jugador["segundos"].tolist()
+        figB = fig_barh_minutos(labels_B, vals_B, "Minutos por jugador (TOTAL) — partido")
+        st.pyplot(figB, use_container_width=True)
+
+    # 4) Gráfico C — por cada rol (ordenado desc.)
+    st.markdown("### Por rol (ordenado de mayor a menor)")
+    if df_por_rol.empty:
+        st.info("Sin datos de roles para este partido.")
+    else:
+        roles = sorted(df_por_rol["rol"].dropna().unique().tolist())
+        selected_roles = st.multiselect("Filtrar roles", roles, default=roles)
+        gcols = st.columns(2) if len(selected_roles) > 1 else [st]
+        i = 0
+        for rol in selected_roles:
+            g = df_por_rol[df_por_rol["rol"] == rol].sort_values("segundos", ascending=False)
+            labels_R = [f"{n} — n={t}" for n, t in zip(g["nombre"], g["n_tramos"])]
+            vals_R   = g["segundos"].tolist()
+            figR = fig_barh_minutos(labels_R, vals_R, f"Minutos por rol — {rol}")
+            with gcols[i % len(gcols)]:
+                st.pyplot(figR, use_container_width=True)
+            i += 1
+                 
 else:
     st.info("Las demás secciones se irán conectando con tus notebooks en los próximos pasos.")
