@@ -1,4 +1,4 @@
-# app.py — InsightFutsal (Estadísticas de partido adaptado del notebook)
+# app.py — InsightFutsal (Estadísticas de partido + paths corregidos)
 
 import os, re, unicodedata, math, glob
 from typing import Optional, Tuple, Dict, List
@@ -18,9 +18,10 @@ from PIL import Image
 st.set_page_config(page_title="InsightFutsal", page_icon="⚽", layout="wide")
 st.title("InsightFutsal")
 
-DATA_DIR   = "data/minutos"
-BADGE_DIR  = "images/equipos"   # ferro.png, <rival>.png
-BANNER_DIR = "images/banner"    # opcional
+DATA_MINUTOS = "data/minutos"   # XML TotalValues
+DATA_MATRIX  = "data/matrix"    # Matrix.xlsx / Matrix.csv
+BADGE_DIR    = "images/equipos" # ferro.png, <rival>.png
+BANNER_DIR   = "images/banner"  # opcional (no obligatorio)
 
 # --- estilo panel (idéntico a tu notebook) ---
 bg_green   = "#006633"
@@ -87,71 +88,49 @@ def ntext(s):
     return s.strip()
 def nlower(s): return ntext(s).lower()
 
+# ---- LISTADO: Fecha N° - Rival (desde XML en data/minutos) ----
 def list_matches() -> List[str]:
-    """Devuelve ['Fecha 8 - Union Ezpeleta', ...] a partir de los XML en data/minutos."""
-    if not os.path.isdir(DATA_DIR): return []
-    # buscamos archivos '* - asXML TotalValues.xml' (jugadores)
-    pats = glob.glob(os.path.join(DATA_DIR, "* - XML TotalValues.xml"))
-    out = []
+    """
+    Busca archivos:
+      data/minutos/Fecha N° - Rival - XML TotalValues.xml
+    y devuelve labels 'Fecha N° - Rival'
+    """
+    if not os.path.isdir(DATA_MINUTOS): return []
+    pats = glob.glob(os.path.join(DATA_MINUTOS, "Fecha * - * - XML TotalValues.xml"))
+    labels = []
+    rx = re.compile(r"^Fecha\s*([\d]+)\s*-\s*(.+?)\s*-\s*XML TotalValues\.xml$", re.IGNORECASE)
     for p in sorted(pats):
         base = os.path.basename(p)
-        # 'Union Ezpeleta - asXML TotalValues.xml' -> rival
-        rival = re.sub(r"(?i)\s*-\s*xml\s*totalvalues\.xml$", "", base).strip()
-        # si existe un archivo 'Fecha N - Rival - XML TotalValues.xml', usamos ese texto para el selector
-        # si no, mostramos solo el rival
-        # En tu repo los “Fecha” pueden estar en otra carpeta, así que seleccionamos por rival.
-        # El label que mostramos: 'Fecha ? - Rival' si en el nombre detectamos 'Fecha ...'
-        label = None
-        m = re.search(r"(?i)(fecha\s*\d+)", base)
-        if m:
-            label = f"{m.group(1).title()} - {rival}"
-        else:
-            label = rival
-        out.append(label)
-    # eliminar duplicados preservando orden
-    seen = set(); clean = []
-    for x in out:
-        if x not in seen:
-            clean.append(x); seen.add(x)
-    return clean
+        m = rx.match(base)
+        if not m: 
+            continue
+        fecha = m.group(1).strip()
+        rival = m.group(2).strip()
+        labels.append(f"Fecha {fecha} - {rival}")
+    return labels
 
-def selected_rival_from_label(label: str) -> str:
+def rival_from_label(label: str) -> str:
     # "Fecha 8 - Union Ezpeleta" -> "Union Ezpeleta"
-    parts = [p.strip() for p in label.split(" - ")]
-    return parts[-1] if parts else label
+    parts = [p.strip() for p in label.split(" - ", 1)]
+    return parts[1] if len(parts) == 2 else label
 
-def infer_paths_for_rival(rival: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+def infer_paths_for_label(label: str) -> Tuple[Optional[str], Optional[str]]:
     """
-    Dado 'Union Ezpeleta' busca:
-      XML_EQUIPO:   data/minutos/UnionEzpeletaEq - XML TotalValues.xml (o variantes)
-      XML_JUGADORES:data/minutos/Union Ezpeleta - XML TotalValues.xml
-      MATRIX_PATH:  data/minutos/Union Ezpeleta - Matrix.xlsx/.csv (opcional)
+    A partir de 'Fecha N° - Rival' arma:
+      XML_PATH:   data/minutos/Fecha N° - Rival - XML TotalValues.xml
+      MATRIX_PATH:data/matrix/ Fecha N° - Rival - Matrix.xlsx (o .csv si existiera)
     """
-    cand_eq = []
-    cand_jg = []
-    cand_mx = []
-    variations = [
-        rival,
-        rival.replace(" ", ""),
-        rival.replace(" ", "_"),
-        rival.upper(),
-        rival.lower(),
-    ]
-    for v in variations:
-        cand_eq += glob.glob(os.path.join(DATA_DIR, f"{v}Eq - XML TotalValues.xml"))
-        cand_jg += glob.glob(os.path.join(DATA_DIR, f"{v} - XML TotalValues.xml"))
-        cand_mx += glob.glob(os.path.join(DATA_DIR, f"{v} - Matrix.xlsx"))
-        cand_mx += glob.glob(os.path.join(DATA_DIR, f"{v} - Matrix.csv"))
-    xml_eq = cand_eq[0] if cand_eq else None
-    xml_jg = cand_jg[0] if cand_jg else None
-    mx     = cand_mx[0] if cand_mx else None
-    return xml_eq, xml_jg, mx
+    xml_path = os.path.join(DATA_MINUTOS, f"{label} - XML TotalValues.xml")
+    mx_xlsx  = os.path.join(DATA_MATRIX,  f"{label} - Matrix.xlsx")
+    mx_csv   = os.path.join(DATA_MATRIX,  f"{label} - Matrix.csv")
+    matrix_path = mx_xlsx if os.path.isfile(mx_xlsx) else (mx_csv if os.path.isfile(mx_csv) else None)
+    return (xml_path if os.path.isfile(xml_path) else None), matrix_path
 
 # =========================
 # PARSERS SEGÚN TU NOTEBOOK
 # =========================
 def parse_possession_from_equipo(xml_path: str) -> Tuple[float, float]:
-    """Poseción desde XML EQUIPO por duración de instancias."""
+    """Posesión desde XML (duración de instancias con code==tiempo posecion ferro/rival)."""
     if not xml_path or not os.path.isfile(xml_path): return 0.0, 0.0
     tree = ET.parse(xml_path)
     root = tree.getroot()
@@ -174,7 +153,7 @@ def parse_possession_from_equipo(xml_path: str) -> Tuple[float, float]:
 
 def load_matrix(path: str) -> Tuple[pd.DataFrame, str, Dict[str,str]]:
     if path.lower().endswith(".xlsx"):
-        # requiere openpyxl en requirements (si usás xlsx)
+        # requiere openpyxl si usás xlsx (agregalo a requirements.txt)
         df = pd.read_excel(path, header=0)
     elif path.lower().endswith(".csv"):
         try:
@@ -415,13 +394,13 @@ def draw_key_stats_panel(home_name: str, away_name: str,
         lw = 0 if maxval==0 else bar_w*(lv/maxval)*scale
         rw = 0 if maxval==0 else bar_w*(rv/maxval)*scale
 
+        ltxt = f"{lv:.1f}%" if label in PERCENT_ROWS else f"{int(lv)}"
+        rtxt = f"{rv:.1f}%" if label in PERCENT_ROWS else f"{int(rv)}"
+
         ax.add_patch(Rectangle((mid_x - 0.02 - lw, lane_y), lw, lane_h,
                                facecolor=ferro_col, edgecolor=ferro_col, alpha=ferro_alpha))
         ax.add_patch(Rectangle((mid_x + 0.02, lane_y), rw, lane_h,
                                facecolor=rival_col, edgecolor=rival_col, alpha=rival_alpha))
-
-        ltxt = f"{lv:.1f}%" if label in PERCENT_ROWS else f"{int(lv)}"
-        rtxt = f"{rv:.1f}%" if label in PERCENT_ROWS else f"{int(rv)}"
         ax.text(mid_x - bar_w - 0.030, lane_y + lane_h*0.45, ltxt, ha="right", va="center",
                 fontsize=13, weight="bold", color=text_w)
         ax.text(mid_x + bar_w + 0.030, lane_y + lane_h*0.45, rtxt, ha="left",  va="center",
@@ -449,6 +428,7 @@ def badge_path_for(name: str) -> Optional[str]:
         os.path.join(BADGE_DIR, f"{nm}.jpg"),
         os.path.join(BADGE_DIR, f"{nm.replace(' ','_')}.png"),
         os.path.join(BADGE_DIR, f"{nm.replace(' ','')}.png"),
+        os.path.join(BADGE_DIR, f"{nm.replace(' ','-')}.png"),
     ]
     for p in cands:
         if os.path.isfile(p): return p
@@ -466,19 +446,18 @@ menu = st.sidebar.radio(
 if menu == "📊 Estadísticas de partido":
     matches = list_matches()
     if not matches:
-        st.warning("No encontré partidos en data/minutos/*. Asegurate de subir:\n\n- `<Rival> - asXML TotalValues.xml`\n- `<Rival>Eq - asXML TotalValues.xml`\n- (opcional) `<Rival> - Matrix.xlsx` o `.csv`")
+        st.warning("No encontré partidos en data/minutos con patrón: 'Fecha N° - Rival - XML TotalValues.xml'.")
         st.stop()
 
     sel = st.selectbox("Elegí partido", matches, index=0)
-    rival = selected_rival_from_label(sel)
+    rival = rival_from_label(sel)
 
-    XML_EQUIPO, XML_JUGADORES, MATRIX_PATH = infer_paths_for_rival(rival)
+    XML_PATH, MATRIX_PATH = infer_paths_for_label(sel)
 
-    # 1) Posesión (equipo)
-    pos_m, pos_r = parse_possession_from_equipo(XML_EQUIPO) if XML_EQUIPO else (0.0, 0.0)
+    # 1) Posesión desde XML (TotalValues)
+    pos_m, pos_r = parse_possession_from_equipo(XML_PATH) if XML_PATH else (0.0, 0.0)
 
     # 2) Matrix (métricas por equipo)
-    mx = {"FERRO": {}, "RIVAL": {}}
     if MATRIX_PATH and os.path.isfile(MATRIX_PATH):
         try:
             mx = compute_from_matrix(MATRIX_PATH)
@@ -486,50 +465,48 @@ if menu == "📊 Estadísticas de partido":
             st.error(f"No pude leer MATRIX '{os.path.basename(MATRIX_PATH)}': {e}")
             mx = {"FERRO": {}, "RIVAL": {}}
     else:
-        # si no hay MATRIX, dejamos 0 (podemos conectar otro XML si querés)
-        mx = {"FERRO": {k:0 for k in ["Pases totales","Pases OK %","Tiros","Tiros al arco","Recuperaciones","Duelos Ganados","% Duelos Ganados","Corners","Faltas","Goles","Asistencias","Pases Clave"]},
-              "RIVAL": {k:0 for k in ["Pases totales","Pases OK %","Tiros","Tiros al arco","Recuperaciones","Duelos Ganados","% Duelos Ganados","Corners","Faltas","Goles","Asistencias","Pases Clave"]}}
+        mx = {"FERRO": {}, "RIVAL": {}}
 
-    # 3) Jugadores (último tercio / al área)
+    # 3) Jugadores (último tercio / al área) — usando el mismo XML TotalValues
     last_m = last_r = area_m = area_r = 0
-    if XML_JUGADORES and os.path.isfile(XML_JUGADORES):
-        jug = parse_instances_jugadores(XML_JUGADORES)
+    if XML_PATH and os.path.isfile(XML_PATH):
+        jug = parse_instances_jugadores(XML_PATH)
         last_m, last_r, area_m, area_r = passes_last_third_and_area(jug)
 
     # Armar FERRO / RIVAL para el render (nombres exactos)
     FERRO = {
         "Posesión %":           float(pos_m),
-        "Pases totales":        int(mx["FERRO"].get("Pases totales", 0)),
-        "Pases OK %":           float(mx["FERRO"].get("Pases OK %", 0)),
+        "Pases totales":        int(mx.get("FERRO", {}).get("Pases totales", 0)),
+        "Pases OK %":           float(mx.get("FERRO", {}).get("Pases OK %", 0)),
         "Pases último tercio":  int(last_m),
         "Pases al área":        int(area_m),
-        "Tiros":                int(mx["FERRO"].get("Tiros", 0)),
-        "Tiros al arco":        int(mx["FERRO"].get("Tiros al arco", 0)),
-        "Recuperaciones":       int(mx["FERRO"].get("Recuperaciones", 0)),
-        "Duelos ganados":       int(mx["FERRO"].get("Duelos Ganados", 0)),
-        "% Duelos ganados":     float(mx["FERRO"].get("% Duelos Ganados", 0)),
-        "Corners":              int(mx["FERRO"].get("Corners", 0)),
-        "Faltas":               int(mx["FERRO"].get("Faltas", 0)),
-        "Goles":                int(mx["FERRO"].get("Goles", 0)),
-        "Asistencias":          int(mx["FERRO"].get("Asistencias", 0)),
-        "Pases clave":          int(mx["FERRO"].get("Pases Clave", 0)),
+        "Tiros":                int(mx.get("FERRO", {}).get("Tiros", 0)),
+        "Tiros al arco":        int(mx.get("FERRO", {}).get("Tiros al arco", 0)),
+        "Recuperaciones":       int(mx.get("FERRO", {}).get("Recuperaciones", 0)),
+        "Duelos ganados":       int(mx.get("FERRO", {}).get("Duelos Ganados", 0)),
+        "% Duelos ganados":     float(mx.get("FERRO", {}).get("% Duelos Ganados", 0)),
+        "Corners":              int(mx.get("FERRO", {}).get("Corners", 0)),
+        "Faltas":               int(mx.get("FERRO", {}).get("Faltas", 0)),
+        "Goles":                int(mx.get("FERRO", {}).get("Goles", 0)),
+        "Asistencias":          int(mx.get("FERRO", {}).get("Asistencias", 0)),
+        "Pases clave":          int(mx.get("FERRO", {}).get("Pases Clave", 0)),
     }
     RIVAL = {
         "Posesión %":           float(pos_r),
-        "Pases totales":        int(mx["RIVAL"].get("Pases totales", 0)),
-        "Pases OK %":           float(mx["RIVAL"].get("Pases OK %", 0)),
+        "Pases totales":        int(mx.get("RIVAL", {}).get("Pases totales", 0)),
+        "Pases OK %":           float(mx.get("RIVAL", {}).get("Pases OK %", 0)),
         "Pases último tercio":  int(last_r),
         "Pases al área":        int(area_r),
-        "Tiros":                int(mx["RIVAL"].get("Tiros", 0)),
-        "Tiros al arco":        int(mx["RIVAL"].get("Tiros al arco", 0)),
-        "Recuperaciones":       int(mx["RIVAL"].get("Recuperaciones", 0)),
-        "Duelos ganados":       int(mx["RIVAL"].get("Duelos Ganados", 0)),
-        "% Duelos ganados":     float(mx["RIVAL"].get("% Duelos Ganados", 0)),
-        "Corners":              int(mx["RIVAL"].get("Corners", 0)),
-        "Faltas":               int(mx["RIVAL"].get("Faltas", 0)),
-        "Goles":                int(mx["RIVAL"].get("Goles", 0)),
-        "Asistencias":          int(mx["RIVAL"].get("Asistencias", 0)),
-        "Pases clave":          int(mx["RIVAL"].get("Pases Clave", 0)),
+        "Tiros":                int(mx.get("RIVAL", {}).get("Tiros", 0)),
+        "Tiros al arco":        int(mx.get("RIVAL", {}).get("Tiros al arco", 0)),
+        "Recuperaciones":       int(mx.get("RIVAL", {}).get("Recuperaciones", 0)),
+        "Duelos ganados":       int(mx.get("RIVAL", {}).get("Duelos Ganados", 0)),
+        "% Duelos ganados":     float(mx.get("RIVAL", {}).get("% Duelos Ganados", 0)),
+        "Corners":              int(mx.get("RIVAL", {}).get("Corners", 0)),
+        "Faltas":               int(mx.get("RIVAL", {}).get("Faltas", 0)),
+        "Goles":                int(mx.get("RIVAL", {}).get("Goles", 0)),
+        "Asistencias":          int(mx.get("RIVAL", {}).get("Asistencias", 0)),
+        "Pases clave":          int(mx.get("RIVAL", {}).get("Pases Clave", 0)),
     }
 
     ferro_logo = badge_path_for("ferro")
