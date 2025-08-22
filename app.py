@@ -11,6 +11,10 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 from PIL import Image
+import seaborn as sns
+from matplotlib.colors import LinearSegmentedColormap
+from matplotlib.patches import Arc, Circle as MplCircle
+
 
 # =========================
 # CONFIG
@@ -347,6 +351,149 @@ def draw_timeline_panel(rival_name: str, tl: dict,
     st.pyplot(fig, use_container_width=True)
     plt.close(fig)
 
+# =========================
+# HEATMAPS — helpers
+# =========================
+
+# Keywords de pases (mismo criterio que tu notebook)
+KEYWORDS_PASES = [
+    "pase corto frontal", "pase corto lateral",
+    "pase largo frontal", "pase largo lateral",
+    "pase progresivo frontal", "pase progresivo lateral",
+    "pase progresivo frontal cpie", "pase progresivo lateral cpie",
+    "salida de arco progresivo cmano",
+    "pase corto frontal cpie", "pase corto lateral cpie",
+    "salida de arco corto cmano"
+]
+KEYWORDS_PASES = [k.lower() for k in KEYWORDS_PASES]
+
+def cargar_datos_nacsport(xml_path: str) -> pd.DataFrame:
+    """Lee el XML (TotalValues) y devuelve DF con columnas:
+       jugador (code), pos_x_list, pos_y_list, labels(list)
+    """
+    if not xml_path or not os.path.isfile(xml_path):
+        return pd.DataFrame(columns=["jugador","pos_x_list","pos_y_list","labels"])
+    root = ET.parse(xml_path).getroot()
+    data = []
+    for inst in root.findall(".//instance"):
+        jugador = ntext(inst.findtext("code"))
+        pos_x = [float(px.text) for px in inst.findall("pos_x") if (px.text or "").strip()!=""]
+        pos_y = [float(py.text) for py in inst.findall("pos_y") if (py.text or "").strip()!=""]
+        labels = [ntext(lbl.findtext("text")) for lbl in inst.findall("label")]
+        data.append({"jugador": jugador, "pos_x_list": pos_x, "pos_y_list": pos_y, "labels": labels})
+    return pd.DataFrame(data)
+
+def _es_evento_pase_o_tiro(labels: List[str]) -> bool:
+    lbls = [nlower(l or "") for l in labels]
+    is_shot = any("tiro" in l for l in lbls) or any("remate" in l for l in lbls)
+    is_pass = any(any(k in l for k in KEYWORDS_PASES) for l in lbls)
+    return is_shot or is_pass
+
+def filtrar_coords_por_evento(row: pd.Series) -> Tuple[List[float], List[float]]:
+    """Si es pase (keywords) o tiro -> solo primer punto; si no, todos."""
+    if _es_evento_pase_o_tiro(row.get("labels", [])):
+        return row["pos_x_list"][:1], row["pos_y_list"][:1]
+    return row["pos_x_list"], row["pos_y_list"]
+
+def parse_player_and_role(code: str) -> Tuple[str, Optional[str]]:
+    """'Bruno (Ala I)' -> ('Bruno','Ala I');  'Bruno' -> ('Bruno',None)"""
+    m = re.match(r"^(.*)\((.*)\)\s*$", code.strip())
+    if m:
+        name = ntext(m.group(1)).strip()
+        role = ntext(m.group(2)).strip()
+        return name, role
+    return code.strip(), None
+
+def explode_coords_for_heatmap(df_raw: pd.DataFrame) -> pd.DataFrame:
+    """Devuelve DF con columnas: player_name, role, pos_x, pos_y"""
+    if df_raw.empty:
+        return pd.DataFrame(columns=["player_name","role","pos_x","pos_y"])
+
+    tmp = df_raw.copy()
+    tmp["pos_x_list"], tmp["pos_y_list"] = zip(*tmp.apply(filtrar_coords_por_evento, axis=1))
+    tmp = tmp.explode(["pos_x_list","pos_y_list"], ignore_index=True)
+    tmp = tmp.rename(columns={"pos_x_list":"pos_x","pos_y_list":"pos_y"})
+    tmp = tmp.dropna(subset=["pos_x","pos_y"])
+
+    names_roles = tmp["jugador"].apply(parse_player_and_role)
+    tmp["player_name"] = names_roles.apply(lambda t: t[0])
+    tmp["role"]        = names_roles.apply(lambda t: t[1])
+
+    # normalización de strings
+    tmp["player_name"] = tmp["player_name"].map(ntext)
+    tmp["role"]        = tmp["role"].map(lambda x: ntext(x) if x else None)
+
+    return tmp[["player_name","role","pos_x","pos_y"]]
+
+# Cancha futsal horizontal (35 x 20)
+def draw_futsal_pitch_horizontal(ax):
+    ax.set_facecolor("white")
+    ancho = 35  # largo
+    alto  = 20  # ancho
+
+    ax.plot([0, ancho],[0,0], color="black")
+    ax.plot([0, ancho],[alto,alto], color="black")
+    ax.plot([0,0],[0,alto], color="black")
+    ax.plot([ancho,ancho],[0,alto], color="black")
+
+    ax.plot([ancho/2, ancho/2],[0,alto], color="black")
+
+    area_izq = Arc((0, alto/2), width=8, height=12, angle=0, theta1=270, theta2=90, color="black")
+    ax.add_patch(area_izq)
+    ax.plot([0,1.0],[8.5,8.5], color="black", linewidth=2)
+    ax.plot([0,1.0],[11.5,11.5], color="black", linewidth=2)
+    ax.plot([1.0,1.0],[8.5,11.5], color="black", linewidth=2)
+
+    area_der = Arc((ancho, alto/2), width=8, height=12, angle=0, theta1=90, theta2=270, color="black")
+    ax.add_patch(area_der)
+    ax.plot([ancho, ancho-1.0],[8.5,8.5], color="black", linewidth=2)
+    ax.plot([ancho, ancho-1.0],[11.5,11.5], color="black", linewidth=2)
+    ax.plot([ancho-1.0, ancho-1.0],[8.5,11.5], color="black", linewidth=2)
+
+    centre_circle = MplCircle((ancho/2, alto/2), 4, color="black", fill=False)
+    centre_spot   = MplCircle((ancho/2, alto/2), 0.2, color="black")
+    ax.add_patch(centre_circle); ax.add_patch(centre_spot)
+
+    ax.annotate('', xy=(ancho-2, 2), xytext=(ancho-6, 2),
+                arrowprops=dict(facecolor='blue', arrowstyle='->', lw=3))
+    ax.text(ancho-2, 3, 'Sentido de Ataque', color='blue', fontsize=10, ha='right')
+
+    ax.set_xlim(0, ancho); ax.set_ylim(0, alto); ax.axis('off')
+
+def rotate_coords_for_attack_right(df: pd.DataFrame, role: Optional[str]=None) -> pd.DataFrame:
+    """Rota coords del XML (20x35) a cancha horizontal (35x20).
+       Y además invierte Y para Ala I / Ala D (ajuste táctico).
+    """
+    if df.empty: return df.copy()
+    ancho_original = 20
+    alto_original  = 35
+    out = df.copy()
+    out["x_rot"] = alto_original - out["pos_y"]
+    out["y_rot"] = out["pos_x"]
+    if role and role in {"Ala I","Ala D"}:
+        out["y_rot"] = ancho_original - out["y_rot"]
+    return out
+
+def fig_heatmap(df_xy: pd.DataFrame, titulo: str) -> plt.Figure:
+    """Genera la figura de heatmap pastel sobre cancha."""
+    fig, ax = plt.subplots(figsize=(10, 6))
+    draw_futsal_pitch_horizontal(ax)
+    if df_xy.empty:
+        ax.text(0.5, 0.5, "Sin datos para el filtro", ha="center", va="center", transform=ax.transAxes)
+        return fig
+
+    pastel_cmap = LinearSegmentedColormap.from_list(
+        "pastel_heatmap", ["#a8dadc", "#bde0c6", "#ffe5a1", "#f6a192"]
+    )
+    # límites del clip en sistema rotado: x∈[0,35], y∈[0,20]
+    sns.kdeplot(
+        x=df_xy["x_rot"], y=df_xy["y_rot"],
+        fill=True, cmap=pastel_cmap, bw_adjust=0.4,
+        levels=50, alpha=0.75, ax=ax,
+        clip=((0, 35), (0, 20))
+    )
+    ax.set_title(titulo, fontsize=14)
+    return fig
 
 # =========================
 # PARSERS SEGÚN TU NOTEBOOK
@@ -679,7 +826,7 @@ def badge_path_for(name: str) -> Optional[str]:
 # =========================
 menu = st.sidebar.radio(
     "Menú",
-    ["📊 Estadísticas de partido", "⏱️ Timeline de Partido", "🎯 Tiros", "🗺️ Mapa 3x3", "🔗 Red de Pases", "⚡ Radar"],
+    ["📊 Estadísticas de partido", "⏱️ Timeline de Partido", "🔥 Mapas de calor", "🎯 Tiros", "🗺️ Mapa 3x3", "🔗 Red de Pases", "⚡ Radar"],
     index=0
 )
 
@@ -794,5 +941,77 @@ elif menu == "⏱️ Timeline de Partido":
         rival_logo_path=rival_logo
     )
 
+# === Nueva página
+elif menu == "🔥 Mapas de calor":
+    matches = list_matches()
+    if not matches:
+        st.warning("No encontré partidos en data/minutos con patrón: 'Fecha N° - Rival - XML TotalValues.xml'.")
+        st.stop()
+
+    sel = st.selectbox("Elegí partido", matches, index=0)
+    XML_PATH, _ = infer_paths_for_label(sel)
+    if not XML_PATH:
+        st.error("No se encontró el XML del partido seleccionado.")
+        st.stop()
+
+    # Cargar y preparar coords
+    df_raw = cargar_datos_nacsport(XML_PATH)
+    base   = explode_coords_for_heatmap(df_raw)
+
+    if base.empty:
+        st.info("El XML no contiene coordenadas utilizables para mapas de calor.")
+        st.stop()
+
+    tab1, tab2, tab3 = st.tabs(["Por jugador (total)", "Por jugador y rol", "Comparar jugadores por rol"])
+
+    # --- Tab 1: Por jugador (total)
+    with tab1:
+        jugadores = sorted(base["player_name"].dropna().unique().tolist())
+        jugador = st.selectbox("Jugador", jugadores, key="hm_j_total")
+        df_j = base[base["player_name"] == jugador]
+        # Total = ignorar rol ⇒ no se invierte Y
+        df_rot = rotate_coords_for_attack_right(df_j, role=None)
+        fig = fig_heatmap(df_rot, f"Mapa de Calor — {jugador} (Total)")
+        st.pyplot(fig, use_container_width=True)
+
+    # --- Tab 2: Por jugador y rol
+    with tab2:
+        jugadores = sorted(base["player_name"].dropna().unique().tolist())
+        jugador = st.selectbox("Jugador", jugadores, key="hm_j_rol_player")
+        roles    = sorted(base.loc[base["player_name"]==jugador, "role"].dropna().unique().tolist())
+        if not roles:
+            st.info("Ese jugador no tiene roles etiquetados en este partido.")
+        else:
+            rol = st.selectbox("Rol", roles, key="hm_j_rol_role")
+            df_jr = base[(base["player_name"]==jugador) & (base["role"]==rol)]
+            df_rot = rotate_coords_for_attack_right(df_jr, role=rol)
+            fig = fig_heatmap(df_rot, f"Mapa de Calor — {jugador} ({rol})")
+            st.pyplot(fig, use_container_width=True)
+
+    # --- Tab 3: Comparar jugadores por rol
+    with tab3:
+        # rol de referencia
+        roles_all = sorted(base["role"].dropna().unique().tolist())
+        if not roles_all:
+            st.info("Este partido no tiene roles etiquetados para comparar.")
+        else:
+            rol_cmp = st.selectbox("Rol", roles_all, key="hm_cmp_role")
+            # elegimos múltiples jugadores que hayan jugado ese rol
+            jugadores_rol = sorted(base.loc[base["role"]==rol_cmp, "player_name"].dropna().unique().tolist())
+            sel_players = st.multiselect("Jugadores", jugadores_rol, default=jugadores_rol[:2], key="hm_cmp_players")
+
+            if not sel_players:
+                st.info("Seleccioná al menos un jugador.")
+            else:
+                # Layout flexible: 2 por fila
+                n = len(sel_players)
+                cols = st.columns(2) if n > 1 else [st]
+                for i, name in enumerate(sel_players):
+                    df_jr = base[(base["player_name"]==name) & (base["role"]==rol_cmp)]
+                    df_rot = rotate_coords_for_attack_right(df_jr, role=rol_cmp)
+                    fig = fig_heatmap(df_rot, f"{name} ({rol_cmp})")
+                    with cols[i % 2]:
+                        st.pyplot(fig, use_container_width=True)
+                        
 else:
     st.info("Las demás secciones se irán conectando con tus notebooks en los próximos pasos.")
