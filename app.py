@@ -1523,7 +1523,7 @@ def badge_path_for(name: str) -> Optional[str]:
 # =========================
 menu = st.sidebar.radio(
     "Menú",
-    ["📊 Estadísticas de partido", "⏱️ Timeline de Partido", "🔥 Mapas de calor", "🕓 Distribución de minutos","🔗 Red de Pases", "🛡️ Pérdidas y Recuperaciones", "🎯 Tiros", "🗺️ Mapa 3x3", "⚡ Radar"],
+    ["📊 Estadísticas de partido", "⏱️ Timeline de Partido", "🔥 Mapas de calor", "🕓 Distribución de minutos","🔗 Red de Pases", "🛡️ Pérdidas y Recuperaciones", "🎯 Mapa de tiros", "🗺️ Mapa 3x3", "⚡ Radar"],
     index=0
 )
 
@@ -1920,6 +1920,304 @@ elif menu == "🛡️ Pérdidas y Recuperaciones":
     st.pyplot(figBR, use_container_width=True)
     st.pyplot(figBP, use_container_width=True)
 
+elif menu == "🎯 Mapa de tiros":
+    st.subheader("Mapa de tiros — por partido / jugador / rol")
+
+    # --------------------------
+    # Resolver partido y XML
+    # --------------------------
+    matches = discover_matches()
+    if not matches:
+        st.warning("No encontré partidos en data/minutos.")
+        st.stop()
+
+    labels = [m["label"] for m in matches]
+    sel = st.selectbox("Elegí partido", labels, index=0)
+    m = get_match_by_label(sel)
+    if not m:
+        st.error("No pude resolver el partido seleccionado.")
+        st.stop()
+
+    # Preferimos NacSport; si no hubiera, intentamos con TotalValues (se filtra por 'tiro' igualmente)
+    xml_path = m.get("xml_nacsport") or m.get("xml_jugadores") or m.get("xml_totalvalues")
+    if not xml_path or not os.path.isfile(xml_path):
+        st.warning("No encontré XML NacSport/TotalValues para este partido.")
+        st.stop()
+
+    # --------------------------
+    # Helpers específicos
+    # --------------------------
+    import re, xml.etree.ElementTree as ET
+    from collections import Counter
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Rectangle, Arc
+
+    ANCHO, ALTO = 35.0, 20.0
+    N_COLS, N_ROWS = 3, 3
+    FLIP_TO_RIGHT  = True   # ataque hacia la derecha
+    FLIP_VERTICAL  = True   # espejo vertical (arriba/abajo)
+    GOAL_PULL      = 0.60   # “tirón” suave hacia el arco derecho (visual)
+
+    def ntext(s):
+        import unicodedata
+        if s is None: return ""
+        s = unicodedata.normalize("NFD", str(s))
+        s = "".join(ch for ch in s if unicodedata.category(ch) != "Mn")
+        return s.strip()
+    def nlower(s): return ntext(s).lower()
+
+    def parse_instances_generic(xml_path):
+        """Lee instancias (NacSport o TotalValues). Devuelve lista y max_x/max_y para escalar."""
+        root = ET.parse(xml_path).getroot()
+        out, all_x, all_y = [], [], []
+        for inst in root.findall(".//instance"):
+            code   = ntext(inst.findtext("code"))
+            labels = [nlower(t.text) for t in inst.findall("./label/text")]
+            xs = [int(x.text) for x in inst.findall("./pos_x") if (x.text or "").isdigit()]
+            ys = [int(y.text) for y in inst.findall("./pos_y") if (y.text or "").isdigit()]
+            if xs and ys: all_x += xs; all_y += ys
+            out.append({"code": code, "labels": labels, "xs": xs, "ys": ys})
+        max_x = float(max(all_x) if all_x else 19)
+        max_y = float(max(all_y) if all_y else 34)
+        return out, max_x, max_y
+
+    # ¿Es tiro?
+    def is_shot(ev):
+        s = nlower(ev["code"])
+        patt = re.compile(r"\b(tiro|remate)\b")
+        return bool(patt.search(s) or any(patt.search(l or "") for l in ev["labels"]))
+
+    # Extraer jugador y rol desde "Nombre (Rol)". Si no, intentamos detectar dentro de labels.
+    _NAME_ROLE_RE = re.compile(r"^\s*([^(]+?)\s*\(([^)]+)\)\s*$")
+    def extract_name_role(ev):
+        m = _NAME_ROLE_RE.match(ev["code"])
+        if m:
+            return m.group(1).strip(), m.group(2).strip()
+        # fallback: buscar "(Rol)" en labels
+        for l in ev["labels"]:
+            if not l: continue
+            mx = re.search(r"\(([^)]+)\)", l)
+            if mx:
+                return None, mx.group(1).strip()
+        return None, None
+
+    # Clasificación del resultado (estricta)
+    KEYS = {
+        "gol":        re.compile(r"\bgol\b"),
+        "ataj":       re.compile(r"\bataj"),
+        "al_arco":    re.compile(r"\btiro\s*al\s*arco\b"),
+        "bloqueado":  re.compile(r"\bbloquead"),
+        "desviado":   re.compile(r"\bdesviad"),
+        "errado":     re.compile(r"\berrad"),
+        "pifia":      re.compile(r"\bpifi"),
+    }
+    def has(ev, key):
+        patt = KEYS[key]
+        if patt.search(nlower(ev["code"])): return True
+        return any(patt.search(l or "") for l in ev["labels"])
+    def shot_result_strict(ev):
+        if has(ev, "gol"):                         return "Gol"
+        if has(ev, "ataj") or has(ev, "al_arco"):  return "Tiro Atajado"
+        if has(ev, "bloqueado"):                   return "Tiro Bloqueado"
+        if has(ev, "desviado"):                    return "Tiro Desviado"
+        if has(ev, "errado") or has(ev, "pifia"):  return "Tiro Errado - Pifia"
+        return "Sin clasificar"
+
+    # Característica del ORIGEN
+    CHAR_PATTS = [
+        ("de Corner (desde Banda)", re.compile(r"corner\s*\(desde\s*banda\)")),
+        ("de Corner (centro)",      re.compile(r"corner\s*\(centro\)")),
+        ("de Jugada (centro)",      re.compile(r"jugada\s*\(centro\)")),
+        ("de Tiro Libre",           re.compile(r"tiro\s*libre")),
+        ("de Rebote",               re.compile(r"\brebote\b")),
+        ("de Lateral",              re.compile(r"\blateral\b")),
+        ("de Jugada",               re.compile(r"\bde\s*jugada\b")),
+    ]
+    def shot_characteristic(ev):
+        s = nlower(ev["code"]) + " " + " ".join(ev["labels"])
+        for name, patt in CHAR_PATTS:
+            if patt.search(s): return name
+        return "de Jugada"
+
+    # Mapeo de coords al campo
+    def map_raw_to_pitch(x_raw, y_raw, max_x, max_y, flip=True, pull=0.0, flip_v=False):
+        x = (y_raw / max_y) * ANCHO
+        y = (x_raw / max_x) * ALTO
+        if flip:   x = ANCHO - x
+        if flip_v: y = ALTO - y
+        if pull and 0.0 < pull < 1.0:
+            x = x + pull * (ANCHO - x)
+        x = float(np.clip(x, 0.0, ANCHO)); y = float(np.clip(y, 0.0, ALTO))
+        return x, y
+
+    def draw_futsal_pitch_grid(ax):
+        dx, dy = ANCHO / N_COLS, ALTO / N_ROWS
+        ax.set_facecolor("white")
+        ax.plot([0, ANCHO], [0, 0], color="black")
+        ax.plot([0, ANCHO], [ALTO, ALTO], color="black")
+        ax.plot([0, 0], [0, ALTO], color="black")
+        ax.plot([ANCHO, ANCHO], [0, ALTO], color="black")
+        ax.plot([ANCHO/2, ANCHO/2], [0, ALTO], color="black")
+        ax.add_patch(Arc((0, ALTO/2), 8, 12, angle=0, theta1=270, theta2=90, color="black"))
+        ax.add_patch(Arc((ANCHO, ALTO/2), 8, 12, angle=0, theta1=90, theta2=270, color="black"))
+        ax.add_patch(plt.Circle((ANCHO/2, ALTO/2), 4, color="black", fill=False))
+        ax.add_patch(plt.Circle((ANCHO/2, ALTO/2), 0.2, color="black"))
+        for j in range(N_ROWS):
+            for i in range(N_COLS):
+                x0, y0 = i * dx, j * dy
+                ax.add_patch(Rectangle((x0, y0), dx, dy, linewidth=0.6, edgecolor='gray', facecolor='none'))
+                zona = j * N_COLS + i + 1
+                ax.text(x0 + dx - 0.4, y0 + dy - 0.4, str(zona), ha='right', va='top', fontsize=9, color='gray')
+        ax.set_xlim(0, ANCHO); ax.set_ylim(0, ALTO); ax.axis('off')
+
+    def collect_shots(xml_path):
+        evs, max_x, max_y = parse_instances_generic(xml_path)
+        shots = []
+        for ev in evs:
+            if not is_shot(ev):
+                continue
+            # Solo mis jugadores: "Nombre (Rol)"; ignoramos "Categoría - Equipo Rival" y tiempos
+            name, role = extract_name_role(ev)
+            code_norm = nlower(ev["code"])
+            if any(code_norm.startswith(prefix) for prefix in (
+                "categoria - equipo rival", "categoría - equipo rival",
+                "tiempo posecion ferro", "tiempo posesion ferro",
+                "tiempo posecion rival", "tiempo posesion rival",
+                "tiempo no jugado"
+            )):
+                continue
+            # si no hay nombre (no está "Nombre (Rol)") lo descartamos
+            if not name and not role:
+                continue
+            if not (ev["xs"] and ev["ys"]):
+                continue
+
+            coords = [map_raw_to_pitch(xr, yr, max_x, max_y,
+                                       flip=FLIP_TO_RIGHT, pull=GOAL_PULL, flip_v=FLIP_VERTICAL)
+                      for xr, yr in zip(ev["xs"], ev["ys"])]
+
+            # origen = punto más lejano al arco derecho (x más chico tras flip)
+            origin = coords[0] if len(coords)==1 else coords[int(np.argmin([c[0] for c in coords]))]
+
+            shots.append({
+                "x": origin[0], "y": origin[1],
+                "result": shot_result_strict(ev),
+                "char":   shot_characteristic(ev),
+                "player": name or "", "role": role or ""
+            })
+        return shots
+
+    # --------------------------
+    # Cargar y preparar filtros
+    # --------------------------
+    shots = collect_shots(xml_path)
+    if not shots:
+        st.info("No se detectaron tiros para este partido.")
+        st.stop()
+
+    dfS = pd.DataFrame(shots)
+    jugadores = sorted([j for j in dfS["player"].unique() if j])
+    roles     = sorted([r for r in dfS["role"].unique() if r])
+    chars     = sorted(dfS["char"].unique().tolist())
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        pick_players = st.multiselect("Jugadores", jugadores, default=jugadores)
+    with c2:
+        pick_roles   = st.multiselect("Roles", roles, default=roles)
+    with c3:
+        pick_chars   = st.multiselect("Característica (origen)", chars, default=chars)
+
+    # Filtro
+    f = dfS.copy()
+    if pick_players:
+        f = f[f["player"].isin(pick_players)]
+    if pick_roles:
+        f = f[f["role"].isin(pick_roles)]
+    if pick_chars:
+        f = f[f["char"].isin(pick_chars)]
+
+    # --------------------------
+    # Plot de tiros
+    # --------------------------
+    order = ["Gol","Tiro Atajado","Tiro Bloqueado","Tiro Desviado","Tiro Errado - Pifia","Sin clasificar"]
+    COLORS = {
+        "Gol":                "#FFD54F",
+        "Tiro Atajado":       "#FFFFFF",
+        "Tiro Bloqueado":     "#FF5252",
+        "Tiro Desviado":      "#FF7043",
+        "Tiro Errado - Pifia":"#6B6F76",
+        "Sin clasificar":     "#BDBDBD",
+    }
+
+    plt.close("all")
+    fig = plt.figure(figsize=(10.5, 7))
+    ax  = fig.add_axes([0.04, 0.06, 0.92, 0.88])
+    draw_futsal_pitch_grid(ax)
+
+    for res in order:
+        pts = f.loc[f["result"] == res, ["x","y"]].to_numpy()
+        if pts.size == 0: continue
+        xs, ys = pts[:,0], pts[:,1]
+        if res == "Gol":
+            ax.scatter(xs, ys, s=160, c=COLORS[res], edgecolors="black", linewidths=0.6, zorder=5, label=res)
+        elif res == "Tiro Atajado":
+            ax.scatter(xs, ys, s=90,  c=COLORS[res], edgecolors="black", linewidths=0.6, zorder=4, label=res)
+        elif res == "Tiro Bloqueado":
+            ax.scatter(xs, ys, s=100, facecolors="none", edgecolors=COLORS[res], linewidths=1.8, zorder=4, label=res)
+        elif res == "Tiro Desviado":
+            ax.scatter(xs, ys, s=90,  facecolors="none", edgecolors=COLORS[res], linewidths=1.6, zorder=3, label=res)
+        elif res == "Tiro Errado - Pifia":
+            ax.scatter(xs, ys, s=110, marker='x', c=COLORS[res], linewidths=1.8, zorder=3, label=res)
+        elif res == "Sin clasificar":
+            ax.scatter(xs, ys, s=70,  c=COLORS[res], edgecolors="black", linewidths=0.4, zorder=2, label=res)
+
+    sub_players = ", ".join(pick_players) if pick_players else "Todos"
+    sub_roles   = ", ".join(pick_roles)   if pick_roles   else "Todos"
+    sub_chars   = ", ".join(pick_chars)   if pick_chars   else "Todas"
+    ax.set_title(
+        f"SHOTS — Origen (punto más lejano) | Jugadores: {sub_players} | Roles: {sub_roles}\n"
+        f"Característica: {sub_chars}",
+        fontsize=13, pad=6, weight="bold"
+    )
+    ax.legend(loc="upper left", frameon=True)
+    st.pyplot(fig, use_container_width=True)
+    plt.close(fig)
+
+    # --------------------------
+    # Tablas de conteo + descarga
+    # --------------------------
+    from collections import defaultdict
+    want_order = ["Gol","Tiro Atajado","Tiro Bloqueado","Tiro Desviado","Tiro Errado - Pifia"]
+    c_res = Counter(r for r in f["result"] if r != "Sin clasificar")
+    results_counts = {k: int(c_res.get(k, 0)) for k in want_order}
+    c_char = Counter(f["char"])
+    char_counts = dict(sorted(c_char.items(), key=lambda kv: (-kv[1], kv[0])))
+
+    df_results = (pd.DataFrame([
+        {"Categoría": k, "Conteo": v, "%": f"{(v/sum(results_counts.values())*100) if sum(results_counts.values()) else 0:.1f}%"}
+        for k, v in results_counts.items()
+    ] + ([{"Categoría":"TOTAL","Conteo":sum(results_counts.values()), "%":"100.0%" if sum(results_counts.values()) else "0.0%"}]))
+    )
+    df_chars = (pd.DataFrame([
+        {"Categoría": k, "Conteo": v, "%": f"{(v/sum(c_char.values())*100) if sum(c_char.values()) else 0:.1f}%"}
+        for k, v in char_counts.items()
+    ] + ([{"Categoría":"TOTAL","Conteo":sum(c_char.values()), "%":"100.0%" if sum(c_char.values()) else "0.0%"}]))
+    )
+
+    cta1, cta2 = st.columns(2)
+    with cta1:
+        st.markdown("**Resultados del tiro**")
+        st.dataframe(df_results, use_container_width=True)
+        st.download_button("⬇️ Descargar resultados (CSV)",
+                           df_results.to_csv(index=False).encode("utf-8"),
+                           file_name=f"{sel}_shots_resultados.csv", mime="text/csv")
+    with cta2:
+        st.markdown("**Característica del origen**")
+        st.dataframe(df_chars, use_container_width=True)
+        st.download_button("⬇️ Descargar características (CSV)",
+                           df_chars.to_csv(index=False).encode("utf-8"),
+                           file_name=f"{sel}_shots_caracteristicas.csv", mime="text/csv")
 
 else:
     st.info("Las demás secciones se irán conectando con tus notebooks en los próximos pasos.")
