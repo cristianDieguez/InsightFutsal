@@ -1158,7 +1158,8 @@ menu = st.sidebar.radio(
 # 📊 ESTADÍSTICAS DE PARTIDO
 # =========================
 if menu == "📊 Estadísticas de partido":
-    matches = list_matches()
+    matches_obj = discover_matches()
+    matches = [m["label"] for m in matches_obj]
     if not matches:
         st.warning("No encontré partidos en data/minutos con patrón: 'Fecha N° - Rival - XML TotalValues.xml'.")
         st.stop()
@@ -1166,7 +1167,11 @@ if menu == "📊 Estadísticas de partido":
     sel = st.selectbox("Elegí partido", matches, index=0)
     rival = rival_from_label(sel)
 
-    XML_PATH, MATRIX_PATH = infer_paths_for_label(sel)
+    # Después (para menús que usan XML de jugadores, p.ej. Mapa de tiros)
+    match = get_match_by_label(sel)
+    XML_PATH = match["xml_players"] if match else None
+    # (si necesitás Matrix, podés seguir usando match["matrix_path"] si existe)
+    MATRIX_PATH = match["matrix_path"] if match else None
 
     # 1) Posesión
     pos_m, pos_r = parse_possession_from_equipo(XML_PATH) if XML_PATH else (0.0, 0.0)
@@ -1303,7 +1308,8 @@ elif menu == "🛡️ Pérdidas y Recuperaciones":
 if menu == "🎯 Mapa de tiros":
 
     # ---- UI: Partido ----
-    matches = list_matches()
+    matches_obj = discover_matches()
+    matches = [m["label"] for m in matches_obj]
     if not matches:
         st.warning("No encontré partidos en data/minutos con patrón: 'Fecha N° - Rival - XML TotalValues.xml'.")
         st.stop()
