@@ -2669,49 +2669,49 @@ if menu == "🏆 Tabla & Resultados":
         return df
 
     # -------- util: racha G/E/P por equipo --------
-def build_streaks(df_resultados: pd.DataFrame) -> pd.DataFrame:
-    """
-    Devuelve Racha solo en fechas jugadas (G×n, E×n, P×n) por equipo.
-    No hace fill aquí; eso se hace al adjuntar al snapshot.
-    """
-    if df_resultados is None or df_resultados.empty:
-        return pd.DataFrame(columns=["Fecha Técnica","Equipo","Racha"])
-
-    df = df_resultados.copy()
-    df["Fecha Técnica"] = pd.to_datetime(df["Fecha Técnica"], errors="coerce")
-    df = df.sort_values("Fecha Técnica")
-
-    # Resultado de cada partido para cada equipo
-    rows = []
-    for _, r in df.iterrows():
-        gl = int(r["Goles Local"]); gv = int(r["Goles Visitante"])
-        f  = r["Fecha Técnica"]
-        if gl > gv:
-            rows.append((f, r["Equipo Local"], "G"))
-            rows.append((f, r["Equipo Visitante"], "P"))
-        elif gl < gv:
-            rows.append((f, r["Equipo Local"], "P"))
-            rows.append((f, r["Equipo Visitante"], "G"))
-        else:
-            rows.append((f, r["Equipo Local"], "E"))
-            rows.append((f, r["Equipo Visitante"], "E"))
-
-    hist = (pd.DataFrame(rows, columns=["Fecha Técnica","Equipo","Res"])
-              .sort_values(["Equipo","Fecha Técnica"]))
-
-    # Construir racha acumulada por equipo
-    out = []
-    for eq, g in hist.groupby("Equipo"):
-        last = None; streak = 0
-        for _, rr in g.iterrows():
-            res = rr["Res"]
-            if res == last:
-                streak += 1
+    def build_streaks(df_resultados: pd.DataFrame) -> pd.DataFrame:
+        """
+        Devuelve Racha solo en fechas jugadas (G×n, E×n, P×n) por equipo.
+        No hace fill aquí; eso se hace al adjuntar al snapshot.
+        """
+        if df_resultados is None or df_resultados.empty:
+            return pd.DataFrame(columns=["Fecha Técnica","Equipo","Racha"])
+    
+        df = df_resultados.copy()
+        df["Fecha Técnica"] = pd.to_datetime(df["Fecha Técnica"], errors="coerce")
+        df = df.sort_values("Fecha Técnica")
+    
+        # Resultado de cada partido para cada equipo
+        rows = []
+        for _, r in df.iterrows():
+            gl = int(r["Goles Local"]); gv = int(r["Goles Visitante"])
+            f  = r["Fecha Técnica"]
+            if gl > gv:
+                rows.append((f, r["Equipo Local"], "G"))
+                rows.append((f, r["Equipo Visitante"], "P"))
+            elif gl < gv:
+                rows.append((f, r["Equipo Local"], "P"))
+                rows.append((f, r["Equipo Visitante"], "G"))
             else:
-                last = res
-                streak = 1
-            out.append({"Fecha Técnica": rr["Fecha Técnica"], "Equipo": eq, "Racha": f"{res}×{streak}"})
-    return pd.DataFrame(out).sort_values(["Equipo","Fecha Técnica"])
+                rows.append((f, r["Equipo Local"], "E"))
+                rows.append((f, r["Equipo Visitante"], "E"))
+    
+        hist = (pd.DataFrame(rows, columns=["Fecha Técnica","Equipo","Res"])
+                  .sort_values(["Equipo","Fecha Técnica"]))
+    
+        # Construir racha acumulada por equipo
+        out = []
+        for eq, g in hist.groupby("Equipo"):
+            last = None; streak = 0
+            for _, rr in g.iterrows():
+                res = rr["Res"]
+                if res == last:
+                    streak += 1
+                else:
+                    last = res
+                    streak = 1
+                out.append({"Fecha Técnica": rr["Fecha Técnica"], "Equipo": eq, "Racha": f"{res}×{streak}"})
+        return pd.DataFrame(out).sort_values(["Equipo","Fecha Técnica"])
 
 
     # -------- (Opcional) ELO compacto --------
