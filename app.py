@@ -654,6 +654,71 @@ def fig_barh_minutos(labels, vals_sec, title, xlabel="Minutos"):
     plt.tight_layout()
     return fig
 
+# ========= Minutos desde XML TotalValues (sin XML de Equipo) =========
+_ACCENTS = {"á":"a","é":"e","í":"i","ó":"o","ú":"u","Á":"A","É":"E","Í":"I","Ó":"O","Ú":"U"}
+
+def _strip_accents(s: str) -> str:
+    return "".join(_ACCENTS.get(ch, ch) for ch in str(s))
+
+_EXCLUDE_PREFIXES = (
+    "categoria - equipo rival",
+    "tiempo posecion ferro",
+    "tiempo posesion ferro",
+    "tiempo posecion rival",
+    "tiempo posesion rival",
+    "tiempo no jugado",
+)
+
+_NAME_ROLE_RE = re.compile(r"^\s*([^(]+?)\s*\(([^)]+)\)\s*$")
+
+def _split_name_role_if_player(code: str):
+    """
+    Devuelve (nombre, rol) si code es 'Nombre (Rol)' válido y NO pertenece a excluidos.
+    Si no matchea, devuelve (None, None).
+    """
+    if not code:
+        return (None, None)
+    code_norm = _strip_accents(code).lower().strip()
+    if any(code_norm.startswith(pref) for pref in _EXCLUDE_PREFIXES):
+        return (None, None)
+    m = _NAME_ROLE_RE.match(code)
+    if not m:
+        return (None, None)
+    return (m.group(1).strip(), m.group(2).strip())
+
+def cargar_minutos_desde_xml_totalvalues(xml_path: str) -> pd.DataFrame:
+    """
+    Lee el XML TotalValues del partido y devuelve presencias:
+    columnas: code, nombre, rol, start_s, end_s, dur_s
+    (Solo 'Jugador (Rol)'; excluye rival/posesiones/no jugado)
+    """
+    if not xml_path or not os.path.isfile(xml_path):
+        return pd.DataFrame(columns=["code","nombre","rol","start_s","end_s","dur_s"])
+    root = ET.parse(xml_path).getroot()
+    rows = []
+    for inst in root.findall(".//instance"):
+        code = inst.findtext("code") or ""
+        nombre, rol = _split_name_role_if_player(code)
+        if not nombre:  # no jugador (rol) válido
+            continue
+        st = inst.findtext("start"); en = inst.findtext("end")
+        try:
+            s = float(st) if st is not None else None
+            e = float(en) if en is not None else None
+        except Exception:
+            s, e = None, None
+        if s is None or e is None or e <= s:
+            continue
+        rows.append({
+            "code": code,
+            "nombre": nombre,
+            "rol": rol,
+            "start_s": s,
+            "end_s": e,
+            "dur_s": e - s
+        })
+    return pd.DataFrame(rows)
+
 
 # =========================
 # PARSERS SEGÚN TU NOTEBOOK
@@ -1186,12 +1251,12 @@ elif menu == "🕓 Distribución de minutos":
         st.error("No pude resolver el partido seleccionado.")
         st.stop()
 
-    if not m.get("xml_equipo"):
-        st.warning("No encontré XML de Equipo para este partido (necesario para minutos por rol).")
+    if not m.get("xml_players") or not os.path.isfile(m["xml_players"]):
+        st.warning("No encontré el XML TotalValues del partido seleccionado.")
         st.stop()
 
-    # 1) Cargar presencias y calcular minutos
-    df_pres = cargar_equipo_presencias(m["xml_equipo"])
+    # 1) Cargar presencias desde XML TotalValues (jugador (rol) únicamente) y calcular minutos
+    df_pres = cargar_minutos_desde_xml_totalvalues(m["xml_players"])
     df_por_rol, df_por_jugador = minutos_por_presencia(df_pres)
 
     cA, cB = st.columns(2)
@@ -1247,6 +1312,6 @@ elif menu == "🕓 Distribución de minutos":
             with gcols[i % len(gcols)]:
                 st.pyplot(figR, use_container_width=True)
             i += 1
-                 
+
 else:
     st.info("Las demás secciones se irán conectando con tus notebooks en los próximos pasos.")
