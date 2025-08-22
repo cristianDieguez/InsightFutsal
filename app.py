@@ -1,27 +1,62 @@
-# app.py — InsightFutsal: Estadísticas de Partido (panel KEY STATS)
-# Lee XML desde data/minutos/, usa Matrix.xlsx si existe, render estilo notebook.
+# app.py — InsightFutsal (Estadísticas de partido adaptado del notebook)
 
-import os, re, glob
-from typing import List, Dict, Tuple, Optional
+import os, re, unicodedata, math, glob
+from typing import Optional, Tuple, Dict, List
 
 import numpy as np
 import pandas as pd
 import streamlit as st
+import xml.etree.ElementTree as ET
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 from PIL import Image
-from lxml import etree
 
 # =========================
 # CONFIG
 # =========================
 st.set_page_config(page_title="InsightFutsal", page_icon="⚽", layout="wide")
+st.title("InsightFutsal")
 
 DATA_DIR   = "data/minutos"
-BADGE_DIR  = "images/equipos"
-BANNER_DIR = "images/banner"
+BADGE_DIR  = "images/equipos"   # ferro.png, <rival>.png
+BANNER_DIR = "images/banner"    # opcional
 
-# Nombres EXACTOS que usás en el panel
+# --- estilo panel (idéntico a tu notebook) ---
+bg_green   = "#006633"
+text_w     = "#FFFFFF"
+bar_white  = "#FFFFFF"
+bar_rival  = "#E6EEF2"
+bar_rail   = "#0F5E29"
+star_c     = "#FFD54A"
+loser_alpha = 0.35
+orange_win = "#FF8F00"
+
+USE_ORANGE_FOR_WIN = True
+RAISE_LABELS       = True
+BAR_HEIGHT_FACTOR  = 0.36
+LABEL_Y_SHIFT_LOW  = 0.60
+LABEL_Y_SHIFT_HIGH = 0.37
+TRIM_LOGO_BORDERS  = True
+
+BANNER_H   = 0.145
+LOGO_W     = 0.118
+TITLE_FS   = 32
+SUB_FS     = 19
+
+FOOTER_H        = 0.120
+FOOTER_LOGO_W   = 0.110
+FOOTER_TITLE_FS = 20
+FOOTER_SUB_FS   = 14
+
+mpl.rcParams.update({
+    "savefig.facecolor": bg_green,
+    "figure.facecolor":  bg_green,
+    "axes.facecolor":    bg_green,
+    "text.color":        text_w,
+})
+
+# Orden y tipos (exacto a tu panel)
 ROW_ORDER = [
     "Posesión %",
     "Pases totales",
@@ -41,242 +76,255 @@ ROW_ORDER = [
 ]
 PERCENT_ROWS = {"Posesión %", "Pases OK %", "% Duelos ganados"}
 
-# Códigos de posesión (XML instancias)
-CODE_POSESION_FERRO = "tiempo posecion ferro"
-CODE_POSESION_RIVAL = "tiempo posecion rival"
-
 # =========================
-# UTILIDADES
+# HELPERS
 # =========================
-def list_xml_files(base_dir: str) -> List[str]:
-    if not os.path.isdir(base_dir): return []
-    files = [f for f in os.listdir(base_dir) if f.lower().endswith(".xml") and "totalvalues" in f.lower()]
-    files.sort()
-    return files
+def ntext(s):
+    if s is None: return ""
+    s = str(s)
+    s = unicodedata.normalize("NFD", s)
+    s = "".join(ch for ch in s if unicodedata.category(ch) != "Mn")
+    return s.strip()
+def nlower(s): return ntext(s).lower()
 
-def pretty_match_name(fname: str) -> str:
-    return re.sub(r"(?i)\s*-\s*xml\s*totalvalues\.xml$", "", fname)
+def list_matches() -> List[str]:
+    """Devuelve ['Fecha 8 - Union Ezpeleta', ...] a partir de los XML en data/minutos."""
+    if not os.path.isdir(DATA_DIR): return []
+    # buscamos archivos '* - asXML TotalValues.xml' (jugadores)
+    pats = glob.glob(os.path.join(DATA_DIR, "* - asXML TotalValues.xml"))
+    out = []
+    for p in sorted(pats):
+        base = os.path.basename(p)
+        # 'Union Ezpeleta - asXML TotalValues.xml' -> rival
+        rival = re.sub(r"(?i)\s*-\s*asxml\s*totalvalues\.xml$", "", base).strip()
+        # si existe un archivo 'Fecha N - Rival - XML TotalValues.xml', usamos ese texto para el selector
+        # si no, mostramos solo el rival
+        # En tu repo los “Fecha” pueden estar en otra carpeta, así que seleccionamos por rival.
+        # El label que mostramos: 'Fecha ? - Rival' si en el nombre detectamos 'Fecha ...'
+        label = None
+        m = re.search(r"(?i)(fecha\s*\d+)", base)
+        if m:
+            label = f"{m.group(1).title()} - {rival}"
+        else:
+            label = rival
+        out.append(label)
+    # eliminar duplicados preservando orden
+    seen = set(); clean = []
+    for x in out:
+        if x not in seen:
+            clean.append(x); seen.add(x)
+    return clean
 
-def extract_rival(fname: str) -> str:
-    rival = re.sub(r"(?i)^fecha\s*\d+\s*-\s*", "", fname)
-    rival = re.sub(r"(?i)\s*-\s*xml\s*totalvalues\.xml$", "", rival)
-    return rival.strip()
+def selected_rival_from_label(label: str) -> str:
+    # "Fecha 8 - Union Ezpeleta" -> "Union Ezpeleta"
+    parts = [p.strip() for p in label.split(" - ")]
+    return parts[-1] if parts else label
 
-def open_any(path: str) -> Optional[Image.Image]:
-    try:
-        return Image.open(path)
-    except Exception:
-        return None
-
-def first_banner() -> Optional[Image.Image]:
-    if not os.path.isdir(BANNER_DIR): return None
-    for ext in ("png","jpg","jpeg","webp"):
-        for p in glob.glob(os.path.join(BANNER_DIR, f"*.{ext}")):
-            img = open_any(p)
-            if img: return img
-    return None
-
-def badge_for(team: str) -> Optional[Image.Image]:
-    if not os.path.isdir(BADGE_DIR): return None
-    name = team.strip().lower()
-    cands = []
-    for ext in ("png","jpg","jpeg","webp"):
-        cands += [
-            os.path.join(BADGE_DIR, f"{name}.{ext}"),
-            os.path.join(BADGE_DIR, f"{re.sub(r'\\s+', '_', name)}.{ext}"),
-            os.path.join(BADGE_DIR, f"{re.sub(r'\\s+', '', name)}.{ext}")
-        ]
-    for p in cands:
-        if os.path.isfile(p):
-            img = open_any(p)
-            if img: return img
-    return None
-
-def normtext(s: str) -> str:
-    return (s or "").strip().lower()
-
-# =========================
-# PARSER XML (INSTANCIAS) → POSESIÓN
-# =========================
-@st.cache_data(show_spinner=False)
-def possession_from_instances(xml_path: str) -> Tuple[float,float]:
-    try:
-        with open(xml_path, "rb") as fh:
-            root = etree.fromstring(fh.read())
-        inst = root.findall(".//ALL_INSTANCES/instance")
-        if not inst: inst = root.findall(".//instance")
-        own = away = 0.0
-        for it in inst:
-            code = normtext(it.findtext("code"))
-            start = it.findtext("start"); end = it.findtext("end")
-            dur = (float(end) - float(start)) if (start and end) else 0.0
-            if CODE_POSESION_FERRO in code:
-                own += dur
-            elif CODE_POSESION_RIVAL in code:
-                away += dur
-        total = own + away
-        if total <= 0: return 0.0, 0.0
-        own_pct = round(own/total*100, 1)
-        away_pct = round(100 - own_pct, 1)
-        return own_pct, away_pct
-    except Exception:
-        return 0.0, 0.0
-
-# =========================
-# LOAD MATRIX.XLSX (PREFERIDO)
-# =========================
-def find_matrix_for_rival(rival: str) -> Optional[str]:
-    # busca recursivamente algo tipo "*Union Ezpeleta*Matrix.xlsx"
-    pat = f"*{re.sub(r'\\s+','*', rival)}*Matrix.xlsx"
-    for p in glob.glob(f"**/{pat}", recursive=True):
-        return p
-    return None
-
-def normalize_metric_name(s: str) -> str:
-    return normtext(s).replace("á","a").replace("é","e").replace("í","i").replace("ó","o").replace("ú","u").replace("%","%")
-
-def coerce_number(x):
-    try:
-        if pd.isna(x): return 0
-        if isinstance(x, str) and x.strip().endswith("%"):
-            return float(x.strip().replace("%",""))
-        return float(x)
-    except Exception:
-        return 0
-
-def ferro_rival_from_matrix(xlsx_path: str) -> Tuple[Dict[str,float], Dict[str,float]]:
+def infer_paths_for_rival(rival: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """
-    Intenta leer una matriz con columnas tipo:
-      - ['Métrica','FERRO','RIVAL']  o
-      - ['metric','FERRO','RIVAL']   o
-      - índice con métricas y columnas FERRO/RIVAL
-    Devuelve dos dicts con los NOMBRES EXACTOS del panel.
+    Dado 'Union Ezpeleta' busca:
+      XML_EQUIPO:   data/minutos/UnionEzpeletaEq - asXML TotalValues.xml (o variantes)
+      XML_JUGADORES:data/minutos/Union Ezpeleta - asXML TotalValues.xml
+      MATRIX_PATH:  data/minutos/Union Ezpeleta - Matrix.xlsx/.csv (opcional)
     """
-    FERRO = {k:0 for k in ROW_ORDER}
-    RIVAL = {k:0 for k in ROW_ORDER}
+    cand_eq = []
+    cand_jg = []
+    cand_mx = []
+    variations = [
+        rival,
+        rival.replace(" ", ""),
+        rival.replace(" ", "_"),
+        rival.upper(),
+        rival.lower(),
+    ]
+    for v in variations:
+        cand_eq += glob.glob(os.path.join(DATA_DIR, f"{v}Eq - asXML TotalValues.xml"))
+        cand_jg += glob.glob(os.path.join(DATA_DIR, f"{v} - asXML TotalValues.xml"))
+        cand_mx += glob.glob(os.path.join(DATA_DIR, f"{v} - Matrix.xlsx"))
+        cand_mx += glob.glob(os.path.join(DATA_DIR, f"{v} - Matrix.csv"))
+    xml_eq = cand_eq[0] if cand_eq else None
+    xml_jg = cand_jg[0] if cand_jg else None
+    mx     = cand_mx[0] if cand_mx else None
+    return xml_eq, xml_jg, mx
 
-    xl = pd.ExcelFile(xlsx_path)
-    # busca la primera hoja que parezca tabla métrica
-    sheet = xl.sheet_names[0]
-    df = xl.parse(sheet)
-    # normaliza nombres de columnas
-    cols = [normtext(c) for c in df.columns]
-    df.columns = cols
+# =========================
+# PARSERS SEGÚN TU NOTEBOOK
+# =========================
+def parse_possession_from_equipo(xml_path: str) -> Tuple[float, float]:
+    """Poseción desde XML EQUIPO por duración de instancias."""
+    if not xml_path or not os.path.isfile(xml_path): return 0.0, 0.0
+    tree = ET.parse(xml_path)
+    root = tree.getroot()
+    t_ferro = t_rival = 0.0
+    for inst in root.findall(".//instance"):
+        code  = nlower(inst.findtext("code"))
+        try:
+            st = float(inst.findtext("start") or "0")
+            en = float(inst.findtext("end") or "0")
+        except:
+            continue
+        dur = max(0.0, en - st)
+        if code == "tiempo posecion ferro":
+            t_ferro += dur
+        elif code == "tiempo posecion rival":
+            t_rival += dur
+    tot = t_ferro + t_rival
+    if tot <= 0: return 0.0, 0.0
+    return round(100*t_ferro/tot,1), round(100*t_rival/tot,1)
 
-    # casos: métrica en primera col o como índice
-    if ("ferro" in cols) and ("rival" in cols):
-        # detectar col con nombre de métrica
-        metric_col = None
-        for c in df.columns:
-            if c not in ("ferro","rival") and "metric" in c:
-                metric_col = c; break
-        if metric_col is None:
-            metric_col = df.columns[0]  # asumimos la primera
-        for _, r in df.iterrows():
-            m  = str(r[metric_col]).strip()
-            m0 = normalize_metric_name(m)
-            # mapeo por similitud simple a nombre exacto
-            for target in ROW_ORDER:
-                if normalize_metric_name(target) == m0:
-                    FERRO[target] = coerce_number(r["ferro"])
-                    RIVAL[target]  = coerce_number(r["rival"])
-                    break
+def load_matrix(path: str) -> Tuple[pd.DataFrame, str, Dict[str,str]]:
+    if path.lower().endswith(".xlsx"):
+        # requiere openpyxl en requirements (si usás xlsx)
+        df = pd.read_excel(path, header=0)
+    elif path.lower().endswith(".csv"):
+        try:
+            df = pd.read_csv(path, header=0)
+        except Exception:
+            df = pd.read_csv(path, header=0, sep=";")
     else:
-        # probar que el índice sean métricas y haya columnas FERRO/RIVAL
-        df = df.set_index(df.columns[0])
-        df.columns = [normtext(c) for c in df.columns]
-        if "ferro" in df.columns and "rival" in df.columns:
-            for target in ROW_ORDER:
-                key = normalize_metric_name(target)
-                # buscar fila que matchee exacto
-                for idx in df.index:
-                    if normalize_metric_name(str(idx)) == key:
-                        FERRO[target] = coerce_number(df.loc[idx, "ferro"])
-                        RIVAL[target]  = coerce_number(df.loc[idx, "rival"])
-                        break
+        raise ValueError("Formato no soportado para MATRIX (usa .xlsx o .csv)")
+    player_col = df.columns[0]
+    for c in df.columns[1:]:
+        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+    header_map = {c: nlower(c) for c in df.columns}
+    return df, player_col, header_map
 
-    return FERRO, RIVAL
+def sum_cols(df, who_mask, header_map, col_regex):
+    cols = [c for c in df.columns[1:] if re.search(col_regex, header_map[c], re.I)]
+    if not cols: return 0
+    return int(df.loc[who_mask, cols].sum(numeric_only=True).sum())
 
-# =========================
-# FALLBACK: TOTALVALUES (por si no hay matriz)
-# =========================
-def read_totalvalues_pairs(xml_path: str) -> Dict[str, float]:
-    """
-    Lee asXML TotalValues. Soporta varias formas:
-      <Value label="Tiros" count="22"/>
-      <Value><label>Tiros</label><count>22</count></Value>
-    Devuelve dict label->valor
-    """
-    out = {}
-    try:
-        with open(xml_path, "rb") as fh:
-            root = etree.fromstring(fh.read())
-        for v in root.findall(".//Value"):
-            lab = v.get("label") or v.findtext("label") or v.get("name") or v.findtext("Name") or ""
-            cnt = v.get("count") or v.findtext("count") or v.get("value") or v.findtext("Value") or "0"
-            lab = str(lab).strip()
-            try:
-                val = float(str(cnt).strip().replace(",",".").replace("%",""))
-            except Exception:
-                val = 0
-            if lab:
-                out[lab] = val
-    except Exception:
-        pass
+def compute_from_matrix(path: str) -> Dict[str, Dict[str, float]]:
+    df, player_col, header_map = load_matrix(path)
+    who_raw = df[player_col]
+    is_valid = who_raw.notna() & (who_raw.astype(str).str.strip() != "")
+    who = who_raw.fillna("").astype(str).map(nlower)
+
+    is_rival = is_valid & (who == "categoria - equipo rival")
+    is_mine  = is_valid & ~is_rival
+
+    pases_tot_re = r"^pase.*frontal|^pase.*lateral"
+    pases_ok_re  = r"^pase.*completado"
+    tiros_re     = r"\btiro hecho\b"
+    taro_re      = r"\btiro atajado\b"
+    recup_re     = r"^recuperacion\b"
+    duelo_g_re   = r"\brecuperacion x duelo\b"
+    duelo_p_re   = r"\bperdida x duelo\b"
+    corners_re   = r"\bcorner en corto\b|\bcorner al area\b|\bcorner 2do palo\b"
+    faltas_re    = r"\bfaltas recibidas\b"
+    goles_re     = r"^gol\b"
+    asis_re      = r"\basistencia\b"
+    pclave_re    = r"\bpase clave\b"
+
+    def pct(a,b): return round(100*a/b,1) if b else 0.0
+
+    # FERRO
+    pases_tot_m = sum_cols(df, is_mine,  header_map, pases_tot_re)
+    pases_ok_m  = sum_cols(df, is_mine,  header_map, pases_ok_re)
+    tiros_m     = sum_cols(df, is_mine,  header_map, tiros_re)
+    taro_m      = sum_cols(df, is_mine,  header_map, taro_re)
+    recup_m     = sum_cols(df, is_mine,  header_map, recup_re)
+    duelo_g_m   = sum_cols(df, is_mine,  header_map, duelo_g_re)
+    duelo_p_m   = sum_cols(df, is_mine,  header_map, duelo_p_re)
+    corners_m   = sum_cols(df, is_mine,  header_map, corners_re)
+    faltas_m    = sum_cols(df, is_mine,  header_map, faltas_re)
+    goles_m     = sum_cols(df, is_mine,  header_map, goles_re)
+    asis_m      = sum_cols(df, is_mine,  header_map, asis_re)
+    pclave_m    = sum_cols(df, is_mine,  header_map, pclave_re)
+
+    # RIVAL
+    pases_tot_r = sum_cols(df, is_rival, header_map, pases_tot_re)
+    pases_ok_r  = sum_cols(df, is_rival, header_map, pases_ok_re)
+    tiros_r     = sum_cols(df, is_rival, header_map, tiros_re)
+    taro_r      = sum_cols(df, is_rival, header_map, taro_re)
+    recup_r     = sum_cols(df, is_rival, header_map, recup_re)
+    duelo_g_r   = sum_cols(df, is_rival, header_map, duelo_g_re)
+    duelo_p_r   = sum_cols(df, is_rival, header_map, duelo_p_re)
+    corners_r   = sum_cols(df, is_rival, header_map, corners_re)
+    faltas_r    = sum_cols(df, is_rival, header_map, faltas_re)
+    goles_r     = sum_cols(df, is_rival, header_map, goles_re)
+    asis_r      = sum_cols(df, is_rival, header_map, asis_re)
+    pclave_r    = sum_cols(df, is_rival, header_map, pclave_re)
+
+    mx = {
+        "FERRO": {
+            "Pases totales": pases_tot_m,
+            "Pases OK %": pct(pases_ok_m, pases_tot_m),
+            "Tiros": tiros_m,
+            "Tiros al arco": taro_m,
+            "Recuperaciones": recup_m,
+            "Duelos Ganados": duelo_g_m,
+            "% Duelos Ganados": pct(duelo_g_m, duelo_g_m + duelo_p_m),
+            "Corners": corners_m,
+            "Faltas": faltas_m,
+            "Goles": goles_m,
+            "Asistencias": asis_m,
+            "Pases Clave": pclave_m,
+        },
+        "RIVAL": {
+            "Pases totales": pases_tot_r,
+            "Pases OK %": pct(pases_ok_r, pases_tot_r),
+            "Tiros": tiros_r,
+            "Tiros al arco": taro_r,
+            "Recuperaciones": recup_r,
+            "Duelos Ganados": duelo_g_r,
+            "% Duelos Ganados": pct(duelo_g_r, duelo_g_r + duelo_p_r),
+            "Corners": corners_r,
+            "Faltas": faltas_r,
+            "Goles": goles_r,
+            "Asistencias": asis_r,
+            "Pases Clave": pclave_r,
+        }
+    }
+    return mx
+
+def parse_instances_jugadores(xml_path: str):
+    if not xml_path or not os.path.isfile(xml_path): return []
+    tree = ET.parse(xml_path)
+    root = tree.getroot()
+    out = []
+    for inst in root.findall(".//instance"):
+        code = ntext(inst.findtext("code"))
+        labels_lc = [nlower(t.text) for t in inst.findall("./label/text")]
+        xs = [int(x.text) for x in inst.findall("./pos_x") if (x.text or "").isdigit()]
+        ys = [int(y.text) for y in inst.findall("./pos_y") if (y.text or "").isdigit()]
+        x_end, y_end = (xs[-1], ys[-1]) if xs and ys else (None, None)
+        out.append({"code": code, "labels_lc": labels_lc, "end_xy": (x_end, y_end)})
     return out
 
-def ferro_rival_from_totalvalues(xml_path: str, rival: str) -> Tuple[Dict[str,float], Dict[str,float]]:
-    """
-    Intenta deducir FERRO/RIVAL a partir de un único TotalValues.
-    (Si tenés uno por cada equipo, podés duplicar la lectura y fusionar).
-    Aquí mapeamos por clave exacta.
-    """
-    stats = read_totalvalues_pairs(xml_path)
-    FERRO = {k:0 for k in ROW_ORDER}
-    RIVAL = {k:0 for k in ROW_ORDER}
-    # si las claves ya vienen como FERRO/RIVAL en el archivo, podés adaptar acá.
-    # por defecto dejamos todo en 0 salvo lo que sea claramente global.
-    # (normalmente vas a tener la Matrix.xlsx y no vas a caer en este fallback)
-    return FERRO, RIVAL
+def is_pass_attempt(ev) -> bool:
+    if re.match(r"^\s*pase\b", nlower(ev["code"])): return True
+    return any(re.match(r"^\s*pase\b", l) for l in ev["labels_lc"])
+
+def is_rival_code(code) -> bool:
+    return nlower(code).startswith("categoria - equipo rival")
+
+def xy_to_zone(x, y, max_x=19, max_y=34):
+    if x is None or y is None: return None
+    col = 1 if x <= 6 else (2 if x <= 13 else 3)
+    row = 1 if y <= 11 else (2 if y <= 22 else 3)
+    return (row-1)*3 + col  # 1..9
+
+def passes_last_third_and_area(jug):
+    last_m = last_r = area_m = area_r = 0
+    for ev in jug:
+        if not is_pass_attempt(ev):
+            continue
+        x, y = ev["end_xy"]
+        z = xy_to_zone(x, y)
+        if z is None:
+            continue
+        if is_rival_code(ev["code"]):
+            if z in {1,4,7}: last_r += 1
+            if z == 4: area_r += 1
+        else:
+            if z in {3,6,9}: last_m += 1
+            if z == 6: area_m += 1
+    return last_m, last_r, area_m, area_r
 
 # =========================
-# RENDER PANEL (como tu notebook)
+# VISUAL (tu panel)
 # =========================
-# Estilo
-bg_green   = "#006633"
-text_w     = "#FFFFFF"
-bar_white  = "#FFFFFF"
-bar_rival  = "#E6EEF2"
-bar_rail   = "#0F5E29"
-star_c     = "#FFD54A"
-loser_alpha = 0.35
-orange_win = "#FF8F00"
-
-import matplotlib as mpl
-mpl.rcParams.update({
-    "savefig.facecolor": bg_green,
-    "figure.facecolor":  bg_green,
-    "axes.facecolor":    bg_green,
-    "text.color":        text_w,
-})
-
-USE_ORANGE_FOR_WIN = True
-RAISE_LABELS       = True
-BAR_HEIGHT_FACTOR  = 0.36
-LABEL_Y_SHIFT_LOW  = 0.60
-LABEL_Y_SHIFT_HIGH = 0.37
-TRIM_LOGO_BORDERS  = True
-
-BANNER_H   = 0.145
-LOGO_W     = 0.118
-TITLE_FS   = 32
-SUB_FS     = 19
-
-FOOTER_H        = 0.120
-FOOTER_LOGO_W   = 0.110
-FOOTER_TITLE_FS = 20
-FOOTER_SUB_FS   = 14
-
 def load_any_image(path):
     im = Image.open(path); im.load()
     if im.mode != "RGBA":
@@ -308,9 +356,9 @@ def draw_logo(ax, path, cx, cy, width):
     ax.imshow(img, extent=[cx - w_norm/2, cx + w_norm/2,
                            cy - h_norm/2, cy + h_norm/2], zorder=6)
 
-def draw_key_stats_panel(home_name: str, away_name: str, FERRO: Dict[str,float], RIVAL: Dict[str,float],
-                         ferro_logo_path: Optional[str], rival_logo_path: Optional[str],
-                         footer_left: Optional[str], footer_right: Optional[str]):
+def draw_key_stats_panel(home_name: str, away_name: str,
+                         FERRO: Dict[str,float], RIVAL: Dict[str,float],
+                         ferro_logo_path: Optional[str], rival_logo_path: Optional[str]):
 
     plt.close("all")
     fig_h = 0.66*len(ROW_ORDER) + 4.6
@@ -318,7 +366,7 @@ def draw_key_stats_panel(home_name: str, away_name: str, FERRO: Dict[str,float],
     ax = fig.add_axes([0,0,1,1]); ax.set_xlim(0,1); ax.set_ylim(0,1); ax.axis("off")
     ax.add_patch(Rectangle((0,0), 1, 1, facecolor=bg_green, edgecolor="none", zorder=-10))
 
-    # banner sup.
+    # Banner sup
     BANNER_Y0 = 1.0 - (BANNER_H + 0.02)
     ax.add_patch(Rectangle((0, BANNER_Y0), 1, BANNER_H, facecolor="white", edgecolor="none", zorder=5))
     if ferro_logo_path: draw_logo(ax, ferro_logo_path, 0.09, BANNER_Y0 + BANNER_H*0.52, LOGO_W)
@@ -328,17 +376,15 @@ def draw_key_stats_panel(home_name: str, away_name: str, FERRO: Dict[str,float],
     ax.text(0.5, BANNER_Y0 + BANNER_H*0.29, "KEY STATS",
             ha="center", va="center", fontsize=SUB_FS, weight="bold", color=bg_green, zorder=7)
 
-    # banner inferior
+    # Banner inferior (firma)
     FOOTER_Y0 = 0.02
     ax.add_patch(Rectangle((0, FOOTER_Y0), 1, FOOTER_H, facecolor="white", edgecolor="none", zorder=5))
-    if footer_left:  draw_logo(ax, footer_left,  0.09, FOOTER_Y0 + FOOTER_H*0.52, FOOTER_LOGO_W)
-    if footer_right: draw_logo(ax, footer_right, 0.91, FOOTER_Y0 + FOOTER_H*0.52, FOOTER_LOGO_W)
     ax.text(0.5, FOOTER_Y0 + FOOTER_H*0.63, "Trabajo Fin de Máster",
             ha="center", va="center", fontsize=FOOTER_TITLE_FS, weight="bold", color=bg_green, zorder=7)
     ax.text(0.5, FOOTER_Y0 + FOOTER_H*0.28, "Cristian Dieguez",
             ha="center", va="center", fontsize=FOOTER_SUB_FS,   weight="bold", color=bg_green, zorder=7)
 
-    # cuerpo
+    # Cuerpo
     EXTRA_GAP_BELOW_BANNER = 0.075
     top_y    = BANNER_Y0 - EXTRA_GAP_BELOW_BANNER
     bottom_y = FOOTER_Y0 + FOOTER_H + 0.012
@@ -350,10 +396,10 @@ def draw_key_stats_panel(home_name: str, away_name: str, FERRO: Dict[str,float],
 
     def draw_row(y, label, lv, rv):
         label_y = y + row_h*(LABEL_Y_SHIFT_HIGH if RAISE_LABELS else LABEL_Y_SHIFT_LOW)
-        ax.text(0.5, label_y, label, ha="center", va="center", fontsize=12.5, weight="bold", color=text_w)
+        ax.text(0.5, label_y, label, ha="center", va="center",
+                fontsize=12.5, weight="bold", color=text_w)
 
         maxval = 100.0 if label in PERCENT_ROWS else max(1, lv, rv)
-
         lane_y = y + row_h*(0.22)
         lane_h = row_h*BAR_HEIGHT_FACTOR
         for x0 in (mid_x - bar_w - 0.02, mid_x + 0.02):
@@ -378,13 +424,15 @@ def draw_key_stats_panel(home_name: str, away_name: str, FERRO: Dict[str,float],
         rtxt = f"{rv:.1f}%" if label in PERCENT_ROWS else f"{int(rv)}"
         ax.text(mid_x - bar_w - 0.030, lane_y + lane_h*0.45, ltxt, ha="right", va="center",
                 fontsize=13, weight="bold", color=text_w)
-        ax.text(mid_x + bar_w + 0.030, lane_y + lane_h*0.45, rtxt, ha="left", va="center",
+        ax.text(mid_x + bar_w + 0.030, lane_y + lane_h*0.45, rtxt, ha="left",  va="center",
                 fontsize=13, weight="bold", color=text_w)
 
         if winner == "FERRO":
-            ax.text(left_star_x,  label_y, "★", ha="left",  va="center", fontsize=14, color=star_c, weight="bold", clip_on=False)
+            ax.text(left_star_x,  label_y, "★", ha="left",  va="center",
+                    fontsize=14, color=star_c, weight="bold", clip_on=False)
         elif winner == "RIVAL":
-            ax.text(right_star_x, label_y, "★", ha="right", va="center", fontsize=14, color=star_c, weight="bold", clip_on=False)
+            ax.text(right_star_x, label_y, "★", ha="right", va="center",
+                    fontsize=14, color=star_c, weight="bold", clip_on=False)
 
     y = top_y
     for lab in ROW_ORDER:
@@ -394,88 +442,106 @@ def draw_key_stats_panel(home_name: str, away_name: str, FERRO: Dict[str,float],
     st.pyplot(fig, use_container_width=True)
     plt.close(fig)
 
+def badge_path_for(name: str) -> Optional[str]:
+    nm = name.strip().lower()
+    cands = [
+        os.path.join(BADGE_DIR, f"{nm}.png"),
+        os.path.join(BADGE_DIR, f"{nm}.jpg"),
+        os.path.join(BADGE_DIR, f"{nm.replace(' ','_')}.png"),
+        os.path.join(BADGE_DIR, f"{nm.replace(' ','')}.png"),
+    ]
+    for p in cands:
+        if os.path.isfile(p): return p
+    return None
+
 # =========================
-# UI
+# UI — ESTADÍSTICAS PARTIDO
 # =========================
-st.sidebar.header("Opciones")
 menu = st.sidebar.radio(
     "Menú",
-    ["📊 Estadísticas de Partido", "⏱️ Minutos", "🎯 Tiros", "🗺️ Mapa 3x3", "🔗 Red de Pases", "⚡ Radar"],
+    ["📊 Estadísticas de partido", "⏱️ Minutos", "🎯 Tiros", "🗺️ Mapa 3x3", "🔗 Red de Pases", "⚡ Radar"],
     index=0
 )
 
-banner = first_banner()
-if banner is not None:
-    st.image(banner, use_container_width=True)
-
-st.title("InsightFutsal")
-
-if menu == "📊 Estadísticas de Partido":
-    files = list_xml_files(DATA_DIR)
-    if not files:
-        st.error(f"No hay XML con 'TotalValues' en {DATA_DIR}")
+if menu == "📊 Estadísticas de partido":
+    matches = list_matches()
+    if not matches:
+        st.warning("No encontré partidos en data/minutos/*. Asegurate de subir:\n\n- `<Rival> - asXML TotalValues.xml`\n- `<Rival>Eq - asXML TotalValues.xml`\n- (opcional) `<Rival> - Matrix.xlsx` o `.csv`")
         st.stop()
 
-    pretty = [pretty_match_name(f) for f in files]
-    sel_pretty = st.selectbox("Elegí partido", pretty, index=0)
-    fname = files[pretty.index(sel_pretty)]
+    sel = st.selectbox("Elegí partido", matches, index=0)
+    rival = selected_rival_from_label(sel)
 
-    rival = extract_rival(fname)
-    xml_path = os.path.join(DATA_DIR, fname)
+    XML_EQUIPO, XML_JUGADORES, MATRIX_PATH = infer_paths_for_rival(rival)
 
-    # 1) Posesión desde instancias
-    pos_own, pos_away = possession_from_instances(xml_path)
+    # 1) Posesión (equipo)
+    pos_m, pos_r = parse_possession_from_equipo(XML_EQUIPO) if XML_EQUIPO else (0.0, 0.0)
 
-    # 2) Matriz (preferido)
-    FERRO = {k:0 for k in ROW_ORDER}
-    RIVAL = {k:0 for k in ROW_ORDER}
-    FERRO["Posesión %"] = pos_own
-    RIVAL["Posesión %"] = pos_away
-
-    mx_path = find_matrix_for_rival(rival)
-    if mx_path:
-        f2, r2 = ferro_rival_from_matrix(mx_path)
-        # respetamos nombres exactos del panel
-        for k in ROW_ORDER:
-            if k in f2: FERRO[k] = f2[k] if k in PERCENT_ROWS else int(round(f2[k]))
-            if k in r2: RIVAL[k]  = r2[k]  if k in PERCENT_ROWS else int(round(r2[k]))
+    # 2) Matrix (métricas por equipo)
+    mx = {"FERRO": {}, "RIVAL": {}}
+    if MATRIX_PATH and os.path.isfile(MATRIX_PATH):
+        try:
+            mx = compute_from_matrix(MATRIX_PATH)
+        except Exception as e:
+            st.error(f"No pude leer MATRIX '{os.path.basename(MATRIX_PATH)}': {e}")
+            mx = {"FERRO": {}, "RIVAL": {}}
     else:
-        # 3) Fallback a TotalValues si no hay matriz (deja 0 si no encuentra)
-        f2, r2 = ferro_rival_from_totalvalues(xml_path, rival)
-        for k in ROW_ORDER:
-            if k in f2: FERRO[k] = f2[k] if k in PERCENT_ROWS else int(round(f2[k]))
-            if k in r2: RIVAL[k]  = r2[k]  if k in PERCENT_ROWS else int(round(r2[k]))
+        # si no hay MATRIX, dejamos 0 (podemos conectar otro XML si querés)
+        mx = {"FERRO": {k:0 for k in ["Pases totales","Pases OK %","Tiros","Tiros al arco","Recuperaciones","Duelos Ganados","% Duelos Ganados","Corners","Faltas","Goles","Asistencias","Pases Clave"]},
+              "RIVAL": {k:0 for k in ["Pases totales","Pases OK %","Tiros","Tiros al arco","Recuperaciones","Duelos Ganados","% Duelos Ganados","Corners","Faltas","Goles","Asistencias","Pases Clave"]}}
 
-    # Logos
-    ferro_logo = badge_for("Ferro")
-    ferro_logo_path = None
-    if ferro_logo:
-        # no tengo path directo del PIL; busco primero que matchee
-        for ext in ("png","jpg","jpeg","webp"):
-            p = os.path.join(BADGE_DIR, f"ferro.{ext}")
-            if os.path.isfile(p): ferro_logo_path = p; break
+    # 3) Jugadores (último tercio / al área)
+    last_m = last_r = area_m = area_r = 0
+    if XML_JUGADORES and os.path.isfile(XML_JUGADORES):
+        jug = parse_instances_jugadores(XML_JUGADORES)
+        last_m, last_r, area_m, area_r = passes_last_third_and_area(jug)
 
-    rival_logo_path = None
-    for ext in ("png","jpg","jpeg","webp"):
-        p = os.path.join(BADGE_DIR, f"{rival.lower().replace(' ','_')}.{ext}")
-        if os.path.isfile(p): rival_logo_path = p; break
-        p = os.path.join(BADGE_DIR, f"{rival.lower().replace(' ','')}.{ext}")
-        if os.path.isfile(p): rival_logo_path = p; break
-        p = os.path.join(BADGE_DIR, f"{rival}.{ext}")
-        if os.path.isfile(p): rival_logo_path = p; break
+    # Armar FERRO / RIVAL para el render (nombres exactos)
+    FERRO = {
+        "Posesión %":           float(pos_m),
+        "Pases totales":        int(mx["FERRO"].get("Pases totales", 0)),
+        "Pases OK %":           float(mx["FERRO"].get("Pases OK %", 0)),
+        "Pases último tercio":  int(last_m),
+        "Pases al área":        int(area_m),
+        "Tiros":                int(mx["FERRO"].get("Tiros", 0)),
+        "Tiros al arco":        int(mx["FERRO"].get("Tiros al arco", 0)),
+        "Recuperaciones":       int(mx["FERRO"].get("Recuperaciones", 0)),
+        "Duelos ganados":       int(mx["FERRO"].get("Duelos Ganados", 0)),
+        "% Duelos ganados":     float(mx["FERRO"].get("% Duelos Ganados", 0)),
+        "Corners":              int(mx["FERRO"].get("Corners", 0)),
+        "Faltas":               int(mx["FERRO"].get("Faltas", 0)),
+        "Goles":                int(mx["FERRO"].get("Goles", 0)),
+        "Asistencias":          int(mx["FERRO"].get("Asistencias", 0)),
+        "Pases clave":          int(mx["FERRO"].get("Pases Clave", 0)),
+    }
+    RIVAL = {
+        "Posesión %":           float(pos_r),
+        "Pases totales":        int(mx["RIVAL"].get("Pases totales", 0)),
+        "Pases OK %":           float(mx["RIVAL"].get("Pases OK %", 0)),
+        "Pases último tercio":  int(last_r),
+        "Pases al área":        int(area_r),
+        "Tiros":                int(mx["RIVAL"].get("Tiros", 0)),
+        "Tiros al arco":        int(mx["RIVAL"].get("Tiros al arco", 0)),
+        "Recuperaciones":       int(mx["RIVAL"].get("Recuperaciones", 0)),
+        "Duelos ganados":       int(mx["RIVAL"].get("Duelos Ganados", 0)),
+        "% Duelos ganados":     float(mx["RIVAL"].get("% Duelos Ganados", 0)),
+        "Corners":              int(mx["RIVAL"].get("Corners", 0)),
+        "Faltas":               int(mx["RIVAL"].get("Faltas", 0)),
+        "Goles":                int(mx["RIVAL"].get("Goles", 0)),
+        "Asistencias":          int(mx["RIVAL"].get("Asistencias", 0)),
+        "Pases clave":          int(mx["RIVAL"].get("Pases Clave", 0)),
+    }
 
-    footer_left = footer_right = None
-    # si tenés logos específicos en images/banner ponelos con el nombre que quieras; acá no forzamos
+    ferro_logo = badge_path_for("ferro")
+    rival_logo = badge_path_for(rival)
 
     draw_key_stats_panel(
         home_name="FERRO",
-        away_name=rival.upper(),
+        away_name=rival,
         FERRO=FERRO,
         RIVAL=RIVAL,
-        ferro_logo_path=ferro_logo_path,
-        rival_logo_path=rival_logo_path,
-        footer_left=None,
-        footer_right=None
+        ferro_logo_path=ferro_logo,
+        rival_logo_path=rival_logo
     )
 
     with st.expander("Ver tabla base (debug)"):
@@ -484,13 +550,5 @@ if menu == "📊 Estadísticas de Partido":
                             "Rival": [RIVAL[k]  for k in ROW_ORDER]})
         st.dataframe(tbl, use_container_width=True)
 
-elif menu == "⏱️ Minutos":
-    st.info("Esta sección se adaptará del notebook de Minutos por Jugador y Rol.")
-elif menu == "🎯 Tiros":
-    st.info("Esta sección se adaptará del notebook de Tiros por equipo/jugador.")
-elif menu == "🗺️ Mapa 3x3":
-    st.info("Esta sección se adaptará del notebook de Mapa de Calor.")
-elif menu == "🔗 Red de Pases":
-    st.info("Esta sección se adaptará del notebook de Red de Pases.")
-elif menu == "⚡ Radar":
-    st.info("Esta sección se adaptará del notebook de Radar por jugador.")
+else:
+    st.info("Las demás secciones se irán conectando con tus notebooks en los próximos pasos.")
