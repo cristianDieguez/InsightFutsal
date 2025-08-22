@@ -1757,313 +1757,641 @@ if menu == "📬 Destino de pases":
     st.caption(f"Pases plotteados: {kept}")
 
 
-# =============================
-# 📈 RADAR COMPARATIVO (jugador / rol / jugador-rol)
-# =============================
-if menu == "📈 Radar comparativo (jugador/rol)":
-    import pandas as pd, numpy as np, re, os
+# =========================
+# 📈 RADAR COMPARATIVO — Jugador total / Por rol / Jugador & Rol
+# Cálculo on-the-fly: Minutos (XML TotalValues) + Matrix (XLSX)
+# =========================
+if menu == "📈 Radar comparativo":
+    import os, re, unicodedata as ud, xml.etree.ElementTree as ET
     from pathlib import Path
+    import pandas as pd
+    import numpy as np
     import matplotlib.pyplot as plt
     from math import pi
 
-    st.subheader("Radar comparativo entre jugadores")
+    # ---------- UI: rutas base ----------
+    st.subheader("Radar comparativo (multijugador / multirol)")
+    colr1, colr2 = st.columns(2)
+    with colr1:
+        dir_minutos = st.text_input("Carpeta de MINUTOS (XML TotalValues)", value="data/minutos")
+    with colr2:
+        dir_matrix  = st.text_input("Carpeta de MATRIX (XLSX)", value="data/matrix")
 
-    # --- Rutas (ajusta si tus carpetas son otras) ---
-    # Usamos las salidas que ya genera tu pipeline de MATRIX y MINUTOS.
-    BASE = Path(st.session_state.get("DATA_BASE", "."))  # opcional, si lo tenés en session_state
-    DIR_MATRIX  = BASE / "data" / "matrix"
-    DIR_MINUTOS = BASE / "data" / "minutos"
-    # Defaults compatibles con tus scripts de Colab
-    FALLBACK_MATRIX = Path("/content/drive/MyDrive/Sport Data Campus/TFM/Matrix/")
-    FALLBACK_MIN    = Path("/content/drive/MyDrive/Sport Data Campus/TFM/Minutos/_salidas_minutos/")
-
-    CSV_MATRIX_POR_ROL  = next((p for p in [DIR_MATRIX/"_matrix_por_rol.csv", FALLBACK_MATRIX/"_matrix_por_rol.csv"] if p.exists()), None)
-    CSV_MATRIX_POR_JUG  = next((p for p in [DIR_MATRIX/"_matrix_por_jugador.csv", FALLBACK_MATRIX/"_matrix_por_jugador.csv"] if p.exists()), None)
-    CSV_FINAL_POR_ROL   = next((p for p in [DIR_MATRIX/"matrix_final_por_rol.csv", FALLBACK_MATRIX/"matrix_final_por_rol.csv"] if p.exists()), None)
-    CSV_FINAL_POR_JUG   = next((p for p in [DIR_MATRIX/"matrix_final_por_jugador.csv", FALLBACK_MATRIX/"matrix_final_por_jugador.csv"] if p.exists()), None)
-    CSV_MIN_POR_ROL     = next((p for p in [DIR_MINUTOS/"_salidas_minutos/minutos_por_partido_rol.csv", FALLBACK_MIN/"minutos_por_partido_rol.csv"] if p.exists()), None)
-    CSV_MIN_POR_JUG     = next((p for p in [DIR_MINUTOS/"_salidas_minutos/minutos_por_partido_total.csv", FALLBACK_MIN/"minutos_por_partido_total.csv"] if p.exists()), None)
-
-    # Chequeos mínimos
-    missing = []
-    if CSV_MATRIX_POR_ROL is None: missing.append("_matrix_por_rol.csv")
-    if CSV_MIN_POR_ROL   is None: missing.append("minutos_por_partido_rol.csv")
-    if CSV_MATRIX_POR_JUG is None: missing.append("_matrix_por_jugador.csv")
-    if CSV_MIN_POR_JUG    is None: missing.append("minutos_por_partido_total.csv")
-    if missing:
-        st.error("No encuentro archivos necesarios: " + ", ".join(missing))
+    DIR_MINUTOS = Path(dir_minutos).expanduser().resolve()
+    DIR_MATRIX  = Path(dir_matrix).expanduser().resolve()
+    if not DIR_MINUTOS.exists():
+        st.error(f"No existe carpeta MINUTOS: {DIR_MINUTOS}")
+        st.stop()
+    if not DIR_MATRIX.exists():
+        st.error(f"No existe carpeta MATRIX: {DIR_MATRIX}")
         st.stop()
 
-    # --- Carga base ---
-    df_mat_rol  = pd.read_csv(CSV_MATRIX_POR_ROL)
-    df_mat_jug  = pd.read_csv(CSV_MATRIX_POR_JUG)
-    df_min_rol  = pd.read_csv(CSV_MIN_POR_ROL)
-    df_min_jug  = pd.read_csv(CSV_MIN_POR_JUG)
+    # ---------- helpers texto ----------
+    def norm_txt(s: str) -> str:
+        if s is None: return ""
+        s = str(s)
+        s = ud.normalize("NFKD", s).encode("ascii","ignore").decode("ascii")
+        s = re.sub(r"\s+", " ", s.strip().lower())
+        return s
 
-    # Normalizaciones de tipos
-    for d in (df_mat_rol, df_mat_jug):
-        if "jugador" in d.columns: d["jugador"] = d["jugador"].astype(str)
-        if "rol" in d.columns: d["rol"] = d["rol"].astype(str)
-        for c in ("partido_id","rival"):
-            if c in d.columns: d[c] = d[c].astype(str)
+    NAME_ROLE_RE = re.compile(r"^\s*([^(]+?)\s*\(([^)]+)\)")
+    RE_FECHA_RIVAL_MIN = re.compile(
+        r"Fecha\s*(?:N[º°o]\.?\s*)?(\d+)\s*-\s*(.+?)\s*-\s*XML\s*TotalValues",
+        re.IGNORECASE
+    )
+    RE_FECHA_RIVAL_MAT = re.compile(
+        r"Fecha\s*(\d+)\s*-\s*(.+?)\s*-\s*Matrix",
+        re.IGNORECASE
+    )
 
-    for d in (df_min_rol, df_min_jug):
-        if "nombre" in d.columns: d["nombre"] = d["nombre"].astype(str)
-        if "rol" in d.columns: d["rol"] = d["rol"].astype(str)
-        for c in ("partido_id","rival"):
-            if c in d.columns: d[c] = d[c].astype(str)
+    def parse_fecha_rival_from_name(stem: str, is_minutos=True):
+        m = (RE_FECHA_RIVAL_MIN if is_minutos else RE_FECHA_RIVAL_MAT).search(stem)
+        if m:
+            fecha = int(m.group(1))
+            rival = m.group(2).strip()
+            return fecha, rival, f"F{fecha}_{rival}"
+        # fallback
+        return None, stem, stem
 
-    # --- Interfaz ---
-    scope = st.radio("Ámbito", ["Jugador (total)", "Por rol", "Jugador + Rol"], horizontal=True)
-    min_minutos = st.slider("Umbral mínimo de minutos (acumulado)", 0, 300, 120, 10)
+    def mmss(seg):
+        s = int(round(seg))
+        m, s = divmod(s, 60)
+        return f"{m:02d}:{s:02d}"
 
-    # Tomamos columnas numéricas y separamos % de absolutos
-    def split_cols(df):
-        pct_cols = [c for c in df.columns if "%" in c or " % " in c or c.startswith("Tiros - %")]
-        id_cols  = {"partido_id","fecha","rival","archivo","hoja","jugador","rol","minutos","nombre"}
-        num_cols = [c for c in df.columns if c not in id_cols and pd.api.types.is_numeric_dtype(pd.to_numeric(df[c], errors="coerce"))]
-        abs_cols = [c for c in num_cols if c not in pct_cols]
-        return abs_cols, pct_cols
-
-    # --- Ensamble para cada scope ---
-    def build_dataset(scope: str):
+    # ---------- 1) MINUTOS desde XML TotalValues ----------
+    @st.cache_data(show_spinner=True)
+    def build_minutos_por_partido(DIR_MINUTOS: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
         """
         Devuelve:
-         - df_plot: dataset agregado (cada fila = entidad comparada)
-         - label_id: nombre de la columna identificadora para la leyenda
-         - abs_cols, pct_cols: catálogos disponibles
+          - df_por_rol: minutos/partido por (nombre, rol)
+          - df_por_jugador: minutos/partido total por jugador (sumando roles)
         """
-        if scope == "Jugador (total)":
-            # Intersección Matrix x Minutos a nivel jugador
-            valid = pd.merge(
-                df_mat_rol[["partido_id","fecha","rival","jugador"]],
-                df_min_jug[["partido_id","fecha","rival","nombre","minutos"]],
-                left_on=["partido_id","fecha","rival","jugador"],
-                right_on=["partido_id","fecha","rival","nombre"],
-                how="inner"
-            ).drop(columns=["nombre"])
-            # Min tot por jugador
-            mins_ok = (valid.groupby(["jugador"], as_index=False)["minutos"].sum()
-                             .query("minutos >= @min_minutos"))
+        HARD_LABELS = {
+            "goles a favor en cancha": "gf_on",
+            "gol rival en cancha": "ga_on",
+            "participa en gol hecho": "part_gf",
+            "involucrado en gol recibido": "invol_ga",
+            "valla invicta en cancha": "valla",
+        }
+        IGNORABLE_LABELS = {"total"}
 
-            # Normalizar acciones absolutas a 40' por partido y promediar por jugador
-            # 1) unimos matrix por rol con minutos por jugador-rol-partido (desde df_min_rol)
-            m = pd.merge(
-                df_mat_rol,
-                df_min_rol[["partido_id","fecha","rival","nombre","rol","minutos"]],
-                left_on=["partido_id","fecha","rival","jugador","rol"],
-                right_on=["partido_id","fecha","rival","nombre","rol"],
-                how="inner"
-            ).drop(columns=["nombre"])
+        def labels_from_inst(inst):
+            labs = []
+            for lab in inst.findall("./label"):
+                txt = lab.findtext("text")
+                if isinstance(txt, str) and txt.strip():
+                    labs.append(norm_txt(txt))
+            labs = [x for x in labs if x]
+            decision = [x for x in labs if x not in IGNORABLE_LABELS]
+            return labs, decision
 
-            abs_cols, pct_cols = split_cols(m)
-            if not abs_cols and not pct_cols:
-                return pd.DataFrame(), "jugador", [], []
+        def merge_intervals(intervals):
+            if not intervals: return []
+            ints = []
+            for s, e in intervals:
+                try:
+                    s = float(s); e = float(e)
+                except:
+                    continue
+                if e <= s: e = s + 0.04
+                ints.append((s, e))
+            ints.sort()
+            merged = [list(ints[0])]
+            for s, e in ints[1:]:
+                if s <= merged[-1][1]:
+                    merged[-1][1] = max(merged[-1][1], e)
+                else:
+                    merged.append([s, e])
+            return [(s, e) for s, e in merged]
 
-            m[abs_cols] = m[abs_cols].apply(pd.to_numeric, errors="coerce").fillna(0)
-            m["minutos"] = pd.to_numeric(m["minutos"], errors="coerce").fillna(0)
+        rows_rol, rows_jug = [], []
+        xmls = sorted(DIR_MINUTOS.rglob("*.xml"))
+        for p in xmls:
+            if "TotalValues" not in p.stem:
+                continue
+            fecha, rival, partido_id = parse_fecha_rival_from_name(p.stem, is_minutos=True)
+            try:
+                root = ET.parse(p).getroot()
+            except Exception as e:
+                continue
 
-            # 2) por partido: escalar absolutos a 40 según minutos jugados en ese partido
-            #    (evitamos div/0 manteniendo 0 si minutos=0)
-            for c in abs_cols:
-                m[c] = np.where(m["minutos"] > 0, m[c] * (40.0 / m["minutos"]), 0.0)
+            agg = {}  # (nombre, rol) -> {"intervals":[(s,e)], contadores...}
+            for inst in root.findall(".//instance"):
+                s = inst.findtext("start"); e = inst.findtext("end")
+                try:
+                    s = float(s); e = float(e)
+                except:
+                    continue
+                if e <= s: e = s + 0.04
 
-            # 3) promedio por jugador (solo filas válidas) y unir filtro por minutos totales
-            keep_ids = m[["partido_id","fecha","rival","jugador"]].merge(
-                mins_ok[["jugador"]], on="jugador", how="inner"
-            )
-            m_keep = m.merge(keep_ids.drop_duplicates(), on=["partido_id","fecha","rival","jugador"], how="inner")
+                code = inst.findtext("code") or ""
+                m = NAME_ROLE_RE.match(code)
+                if not m:  # asegurar solo instancias con "Nombre (Rol)"
+                    continue
+                nombre = m.group(1).strip()
+                rol    = m.group(2).strip()
 
-            # promedios
-            grp = (m_keep.groupby(["jugador"], as_index=False)[abs_cols + pct_cols].mean())
-            grp = grp.merge(mins_ok, on="jugador", how="left")
-            return grp, "jugador", abs_cols, pct_cols
+                labs_all, labs_dec = labels_from_inst(inst)
+                has_relevant = any(l in HARD_LABELS for l in labs_all)
+                is_empty_after = (len(labs_dec) == 0)
+                if not (has_relevant or is_empty_after):
+                    continue
 
-        elif scope == "Por rol":
-            # Queremos comparar "ROL" agregado (promedio de jugadores en ese rol).
-            # Intersección válida a nivel jugador-rol
-            valid = pd.merge(
-                df_mat_rol[["partido_id","fecha","rival","jugador","rol"]],
-                df_min_rol[["partido_id","fecha","rival","nombre","rol","minutos"]],
-                left_on=["partido_id","fecha","rival","jugador","rol"],
-                right_on=["partido_id","fecha","rival","nombre","rol"],
-                how="inner"
-            ).drop(columns=["nombre"])
+                counts = {k:0 for k in ("gf_on","ga_on","part_gf","invol_ga","valla")}
+                for l in labs_all:
+                    if l in HARD_LABELS:
+                        counts[HARD_LABELS[l]] += 1
 
-            mins_ok = (valid.groupby(["rol"], as_index=False)["minutos"].sum()
-                             .query("minutos >= @min_minutos"))
+                key = (nombre, rol)
+                if key not in agg:
+                    agg[key] = {"intervals": [], "gf":0, "ga":0, "part":0, "invol":0, "valla":0}
+                a = agg[key]
+                a["intervals"].append((s, e))
+                a["gf"]    += counts["gf_on"]
+                a["ga"]    += counts["ga_on"]
+                a["part"]  += counts["part_gf"]
+                a["invol"] += counts["invol_ga"]
+                a["valla"] += counts["valla"]
 
-            m = pd.merge(
-                df_mat_rol,
-                df_min_rol[["partido_id","fecha","rival","nombre","rol","minutos"]],
-                left_on=["partido_id","fecha","rival","jugador","rol"],
-                right_on=["partido_id","fecha","rival","nombre","rol"],
-                how="inner"
-            ).drop(columns=["nombre"])
+            # construir filas
+            for (nombre, rol), a in agg.items():
+                merged = merge_intervals(a["intervals"])
+                segundos = sum(e - s for s, e in merged)
+                rows_rol.append({
+                    "partido_id": partido_id, "fecha": fecha, "rival": rival,
+                    "nombre": nombre, "rol": rol,
+                    "segundos": int(round(segundos)),
+                    "mmss": mmss(segundos),
+                    "minutos": round(segundos/60.0, 2),
+                })
 
-            abs_cols, pct_cols = split_cols(m)
-            if not abs_cols and not pct_cols:
-                return pd.DataFrame(), "rol", [], []
+            # jugador total
+            if agg:
+                by_player = {}
+                for (nombre, rol), a in agg.items():
+                    merged = merge_intervals(a["intervals"])
+                    seg = sum(e - s for s, e in merged)
+                    by_player[nombre] = by_player.get(nombre, 0.0) + seg
+                for nombre, seg in by_player.items():
+                    rows_jug.append({
+                        "partido_id": partido_id, "fecha": fecha, "rival": rival,
+                        "nombre": nombre,
+                        "segundos": int(round(seg)),
+                        "mmss": mmss(seg),
+                        "minutos": round(seg/60.0, 2),
+                    })
 
-            m[abs_cols] = m[abs_cols].apply(pd.to_numeric, errors="coerce").fillna(0)
-            m["minutos"] = pd.to_numeric(m["minutos"], errors="coerce").fillna(0)
+        df_por_rol = pd.DataFrame(rows_rol)
+        df_por_jug = pd.DataFrame(rows_jug)
+        return df_por_rol, df_por_jug
 
-            for c in abs_cols:
-                m[c] = np.where(m["minutos"] > 0, m[c] * (40.0 / m["minutos"]), 0.0)
+    # ---------- 2) MATRIX desde XLSX (cuenta acciones + % derivados) ----------
+    GROUPS = {
+        "Pase Corto Frontal": ["Pase Corto Frontal", "Pase Corto Frontal Completado", "Pase Corto Frontal OK"],
+        "Pase Corto Lateral": ["Pase Corto Lateral", "Pase Corto Lateral Completado", "Pase Corto Lateral OK"],
+        "Pase Progresivo Frontal": ["Pase Progresivo Frontal", "Pase Progresivo Frontal Completado", "Pase Progresivo Frontal OK"],
+        "Pase Progresivo Lateral": ["Pase Progresivo Lateral", "Pase Progesivo Lateral Completado", "Pase Progresivo Lateral OK"],
+        "Centros": ["Centros", "Centros OK", "Centros Rematados"],
+        "Tiros": ["Tiro al arco","Tiro Atajado","Tiro Bloqueado","Tiro Desviado","Tiro Errado - Pifia","Tiro Hecho"],
+        "Regates": [
+            "Regate conseguido - Mantiene pelota",
+            "Regate conseguido - Pierde pelota",
+            "Regate No conseguido - Mantiene pelota",
+            "Regate No conseguido - Pierde pelota",
+        ],
+        "Pivot": ["Aguanta Pivotea","Gira"],
+        "Presion": ["Presiona","Presionado"],
+        "Faltas": ["Faltas Hecha","Faltas Recibidas"],
+        "Recuperaciones": ["Recuperacion x Duelo","Recuperación x Interceptacion","Recuperacion x Mal Control",
+                           "Recuperacion x Mal Pase Rival","Recuperacion x Robo"],
+        "Perdidas": ["Pérdida x Duelo","Pérdida x Interceptacion Rival","Pérdida x Mal Control","Pérdida x Mal Pase","Pérdida x Robo Rival"],
+        "1v1": ["1v1 Ganado","1v1 perdido"],
+        "Arquero Acciones": ["Accion fuera del area","Achique","Rebote corto","Rebote largo","Tiro Atajado por Reflejos"],
+        "Arquero Pase Corto Frontal": ["Pase Corto Frontal cPie","Pase Corto Frontal Completado cPie","Pase Corto Frontal OK cPie"],
+        "Arquero Pase Corto Lateral": ["Pase Corto Lateral cPie","Pase Corto Lateral Completado cPie","Pase Corto Lateral OK cPie"],
+        "Arquero Pase Progresivo Frontal": ["Pase Progresivo Frontal cPie","Pase Progesivo Frontal Completado cPie","Pase Progresivo Frontal OK cPie"],
+        "Arquero Pase Progresivo Lateral": ["Pase Progresivo Lateral cPie","Pase Progesivo Lateral Completado cPie","Pase Progresivo Lateral OK cPie"],
+        "Arquero Salida Corta": ["Salida de arco corto cMano","Salida de arco Corto Completado cMano","Salida de arco Corto OK cMano"],
+        "Arquero Salida Progresiva": ["Salida de arco progresivo cMano","Salida de arco Progesivo Completado cMano","Salida de arco Progresivo OK cMano"],
+        "Corners": ["Corner 2do Palo","Corner Al Area","Corner En corto"],
+        "Asistencias/Clave": ["Asistencia","Pase Clave"],
+        "Conduccion": ["Conduccion"],
+        "Despeje": ["Despeje"],
+        "Gol": ["Gol"],
+    }
+    NORM_TO_ORIG = {norm_txt(v): v for vs in GROUPS.values() for v in vs}
+    ALL_ACTIONS = list(dict.fromkeys([v for vs in GROUPS.values() for v in vs]))
 
-            keep_ids = m[["partido_id","fecha","rival","rol"]].merge(
-                mins_ok[["rol"]], on="rol", how="inner"
-            )
-            m_keep = m.merge(keep_ids.drop_duplicates(), on=["partido_id","fecha","rival","rol"], how="inner")
+    def split_name_role(code: str):
+        m = NAME_ROLE_RE.match(str(code))
+        if m: return m.group(1).strip(), m.group(2).strip()
+        return None, None
 
-            grp = (m_keep.groupby(["rol"], as_index=False)[abs_cols + pct_cols].mean())
-            grp = grp.merge(mins_ok, on="rol", how="left")
-            return grp, "rol", abs_cols, pct_cols
-
-        else:  # "Jugador + Rol"
-            valid = pd.merge(
-                df_mat_rol[["partido_id","fecha","rival","jugador","rol"]],
-                df_min_rol[["partido_id","fecha","rival","nombre","rol","minutos"]],
-                left_on=["partido_id","fecha","rival","jugador","rol"],
-                right_on=["partido_id","fecha","rival","nombre","rol"],
-                how="inner"
-            ).drop(columns=["nombre"])
-
-            mins_ok = (valid.groupby(["jugador","rol"], as_index=False)["minutos"].sum()
-                             .query("minutos >= @min_minutos"))
-
-            m = pd.merge(
-                df_mat_rol,
-                df_min_rol[["partido_id","fecha","rival","nombre","rol","minutos"]],
-                left_on=["partido_id","fecha","rival","jugador","rol"],
-                right_on=["partido_id","fecha","rival","nombre","rol"],
-                how="inner"
-            ).drop(columns=["nombre"])
-
-            abs_cols, pct_cols = split_cols(m)
-            if not abs_cols and not pct_cols:
-                return pd.DataFrame(), "jugador_rol", [], []
-
-            m[abs_cols] = m[abs_cols].apply(pd.to_numeric, errors="coerce").fillna(0)
-            m["minutos"] = pd.to_numeric(m["minutos"], errors="coerce").fillna(0)
-
-            for c in abs_cols:
-                m[c] = np.where(m["minutos"] > 0, m[c] * (40.0 / m["minutos"]), 0.0)
-
-            m["jugador_rol"] = m["jugador"].astype(str) + " (" + m["rol"].astype(str) + ")"
-
-            keep_ids = m[["partido_id","fecha","rival","jugador_rol"]].merge(
-                (mins_ok.assign(jugador_rol=lambda d: d["jugador"].astype(str) + " (" + d["rol"].astype(str) + ")"))[["jugador_rol"]],
-                on="jugador_rol", how="inner"
-            )
-            m_keep = m.merge(keep_ids.drop_duplicates(), on=["partido_id","fecha","rival","jugador_rol"], how="inner")
-
-            grp = (m_keep.groupby(["jugador_rol"], as_index=False)[abs_cols + pct_cols].mean())
-            grp = grp.merge((mins_ok.assign(jugador_rol=lambda d: d["jugador"].astype(str) + " (" + d["rol"].astype(str) + ")"))[["jugador_rol","minutos"]],
-                            on="jugador_rol", how="left")
-            return grp, "jugador_rol", abs_cols, pct_cols
-
-    df_plot, label_id, abs_cols_all, pct_cols_all = build_dataset(scope)
-    if df_plot.empty:
-        st.warning("No hay datos con el umbral de minutos y el alcance elegido.")
-        st.stop()
-
-    # --- Selección de entidades a comparar ---
-    entidades = st.multiselect("Elegí quiénes comparar", sorted(df_plot[label_id].unique()), default=sorted(df_plot[label_id].unique())[:5])
-    df_plot = df_plot[df_plot[label_id].isin(entidades)].reset_index(drop=True)
-    if df_plot.empty:
-        st.warning("Sin filas luego del filtro de entidades."); st.stop()
-
-    # --- Selección de variables ---
-    abs_cols_all = [c for c in abs_cols_all if c in df_plot.columns]
-    pct_cols_all = [c for c in pct_cols_all if c in df_plot.columns]
-    with st.expander("Variables disponibles", expanded=False):
-        col1, col2 = st.columns(2)
-        with col1:
-            vars_abs = st.multiselect("Absolutas (se escalan a 40’ por partido y luego se normalizan a 0–1)", sorted(abs_cols_all), default=sorted(abs_cols_all)[:4])
-        with col2:
-            vars_pct = st.multiselect("Porcentuales (normalizadas a 0–1)", sorted(pct_cols_all), default=[c for c in pct_cols_all if "Acciones Positivas" in c][:1])
-
-    sel_vars = vars_abs + vars_pct
-    if not sel_vars:
-        st.warning("Elegí al menos una variable para el radar.")
-        st.stop()
-
-    # --- Normalización a 0–1 para el radar ---
-    norm_mode = st.selectbox("Modo de normalización para el radar", ["Automático (abs min–max; % /100)", "Min–Max (todas)"])
-
-    X = df_plot[[label_id, "minutos"] + sel_vars].copy()
-    # aseguramos numérico
-    for c in sel_vars:
-        X[c] = pd.to_numeric(X[c], errors="coerce")
-
-    if norm_mode.startswith("Automático"):
-        # % → [0,1] dividiendo por 100 si vienen en 0–100
-        for c in vars_pct:
-            # si ya parecen 0–1 no tocamos
-            vmax = X[c].max(skipna=True)
-            if pd.notna(vmax) and vmax > 1.0:
-                X[c] = (X[c] / 100.0).clip(0, 1)
-        # absolutos → min–max por variable entre las entidades elegidas
-        for c in vars_abs:
-            col = X[c].astype(float)
-            mn, mx = np.nanmin(col.values), np.nanmax(col.values)
-            if pd.isna(mn) or pd.isna(mx) or mx == mn:
-                X[c] = 0.0  # si no hay variación
+    def merge_duplicate_columns(df: pd.DataFrame) -> pd.DataFrame:
+        if not df.columns.duplicated().any():
+            return df
+        merged = {}
+        for col in df.columns.unique():
+            block = df.loc[:, df.columns == col]
+            if block.shape[1] == 1:
+                merged[col] = block.iloc[:, 0]
             else:
-                X[c] = (col - mn) / (mx - mn)
+                num = block.apply(pd.to_numeric, errors="coerce")
+                summed = num.sum(axis=1, min_count=1)
+                if summed.notna().any():
+                    merged[col] = summed
+                else:
+                    merged[col] = block.bfill(axis=1).iloc[:, 0]
+        return pd.DataFrame(merged)
+
+    def normalize_columns(df):
+        df = df.copy()
+        df.columns = [norm_txt(c) for c in df.columns]
+        return df
+
+    def wide_or_long_to_wide(df):
+        df = df.copy()
+        cols = set(df.columns)
+        # reconstrucción jugador/rol
+        if "code" in cols and ("jugador" not in cols or "rol" not in cols):
+            j, r = zip(*df["code"].map(split_name_role))
+            df["jugador"] = list(j); df["rol"] = list(r)
+
+        if "jugador" in df.columns and "rol" not in df.columns:
+            j, r = zip(*df["jugador"].map(split_name_role))
+            df["_j"] = j; df["_r"] = r
+            df["rol"] = df["_r"].where(pd.Series(r).notna(), df.get("rol","sin rol"))
+            df["jugador"] = df["_j"].where(pd.Series(j).notna(), df["jugador"])
+            df = df.drop(columns=["_j","_r"])
+
+        if "jugador" not in df.columns or "rol" not in df.columns:
+            if "nombre" in df.columns and "rol" in df.columns:
+                df = df.rename(columns={"nombre":"jugador"})
+            else:
+                return pd.DataFrame(columns=["jugador","rol","accion","cantidad"])
+
+        df = df[(df["jugador"].astype(str).str.strip().str.lower() != "tiempo no jugado")]
+        # ¿long ya?
+        var_col = next((c for c in ("variable","accion","accion/variable","evento") if c in cols), None)
+        val_col = next((c for c in ("cantidad","valor","count","conteo","n") if c in cols), None)
+        if var_col and val_col:
+            tmp = df.loc[:, ["jugador","rol",var_col,val_col]].copy()
+            tmp = tmp.rename(columns={var_col:"accion", val_col:"cantidad"})
+            tmp["accion"] = tmp["accion"].map(lambda x: NORM_TO_ORIG.get(norm_txt(x), x))
+            tmp["cantidad"] = pd.to_numeric(tmp["cantidad"], errors="coerce").fillna(0)
+            tmp = tmp.groupby(["jugador","rol","accion"], as_index=False)["cantidad"].sum()
+            return tmp
+
+        # wide → long
+        action_cols = []
+        for c in df.columns:
+            if c in ("jugador","rol","code"): 
+                continue
+            col_obj = pd.to_numeric(df[c], errors="coerce")
+            if col_obj.notna().any() or norm_txt(c) in NORM_TO_ORIG:
+                action_cols.append(c)
+        if not action_cols:
+            return pd.DataFrame(columns=["jugador","rol","accion","cantidad"])
+
+        long = df[["jugador","rol"] + action_cols].melt(id_vars=["jugador","rol"], var_name="accion", value_name="cantidad")
+        long["cantidad"] = pd.to_numeric(long["cantidad"], errors="coerce").fillna(0)
+        long["accion"] = long["accion"].map(lambda x: NORM_TO_ORIG.get(norm_txt(x), x))
+        long = long.groupby(["jugador","rol","accion"], as_index=False)["cantidad"].sum()
+        return long
+
+    def counts_per_jugrol(long_df):
+        if long_df.empty: return pd.DataFrame()
+        rows = []
+        for (jug, rol), g in long_df.groupby(["jugador","rol"]):
+            row = {"jugador": jug, "rol": rol}
+            dd = dict(g.groupby("accion")["cantidad"].sum())
+            for a in ALL_ACTIONS:
+                row[a] = dd.get(a, 0)
+            rows.append(row)
+        return pd.DataFrame(rows)
+
+    def ratio(num, den):
+        with np.errstate(divide='ignore', invalid='ignore'):
+            r = np.where(den > 0, num / den, np.nan)
+        return r
+
+    def add_derived_percentages(df):
+        if df.empty: return df
+        df = df.copy()
+
+        def s(*cols):
+            vals = [pd.to_numeric(df.get(c, 0), errors="coerce").fillna(0) for c in cols if c in df.columns]
+            return sum(vals) if vals else pd.Series(0, index=df.index)
+
+        # Regates
+        rcols = GROUPS["Regates"]
+        if all(c in df.columns for c in rcols):
+            df["Regates - Total"] = s(*rcols)
+            exi = pd.to_numeric(df["Regate conseguido - Mantiene pelota"], errors="coerce").fillna(0)
+            df["% Regates Exitosos"] = ratio(exi, df["Regates - Total"]) * 100
+
+        # 1v1
+        if "1v1 Ganado" in df.columns and "1v1 perdido" in df.columns:
+            g1 = pd.to_numeric(df["1v1 Ganado"], errors="coerce").fillna(0)
+            p1 = pd.to_numeric(df["1v1 perdido"], errors="coerce").fillna(0)
+            df["% Duelos Ganados"] = ratio(g1, g1 + p1) * 100
+
+        # Tiros
+        if "Tiro al arco" in df.columns and "Tiro Hecho" in df.columns:
+            ta = pd.to_numeric(df["Tiro al arco"], errors="coerce").fillna(0)
+            th = pd.to_numeric(df["Tiro Hecho"], errors="coerce").fillna(0)
+            gol = pd.to_numeric(df.get("Gol", 0), errors="coerce").fillna(0)
+            df["Tiros - % al arco"] = ratio(ta, th) * 100
+            df["Tiros - % Goles/Tiro al arco"] = ratio(gol, ta) * 100
+
+        # Recuperaciones / Pérdidas
+        rec_cols = GROUPS["Recuperaciones"]
+        per_cols = GROUPS["Perdidas"]
+        df["Recuperaciones - Total"] = s(*rec_cols)
+        df["Perdidas - Total"]      = s(*per_cols)
+        df["% Recuperaciones"]      = ratio(df["Recuperaciones - Total"], df["Recuperaciones - Total"] + df["Perdidas - Total"]) * 100
+
+        # % Pases (OK/Base y Completado/Base)
+        passlike = [k for k in GROUPS if k.startswith("Pase ") or k.startswith("Arquero Pase")]
+        for gname in passlike:
+            base, comp, ok = GROUPS[gname]
+            if base in df.columns:
+                b = pd.to_numeric(df[base], errors="coerce").fillna(0)
+                c = pd.to_numeric(df.get(comp, 0), errors="coerce").fillna(0)
+                o = pd.to_numeric(df.get(ok, 0), errors="coerce").fillna(0)
+                df[f"% {base}"] = ratio(o, b) * 100
+                df[f"% {comp}"] = ratio(c, b) * 100
+
+        # Índice positivo (simple)
+        posit = []
+        # “Completados”
+        posit += [c for c in df.columns if "Completado" in c and not c.strip().startswith("%")]
+        posit += ["Centros Rematados","Tiro al arco",
+                  "Regate conseguido - Mantiene pelota",
+                  "Aguanta Pivotea","Gira","Faltas Recibidas",
+                  "Recuperaciones - Total","1v1 Ganado","Asistencia","Pase Clave","Gol","Conduccion"]
+        posit = list(dict.fromkeys([c for c in posit if c in df.columns]))
+        tot = [c for c in df.columns if c in ALL_ACTIONS]  # todas las acciones base presentes
+
+        def s_cols(cols): 
+            return sum(pd.to_numeric(df[c], errors="coerce").fillna(0) for c in cols) if cols else pd.Series(0, index=df.index)
+
+        df["Acciones Positivas - Total"] = s_cols(posit)
+        df["Acciones - Total"] = s_cols(tot)
+        df["% Acciones Positivas"] = ratio(df["Acciones Positivas - Total"], df["Acciones - Total"]) * 100
+        return df
+
+    @st.cache_data(show_spinner=True)
+    def build_matrix_counts(DIR_MATRIX: Path) -> pd.DataFrame:
+        rows = []
+        xlsx_files = sorted(DIR_MATRIX.glob("*.xlsx"))
+        for xlsx in xlsx_files:
+            fecha, rival, partido_id = parse_fecha_rival_from_name(xlsx.stem, is_minutos=False)
+            try:
+                sheets = pd.read_excel(xlsx, sheet_name=None)
+            except Exception:
+                continue
+            for sh, df in (sheets or {}).items():
+                if df is None or df.empty: 
+                    continue
+                df = normalize_columns(df)
+                df = merge_duplicate_columns(df)
+
+                # eliminar columnas alineación tipo "Nombre (rol)" si aparecen como extra
+                alineacion_pat = re.compile(r".+\((?:cierre|pivot|ala\s*[di])\)$", flags=re.I)
+                cols_alineacion = [c for c in df.columns if alineacion_pat.match(str(c))]
+                if cols_alineacion:
+                    df = df.drop(columns=cols_alineacion, errors="ignore")
+
+                long_df = wide_or_long_to_wide(df)
+                if long_df.empty: 
+                    continue
+                cnt = counts_per_jugrol(long_df)
+                if cnt.empty: 
+                    continue
+                cnt.insert(0, "partido_id", partido_id)
+                cnt.insert(1, "fecha", fecha)
+                cnt.insert(2, "rival", rival)
+                cnt.insert(3, "archivo", xlsx.name)
+                cnt.insert(4, "hoja", sh)
+                rows.append(cnt)
+        out = pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
+        if out.empty:
+            return out
+        out = add_derived_percentages(out)
+        return out
+
+    # ---------- Construir datasets base (caché) ----------
+    with st.spinner("Leyendo MINUTOS y MATRIX..."):
+        df_min_rol, df_min_jug = build_minutos_por_partido(DIR_MINUTOS)
+        df_mat_rol = build_matrix_counts(DIR_MATRIX)
+
+    if df_mat_rol.empty:
+        st.warning("No se pudo leer MATRIX (XLSX). Revisa la carpeta.")
+        st.stop()
+    if df_min_rol.empty and df_min_jug.empty:
+        st.warning("No se pudo leer MINUTOS (XML TotalValues). Revisa la carpeta.")
+        st.stop()
+
+    # ---------- Intersección de partidos válidos & normalización a 40' ----------
+    # Por ROL
+    if not df_min_rol.empty:
+        join_rol = pd.merge(
+            df_mat_rol,
+            df_min_rol[["partido_id","fecha","rival","nombre","rol","minutos"]],
+            left_on=["partido_id","fecha","rival","jugador","rol"],
+            right_on=["partido_id","fecha","rival","nombre","rol"],
+            how="inner"
+        ).drop(columns=["nombre"])
     else:
-        # Min–Max para todo
-        for c in sel_vars:
-            col = X[c].astype(float)
-            mn, mx = np.nanmin(col.values), np.nanmax(col.values)
-            if pd.isna(mn) or pd.isna(mx) or mx == mn:
-                X[c] = 0.0
-            else:
-                X[c] = (col - mn) / (mx - mn)
+        join_rol = pd.DataFrame()
 
-    # --- Radar ---
-    labels = sel_vars
+    # Por JUGADOR total (sumando roles)
+    if not df_min_jug.empty:
+        join_jug = pd.merge(
+            df_mat_rol,
+            df_min_jug[["partido_id","fecha","rival","nombre","minutos"]],
+            left_on=["partido_id","fecha","rival","jugador"],
+            right_on=["partido_id","fecha","rival","nombre"],
+            how="inner"
+        ).drop(columns=["nombre"])
+    else:
+        join_jug = pd.DataFrame()
+
+    # Columnas % y absolutas
+    def split_pct_abs(df):
+        pct_cols = [c for c in df.columns if "%" in c]
+        id_cols  = ["partido_id","fecha","rival","archivo","hoja","jugador","rol","minutos"]
+        abs_cols = [c for c in df.columns if c not in pct_cols + id_cols]
+        return abs_cols, pct_cols
+
+    # Normalizar ABS por partido a 40 min, luego promediar
+    def normalize_and_avg(df, by_cols):
+        if df.empty: 
+            return df
+        abs_cols, pct_cols = split_pct_abs(df)
+        out = df.copy()
+        for c in abs_cols:
+            out[c] = pd.to_numeric(out[c], errors="coerce")
+            out[c] = out[c] * (40.0 / out["minutos"].replace(0, np.nan))
+        # promedios por entidad
+        grouped = out.groupby(by_cols, as_index=False)[abs_cols + pct_cols].mean(numeric_only=True)
+        # redondeos amables
+        grouped[abs_cols] = grouped[abs_cols].round(2)
+        grouped[pct_cols] = grouped[pct_cols].round(2)
+        return grouped
+
+    df_avg_por_rol      = normalize_and_avg(join_rol, by_cols=["jugador","rol"])
+    df_avg_por_jugador  = normalize_and_avg(join_jug, by_cols=["jugador"])
+
+    # ---------- UI de comparación ----------
+    scope = st.radio("Ámbito de comparación", ["Jugador total", "Por rol", "Jugador y rol"], horizontal=True)
+
+    # lista de métricas elegibles (todas las numéricas disponibles)
+    candidates = sorted([c for c in df_mat_rol.columns if c not in 
+                        {"partido_id","fecha","rival","archivo","hoja","jugador","rol"}])
+    # separamos por tipo
+    pct_candidates = [c for c in candidates if "%" in c]
+    abs_candidates = [c for c in candidates if "%" not in c]
+
+    st.markdown("**Elegí métricas (pueden ser % y/o absolutos normalizados a 40’)**")
+    c1, c2 = st.columns(2)
+    with c1:
+        mets_pct = st.multiselect("Métricas %", pct_candidates, default=["% Acciones Positivas"])
+    with c2:
+        mets_abs = st.multiselect("Métricas absolutas", abs_candidates, default=[])
+
+    metrics = [*mets_pct, *mets_abs]
+    if not metrics:
+        st.info("Elegí al menos una métrica para comparar.")
+        st.stop()
+
+    min_minutos = st.number_input("Minutos mínimos totales (para incluir en la comparación)", min_value=0.0, value=20.0, step=5.0)
+
+    # filtros según scope
+    if scope == "Jugador total":
+        base = df_avg_por_jugador.copy()
+        if base.empty:
+            st.warning("No hay datos válidos para Jugador total.")
+            st.stop()
+        # sumar minutos válidos
+        mins_valid = join_jug.groupby("jugador", as_index=False)["minutos"].sum()
+        base = pd.merge(base, mins_valid, on="jugador", how="left", suffixes=("","_tot"))
+        base = base[base["minutos"] >= min_minutos].copy()
+        # selección de jugadores
+        jugadores = sorted(base["jugador"].unique().tolist())
+        sel_jug = st.multiselect("Jugadores a comparar", jugadores, default=jugadores[:min(6, len(jugadores))])
+        base = base[base["jugador"].isin(sel_jug)]
+        label_col = "jugador"
+
+    elif scope == "Por rol":
+        base = df_avg_por_rol.copy()
+        if base.empty:
+            st.warning("No hay datos válidos para Rol.")
+            st.stop()
+        # minutos por jug+rol
+        mins_valid = join_rol.groupby(["jugador","rol"], as_index=False)["minutos"].sum()
+        base = pd.merge(base, mins_valid, on=["jugador","rol"], how="left")
+        # filtro rol
+        roles = sorted(base["rol"].dropna().unique().tolist())
+        sel_rol = st.selectbox("Rol", roles, index=0 if roles else None)
+        base = base[base["rol"] == sel_rol]
+        base = base[base["minutos"] >= min_minutos].copy()
+        jugadores = sorted(base["jugador"].unique().tolist())
+        sel_jug = st.multiselect("Jugadores a comparar", jugadores, default=jugadores[:min(6, len(jugadores))])
+        base = base[base["jugador"].isin(sel_jug)]
+        label_col = "jugador"
+
+    else:  # Jugador y rol (comparar entradas jug-rol entre sí)
+        base = df_avg_por_rol.copy()
+        if base.empty:
+            st.warning("No hay datos válidos para Jugador & Rol.")
+            st.stop()
+        mins_valid = join_rol.groupby(["jugador","rol"], as_index=False)["minutos"].sum()
+        base = pd.merge(base, mins_valid, on=["jugador","rol"], how="left")
+        # escoger combinaciones
+        base["jug_rol"] = base["jugador"] + " (" + base["rol"].astype(str) + ")"
+        combos = sorted(base["jug_rol"].unique().tolist())
+        sel_combo = st.multiselect("Jugador (Rol)", combos, default=combos[:min(6, len(combos))])
+        base = base[base["jug_rol"].isin(sel_combo)]
+        base = base[base["minutos"] >= min_minutos].copy()
+        label_col = "jug_rol"
+
+    if base.empty:
+        st.warning("No hay filas luego de aplicar filtros.")
+        st.stop()
+
+    # validar que estén las columnas
+    miss = [m for m in metrics if m not in base.columns]
+    if miss:
+        st.error(f"Faltan columnas en los datos: {miss}")
+        st.stop()
+
+    # ---------- RADAR ----------
+    # construir tabla radar (0–1 para % y reescalado para absolutos si querés)
+    # regla: % se pasa a 0–1; absolutos se normalizan min-max sobre el subconjunto para comparabilidad de forma.
+    rad = base[[label_col, "minutos"] + metrics].copy()
+
+    # % → 0–1
+    for c in metrics:
+        if "%" in c:
+            rad[c] = pd.to_numeric(rad[c], errors="coerce") / 100.0
+
+    # abs → min-max (subconjunto actual), evitando división por 0
+    for c in metrics:
+        if "%" not in c:
+            s = pd.to_numeric(rad[c], errors="coerce")
+            mn, mx = float(np.nanmin(s.values)), float(np.nanmax(s.values))
+            if np.isfinite(mn) and np.isfinite(mx) and mx > mn:
+                rad[c] = (s - mn) / (mx - mn)
+            else:
+                # si todos iguales → 0.5 para que se vea, o 0
+                rad[c] = 0.5
+
+    labels = metrics
     N = len(labels)
     angles = [n / float(N) * 2 * pi for n in range(N)]
     angles += angles[:1]
 
     plt.close("all")
-    fig = plt.figure(figsize=(10, 10))
+    fig = plt.figure(figsize=(9.5, 9.5))
     ax = plt.subplot(111, polar=True)
-    ax.set_theta_offset(pi/2); ax.set_theta_direction(-1)
-    ax.set_xticks(angles[:-1]); ax.set_xticklabels(labels, fontsize=10, fontweight="bold")
+    ax.set_theta_offset(pi/2)
+    ax.set_theta_direction(-1)
+    ax.set_xticks(angles[:-1])
+    ax.set_xticklabels(labels, fontsize=10, fontweight="bold")
     ax.set_rlabel_position(0)
-    ax.set_yticks([0.25, 0.5, 0.75, 1.0]); ax.set_yticklabels(["0.25","0.5","0.75","1.0"], fontsize=9)
+    ax.set_yticks([0.25, 0.5, 0.75, 1.0])
+    ax.set_yticklabels(["0.25","0.5","0.75","1.0"], fontsize=9)
 
-    n_series = len(X)
-    colors = plt.cm.tab10(np.linspace(0, 1, min(n_series, 10))) if n_series <= 10 else plt.cm.tab20(np.linspace(0, 1, min(n_series, 20)))
+    series = rad[label_col].tolist()
+    vals_mat = rad[labels].values
 
-    for i, (_, row) in enumerate(X.iterrows()):
-        vals = [row[c] if pd.notna(row[c]) else 0.0 for c in labels]
+    # paleta tab10/tab20
+    n_series = len(series)
+    colors = plt.cm.tab10(np.linspace(0, 1, min(n_series,10))) if n_series <= 10 else plt.cm.tab20(np.linspace(0, 1, min(n_series,20)))
+
+    for i, row in enumerate(vals_mat):
+        vals = row.tolist()
         vals += vals[:1]
         color = colors[i % len(colors)]
-        ax.plot(angles, vals, linewidth=2.2, marker="o", markersize=5, color=color,
-                label=f"{row[label_id]} ({int(round(row['minutos']))}m)")
+        tag = f"{series[i]} ({int(round(rad.iloc[i]['minutos']))}m)"
+        ax.plot(angles, vals, linewidth=2.0, marker="o", markersize=4, color=color, label=tag)
         ax.fill(angles, vals, alpha=0.15, color=color)
 
-    ax.legend(loc="upper right", bbox_to_anchor=(1.35, 1.1), fontsize=9, frameon=False)
-    ttl = "Radar — " + scope + f" (≥ {int(min_minutos)} min, {norm_mode})"
-    plt.title(ttl, fontsize=14, pad=20)
+    ttl = "Radar — Jugador total" if scope=="Jugador total" else ("Radar — Por rol" if scope=="Por rol" else "Radar — Jugador & Rol")
+    ax.legend(loc="upper right", bbox_to_anchor=(1.35, 1.08), fontsize=9, frameon=False)
+    plt.title(ttl, fontsize=14, pad=18)
     st.pyplot(fig, use_container_width=True)
-    plt.close(fig)
 
-    # --- Tabla exportable con valores originales y normalizados ---
-    with st.expander("Tabla (originales + normalizados)", expanded=False):
-        # Originales promediados (pero con % tal cual y absolutos ya per-40 promedio)
-        base_cols = [label_id, "minutos"] + sel_vars
-        st.dataframe(df_plot.loc[df_plot[label_id].isin(entidades), base_cols].round(2), use_container_width=True)
-        # Normalizados 0–1 usados en el radar
-        X_out = X[[label_id, "minutos"] + sel_vars].copy().round(3)
-        st.dataframe(X_out, use_container_width=True)
+    # ---------- Tabla de valores visibles ----------
+    # Para la tabla: % en 0–100 (si quieres), absolutos mostrar sin min-max (entonces mostramos la tabla original base)
+    tabla = base[[label_col, "minutos"] + metrics].copy()
+    for c in metrics:
+        if "%" in c:
+            tabla[c] = pd.to_numeric(tabla[c], errors="coerce").round(2)
+        else:
+            tabla[c] = pd.to_numeric(tabla[c], errors="coerce").round(2)
 
-        # CSV download
-        csv_bytes = X_out.to_csv(index=False).encode("utf-8")
-        st.download_button("Descargar normalizados (CSV)", data=csv_bytes, file_name="radar_normalizados.csv", mime="text/csv")
-
-
+    st.markdown("**Tabla de métricas (promedios; abs normalizados a 40’ por partido antes de promediar)**")
+    st.dataframe(tabla.sort_values("minutos", ascending=False), use_container_width=True)
