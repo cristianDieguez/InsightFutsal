@@ -882,6 +882,315 @@ def red_de_pases_por_rol(df: pd.DataFrame):
     plt.tight_layout()
     return fig
 
+# =========================
+# PÉRDIDAS & RECUPERACIONES — HELPERS
+# =========================
+import xml.etree.ElementTree as ET
+from matplotlib.patches import Rectangle, Arc
+from matplotlib.colors import LinearSegmentedColormap
+from matplotlib.ticker import FuncFormatter
+
+# Parámetros cancha
+PR_ANCHO, PR_ALTO = 35, 20
+PR_N_COLS, PR_N_ROWS = 3, 3
+PR_ROLES_GK = {"arquero","portero","guardameta","gk","portiere"}
+
+# Regex nombre (rol)
+_PR_NAME_ROLE_RE = re.compile(r"^\s*([^(]+?)\s*\(([^)]+)\)\s*$")
+
+# Filtros de códigos (normalizar sin tildes + lower antes de comparar)
+_PR_EXCLUDE_PREFIXES = (
+    "categoria - equipo rival",
+    "tiempo posecion ferro","tiempo posesion ferro",
+    "tiempo posecion rival","tiempo posesion rival",
+    "tiempo no jugado",
+)
+
+def pr_strip_accents(s: str) -> str:
+    s = unicodedata.normalize("NFD", str(s))
+    return "".join(ch for ch in s if unicodedata.category(ch) != "Mn")
+
+def pr_is_player_code(code: str) -> bool:
+    if not code: return False
+    code_norm = pr_strip_accents(code).lower().strip()
+    if any(code_norm.startswith(pref) for pref in _PR_EXCLUDE_PREFIXES):
+        return False
+    return _PR_NAME_ROLE_RE.match(code) is not None
+
+def pr_split_name_role(code: str):
+    m = _PR_NAME_ROLE_RE.match(str(code)) if code else None
+    return (m.group(1).strip(), m.group(2).strip()) if m else (None, None)
+
+def pr_cargar_datos(xml_path: str) -> pd.DataFrame:
+    """Carga XML NacSport o TotalValues (mismo formato de tags)"""
+    root = ET.parse(xml_path).getroot()
+    data = []
+    for inst in root.findall(".//instance"):
+        jugador = inst.findtext("code") or ""
+        # Nos quedamos solo con 'Nombre (Rol)'
+        if not pr_is_player_code(jugador):
+            continue
+        pos_x = [float(px.text) for px in inst.findall("pos_x") if (px.text or "").strip()!=""]
+        pos_y = [float(py.text) for py in inst.findall("pos_y") if (py.text or "").strip()!=""]
+        labels = [ (lbl.findtext("text") or "").strip() for lbl in inst.findall("label") ]
+        st = inst.findtext("start"); en = inst.findtext("end")
+        try:
+            start = float(st) if st is not None else None
+            end   = float(en) if en is not None else None
+        except Exception:
+            start, end = None, None
+        data.append({
+            "jugador": jugador,
+            "labels": [l for l in labels if l],
+            "pos_x_list": pos_x, "pos_y_list": pos_y,
+            "start": start, "end": end
+        })
+    return pd.DataFrame(data)
+
+def pr_cargar_presencias_equipo(xml_path: str) -> pd.DataFrame:
+    """Si existe XML de equipo (presencias por jugador/rol). Si no existe, devolvemos DF vacío."""
+    if not xml_path or not os.path.isfile(xml_path):
+        return pd.DataFrame(columns=["nombre","rol","start_s","end_s"])
+    root = ET.parse(xml_path).getroot()
+    rows = []
+    for inst in root.findall(".//instance"):
+        code = inst.findtext("code") or ""
+        nombre, rol = pr_split_name_role(code)
+        if not nombre: 
+            continue
+        st = inst.findtext("start"); en = inst.findtext("end")
+        try:
+            s = float(st) if st is not None else None
+            e = float(en) if en is not None else None
+        except Exception:
+            s, e = None, None
+        if s is None or e is None or e <= s:
+            continue
+        rows.append({"nombre": nombre, "rol": rol, "start_s": s, "end_s": e})
+    return pd.DataFrame(rows)
+
+# Normalizaciones
+def pr_labels_low(labels): return [pr_strip_accents(l).lower() for l in (labels or [])]
+def pr_transform_xy(px, py):  # rotación/escala al mismo criterio del resto de visus
+    return PR_ANCHO - (py * (PR_ANCHO / 40.0)), px
+
+def pr_rol_de(code):
+    if code and "(" in code and ")" in code:
+        return code.split("(")[1].split(")")[0].strip()
+    return None
+
+def pr_ajustar_ala(y, code):
+    if pr_rol_de(code) in ("Ala I","Ala D"):
+        return PR_ALTO - y
+    return y
+
+def pr_zona_from_xy(x, y):
+    dx, dy = PR_ANCHO / PR_N_COLS, PR_ALTO / PR_N_ROWS
+    col = min(int(x // dx), PR_N_COLS - 1)
+    row = min(int(y // dy), PR_N_ROWS - 1)
+    return row, col
+
+def pr_zona_id(row, col): return row * PR_N_COLS + col + 1
+def pr_get_point(pxs, pys, idx):
+    if not pxs: return None
+    idx = max(0, min(idx, len(pxs)-1))
+    return pxs[idx], pys[idx]
+
+# Palabras clave
+_PR_KW_TOTAL   = [k.lower() for k in ["pase","recuperacion","recuperación","perdida","pérdida","pierde","conseguido","faltas","centro","lateral","despeje","despeje rival","gira","aguanta","cpie","cmano"]]
+_PR_KW_PERDIDA = [k.lower() for k in ["perdida","pérdida","pierde","despeje"]]
+_PR_KW_RECU    = [k.lower() for k in ["recuperacion","recuperación","1v1 ganado","despeje rival","cpie","cmano"]]
+_PR_KW_TIRO_NOGOL  = ["desviado","errado","pifia","ataj","bloque","poste","travesa"]
+_PR_KW_GOL_EXCLUDE = ["gol"]
+
+def pr_contiene(labels_low, kws):
+    return any(k in l for l in labels_low for k in kws)
+
+def pr_zone_for(evento, code, pxs, pys):
+    # Para PERDIDA usamos idx destino (1) si existe; para RECUPERACION, idx origen (0)
+    if evento == "PERDIDA":
+        idx = 1 if (pxs and len(pxs)>1) else 0
+    else:
+        idx = 0
+    p = pr_get_point(pxs, pys, idx)
+    if p is None: return None
+    x, y = pr_transform_xy(*p)
+    y = pr_ajustar_ala(y, code)
+    return pr_zona_from_xy(x, y)
+
+def pr_merge_minutes(df_pres: pd.DataFrame) -> dict:
+    """Devuelve dict nombre->[ (s,e), ... ] para saber si estaba en cancha."""
+    out = {}
+    for (n,_), g in df_pres.groupby(["nombre","rol"], dropna=False):
+        ints = [(float(s), float(e)) for s,e in zip(g["start_s"], g["end_s"]) if pd.notna(s) and pd.notna(e) and e> s]
+        ints.sort()
+        merged=[]
+        for s,e in ints:
+            if not merged or s>merged[-1][1]:
+                merged.append([s,e])
+            else:
+                merged[-1][1]=max(merged[-1][1], e)
+        out.setdefault(n, []).extend([(s,e) for s,e in merged])
+    return out
+
+def pr_on_court(name_intervals, t):
+    if t is None: return False
+    for s,e in name_intervals:
+        if s<=t<e: return True
+    return False
+
+def pr_procesar(df_raw: pd.DataFrame, df_pres: pd.DataFrame|None, jugador_filter: str|None):
+    """
+    Devuelve:
+      total_acc, perdidas, recupera, porc_perd, porc_recu, df_reg (row,col,zona,jugador,tipo,peso,t0)
+    Si jugador_filter está definido, se filtran instancias a las del jugador (y sus minutos en cancha si hay presencias).
+    """
+    name2ints = pr_merge_minutes(df_pres) if df_pres is not None and not df_pres.empty else {}
+
+    total_acc = np.zeros((PR_N_ROWS, PR_N_COLS), dtype=float)
+    perdidas  = np.zeros_like(total_acc)
+    recupera  = np.zeros_like(total_acc)
+
+    registros = []
+
+    for _, r in df_raw.iterrows():
+        code = r["jugador"]; labels_low = pr_labels_low(r["labels"])
+        if jugador_filter:
+            # filtrar por nombre (substring case-insensitive)
+            nombre, _ = pr_split_name_role(code)
+            if not nombre or jugador_filter.lower() not in nombre.lower():
+                continue
+            # si tenemos intervalos, respetarlos por timestamp
+            if name2ints.get(nombre):
+                if not pr_on_court(name2ints[nombre], r.get("start")):
+                    continue
+
+        pxs, pys = r["pos_x_list"], r["pos_y_list"]
+        if not pxs: 
+            continue
+
+        has_perd = pr_contiene(labels_low, _PR_KW_PERDIDA)
+        has_recu = pr_contiene(labels_low, _PR_KW_RECU)
+        de_interes = pr_contiene(labels_low, _PR_KW_TOTAL)
+
+        counted = False
+        if has_perd:
+            z = pr_zone_for("PERDIDA", code, pxs, pys)
+            if z:
+                rr,cc = z; perdidas[rr,cc]+=1; total_acc[rr,cc]+=1; counted=True
+                registros.append((rr,cc,pr_zona_id(rr,cc), code, labels_low, "PÉRDIDA", 1.0, r.get("start")))
+        if has_recu:
+            z = pr_zone_for("RECUPERACION", code, pxs, pys)
+            if z:
+                rr,cc = z; recupera[rr,cc]+=1; total_acc[rr,cc]+=1; counted=True
+                registros.append((rr,cc,pr_zona_id(rr,cc), code, labels_low, "RECUPERACIÓN", 1.0, r.get("start")))
+        if (not counted) and de_interes:
+            p = pr_get_point(pxs, pys, 0)
+            if p is None: 
+                continue
+            x,y = pr_transform_xy(*p)
+            y = pr_ajustar_ala(y, code)
+            rr,cc = pr_zona_from_xy(x,y)
+            total_acc[rr,cc]+=1
+            registros.append((rr,cc,pr_zona_id(rr,cc), code, labels_low, "OTROS", 1.0, r.get("start")))
+
+    with np.errstate(divide='ignore', invalid='ignore'):
+        porc_perd = np.divide(perdidas, total_acc, out=np.zeros_like(perdidas), where=total_acc>0)
+        porc_recu = np.divide(recupera, total_acc, out=np.zeros_like(recupera), where=total_acc>0)
+
+    df_reg = pd.DataFrame(registros, columns=["row","col","zona","jugador","labels_low","tipo","peso","t0"])
+    return total_acc, perdidas, recupera, porc_perd, porc_recu, df_reg
+
+# ---- Visuales
+def pr_draw_pitch_grid(ax):
+    dx, dy = PR_ANCHO / PR_N_COLS, PR_ALTO / PR_N_ROWS
+    ax.set_facecolor("white")
+    ax.plot([0, PR_ANCHO],[0,0], color="black")
+    ax.plot([0, PR_ANCHO],[PR_ALTO,PR_ALTO], color="black")
+    ax.plot([0,0],[0,PR_ALTO], color="black")
+    ax.plot([PR_ANCHO,PR_ANCHO],[0,PR_ALTO], color="black")
+    ax.plot([PR_ANCHO/2, PR_ANCHO/2],[0,PR_ALTO], color="black")
+    ax.add_patch(Arc((0, PR_ALTO/2), 8, 12, angle=0, theta1=270, theta2=90, color="black"))
+    ax.add_patch(Arc((PR_ANCHO, PR_ALTO/2), 8, 12, angle=0, theta1=90, theta2=270, color="black"))
+    ax.add_patch(plt.Circle((PR_ANCHO/2, PR_ALTO/2), 4, color="black", fill=False))
+    ax.add_patch(plt.Circle((PR_ANCHO/2, PR_ALTO/2), 0.2, color="black"))
+    for j in range(PR_N_ROWS):
+        for i in range(PR_N_COLS):
+            x0, y0 = i*dx, j*dy
+            ax.add_patch(Rectangle((x0,y0), dx,dy, linewidth=0.6, edgecolor='gray', facecolor='none'))
+            zona = j*PR_N_COLS + i + 1
+            ax.text(x0 + dx - 0.4, y0 + dy - 0.4, str(zona), ha='right', va='top', fontsize=9, color='gray')
+    ax.set_xlim(0, PR_ANCHO); ax.set_ylim(0, PR_ALTO); ax.axis('off')
+
+def pr_heatmap(matriz_pct, matriz_tot, title, good_high=True):
+    fig, ax = plt.subplots(figsize=(9, 6))
+    pr_draw_pitch_grid(ax)
+    cmap = (LinearSegmentedColormap.from_list("good", ["#f0f9e8","#bae4bc","#7bccc4","#2b8cbe","#08589e"])
+            if good_high else
+            LinearSegmentedColormap.from_list("bad",  ["#fff5f0","#fcbba1","#fc9272","#ef3b2c","#99000d"]))
+    dx, dy = PR_ANCHO / PR_N_COLS, PR_ALTO / PR_N_ROWS
+    for j in range(PR_N_ROWS):
+        for i in range(PR_N_COLS):
+            v = float(matriz_pct[j,i]); tot=float(matriz_tot[j,i])
+            color = cmap(v) if tot>0 else (0.95,0.95,0.95,1.0)
+            ax.add_patch(Rectangle((i*dx,j*dy), dx,dy, color=color, alpha=0.7))
+            if tot>0:
+                ax.text(i*dx+dx/2, j*dy+dy/2, f"{v*100:.1f}%", ha="center", va="center", fontsize=12, fontweight="bold")
+            ax.text(i*dx+dx-0.6, j*dy+0.35, f"Tot: {int(round(tot))}", ha="right", va="bottom", fontsize=9, color="black")
+    plt.title(title); plt.tight_layout()
+    return fig
+
+def pr_bars(df, col_pct, title):
+    d = (df[["zona", col_pct, "total_acciones"]].rename(columns={col_pct:"pct"})).copy()
+    d["zona_lbl"] = d["zona"].apply(lambda z: f"Z{int(z)}")
+    d = d.sort_values("pct", ascending=False).reset_index(drop=True)
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.barh(d["zona_lbl"], d["pct"], height=0.6); ax.invert_yaxis()
+    ax.xaxis.set_major_formatter(FuncFormatter(lambda v,_: f"{v*100:.0f}%"))
+    ax.set_xlabel("%"); ax.set_title(title); ax.grid(axis="x", linestyle=":", alpha=0.35)
+    vmax = max(0.01, d["pct"].max()) + 0.15
+    for y, (v, t) in enumerate(zip(d["pct"], d["total_acciones"])):
+        ax.text(min(v+0.01, vmax-0.02), y, f"{v*100:.1f}%  (Tot {int(round(t))})", va="center", fontsize=9)
+    ax.set_xlim(0, vmax); plt.tight_layout()
+    return fig
+
+def pr_mat_from_df(df, col):
+    M = np.zeros((PR_N_ROWS, PR_N_COLS), dtype=float)
+    for _, r in df.iterrows():
+        M[int(r["row"]), int(r["col"])] = float(r[col])
+    return M
+
+def pr_resumen_df(total_acc, perdidas, recupera, porc_perd, porc_recu):
+    rows=[]
+    for r in range(PR_N_ROWS):
+        for c in range(PR_N_COLS):
+            t = float(total_acc[r,c]); p=float(perdidas[r,c]); rc=float(recupera[r,c])
+            rows.append({"zona":r*PR_N_COLS+c+1,"row":r,"col":c,
+                         "total_acciones":t,
+                         "%_perdidas_sobre_total": (p/t if t else 0.0),
+                         "%_recuperaciones_sobre_total": (rc/t if t else 0.0)})
+    return pd.DataFrame(rows).sort_values("zona").reset_index(drop=True)
+
+def pr_find_xml_jugadores_for_match(match_obj):
+    """
+    Usa el objeto de discover/infer: intenta primero ' - XML NacSport.xml',
+    si no, cae a ' - asXML TotalValues.xml'
+    """
+    if match_obj.get("xml_jugadores") and os.path.isfile(match_obj["xml_jugadores"]):
+        return match_obj["xml_jugadores"]
+    # fallback dentro de DATA_MINUTOS
+    rival = match_obj.get("rival") or ""
+    cands = []
+    for pat in [
+        f"*{rival}*XML NacSport*.xml",
+        f"*{rival}*asXML TotalValues*.xml"
+    ]:
+        cands += glob.glob(os.path.join(DATA_MINUTOS, pat))
+    return cands[0] if cands else None
+
+# =========================
+# FIN HELPERS
+# =========================
 
 # =========================
 # PARSERS SEGÚN TU NOTEBOOK
@@ -1214,7 +1523,7 @@ def badge_path_for(name: str) -> Optional[str]:
 # =========================
 menu = st.sidebar.radio(
     "Menú",
-    ["📊 Estadísticas de partido", "⏱️ Timeline de Partido", "🔥 Mapas de calor", "🕓 Distribución de minutos","🔗 Red de Pases", "🎯 Tiros", "🗺️ Mapa 3x3", "⚡ Radar"],
+    ["📊 Estadísticas de partido", "⏱️ Timeline de Partido", "🔥 Mapas de calor", "🕓 Distribución de minutos","🔗 Red de Pases", "🛡️ Pérdidas y Recuperaciones", "🎯 Tiros", "🗺️ Mapa 3x3", "⚡ Radar"],
     index=0
 )
 
@@ -1507,6 +1816,110 @@ elif menu == "🔗 Red de Pases":
 
     fig = red_de_pases_por_rol(df_all)
     st.pyplot(fig, use_container_width=True)
+
+elif menu == "🛡️ Pérdidas y Recuperaciones":
+    matches = discover_matches()
+    if not matches:
+        st.warning("No encontré partidos en data/minutos.")
+        st.stop()
+
+    labels = [m["label"] for m in matches]
+    sel = st.selectbox("Elegí partido", labels, index=0)
+    m = get_match_by_label(sel)
+    if not m:
+        st.error("No pude resolver el partido seleccionado.")
+        st.stop()
+
+    # Resolver rutas: jugadores (NacSport preferente; si no, TotalValues) + equipo (si existe)
+    xml_jug = pr_find_xml_jugadores_for_match(m)
+    xml_eq  = m.get("xml_equipo")  # puede ser None; funciona igual (sin minutos de cancha)
+
+    if not xml_jug or not os.path.isfile(xml_jug):
+        st.error("No encontré XML NacSport/TotalValues con eventos de jugadores para este partido.")
+        st.stop()
+
+    # Cargar
+    df_raw  = pr_cargar_datos(xml_jug)
+    df_pres = pr_cargar_presencias_equipo(xml_eq) if xml_eq else pd.DataFrame(columns=["nombre","rol","start_s","end_s"])
+
+    st.caption(f"Usando eventos de: `{os.path.basename(xml_jug)}`" + (f" y presencias: `{os.path.basename(xml_eq)}`" if xml_eq else " (sin XML de equipo)"))
+
+    # Modo de análisis
+    modo = st.radio("Modo", ["Equipo", "Jugador"], horizontal=True)
+    jugador_sel = None
+    if modo == "Jugador":
+        # lista de nombres a partir de códigos "Nombre (Rol)"
+        nombres = sorted({pr_split_name_role(c)[0] for c in df_raw["jugador"] if pr_split_name_role(c)[0]})
+        if not nombres:
+            st.warning("No pude inferir nombres de jugadores en el XML.")
+            st.stop()
+        jugador_sel = st.selectbox("Elegí jugador", nombres, index=0)
+
+    # Opción de acumular todos los partidos
+    acum = st.checkbox("🔁 Acumular TODOS los partidos disponibles", value=False)
+
+    def _procesar_un_partido(match_obj):
+        xjug = pr_find_xml_jugadores_for_match(match_obj)
+        if not xjug or not os.path.isfile(xjug): 
+            return None
+        xeq = match_obj.get("xml_equipo")
+        dfr = pr_cargar_datos(xjug)
+        dfp = pr_cargar_presencias_equipo(xeq) if xeq else pd.DataFrame(columns=["nombre","rol","start_s","end_s"])
+        tot, perd, recu, pperd, precu, dreg = pr_procesar(dfr, dfp if modo=="Jugador" else None, jugador_sel if modo=="Jugador" else None)
+        dfres = pr_resumen_df(tot, perd, recu, pperd, precu)
+        return {"total":tot,"perd":perd,"recu":recu,"pperd":pperd,"precu":precu,"reg":dreg,"res":dfres}
+
+    if not acum:
+        R = _procesar_un_partido(m)
+    else:
+        # acumular todos
+        agg = None
+        for mi in matches:
+            Ri = _procesar_un_partido(mi)
+            if Ri is None: 
+                continue
+            if agg is None:
+                agg = Ri
+            else:
+                for k in ["total","perd","recu","pperd","precu"]:
+                    agg[k] += Ri[k]  # acumulamos contadores; % los recalculamos luego
+                agg["reg"] = pd.concat([agg["reg"], Ri["reg"]], ignore_index=True)
+        if agg is None:
+            st.error("No se pudo acumular: no hay partidos con XML válido.")
+            st.stop()
+        # Recalcular porcentajes con los acumulados
+        with np.errstate(divide='ignore', invalid='ignore'):
+            pperd = np.divide(agg["perd"], agg["total"], out=np.zeros_like(agg["perd"]), where=agg["total"]>0)
+            precu = np.divide(agg["recu"], agg["total"], out=np.zeros_like(agg["recu"]), where=agg["total"]>0)
+        agg["pperd"], agg["precu"] = pperd, precu
+        agg["res"] = pr_resumen_df(agg["total"], agg["perd"], agg["recu"], pperd, precu)
+        R = agg
+
+    if R is None:
+        st.error("No hay datos para procesar.")
+        st.stop()
+
+    # Tablas
+    st.markdown("#### Resumen por zona")
+    st.dataframe(R["res"][["zona","total_acciones","%_recuperaciones_sobre_total","%_perdidas_sobre_total"]]
+                 .rename(columns={
+                     "%_recuperaciones_sobre_total":"% RECUP.",
+                     "%_perdidas_sobre_total":"% PÉRD."
+                 }), use_container_width=True)
+
+    # Heatmaps
+    M_tot  = R["total"]
+    figR   = pr_heatmap(R["precu"], M_tot, f"{'Equipo' if modo=='Equipo' else jugador_sel} — % RECUPERACIONES", good_high=True)
+    figP   = pr_heatmap(R["pperd"], M_tot, f"{'Equipo' if modo=='Equipo' else jugador_sel} — % PÉRDIDAS",       good_high=False)
+    st.pyplot(figR, use_container_width=True)
+    st.pyplot(figP, use_container_width=True)
+
+    # Barras ordenadas
+    figBR = pr_bars(R["res"], "%_recuperaciones_sobre_total", f"{'Equipo' if modo=='Equipo' else jugador_sel} — Ranking Zonas por % RECUP.")
+    figBP = pr_bars(R["res"], "%_perdidas_sobre_total",       f"{'Equipo' if modo=='Equipo' else jugador_sel} — Ranking Zonas por % PÉRD.")
+    st.pyplot(figBR, use_container_width=True)
+    st.pyplot(figBP, use_container_width=True)
+
 
 else:
     st.info("Las demás secciones se irán conectando con tus notebooks en los próximos pasos.")
