@@ -1150,7 +1150,7 @@ menu = st.sidebar.radio(
     "Menú",
     ["📊 Estadísticas de partido", "⏱️ Timeline de Partido", "🔥 Mapas de calor",
      "🕓 Distribución de minutos","🔗 Red de Pases", "📬 Destino de pases", 
-     "🛡️ Pérdidas y Recuperaciones","🎯 Mapa de tiros", "⚡ Radar"
+     "🛡️ Pérdidas y Recuperaciones","🎯 Mapa de tiros", "📈 Radar comparativo (jugador/rol)"
     ],
     index=0
 )
@@ -1757,9 +1757,313 @@ if menu == "📬 Destino de pases":
     st.caption(f"Pases plotteados: {kept}")
 
 
-# =========================
-# ⚡ RADAR
-# =========================
-elif menu == "⚡ Radar":
-    st.info("⚠️ Radar charts aún no implementados en esta versión.")
+# =============================
+# 📈 RADAR COMPARATIVO (jugador / rol / jugador-rol)
+# =============================
+if menu == "📈 Radar comparativo (jugador/rol)":
+    import pandas as pd, numpy as np, re, os
+    from pathlib import Path
+    import matplotlib.pyplot as plt
+    from math import pi
+
+    st.subheader("Radar comparativo entre jugadores")
+
+    # --- Rutas (ajusta si tus carpetas son otras) ---
+    # Usamos las salidas que ya genera tu pipeline de MATRIX y MINUTOS.
+    BASE = Path(st.session_state.get("DATA_BASE", "."))  # opcional, si lo tenés en session_state
+    DIR_MATRIX  = BASE / "data" / "matrix"
+    DIR_MINUTOS = BASE / "data" / "minutos"
+    # Defaults compatibles con tus scripts de Colab
+    FALLBACK_MATRIX = Path("/content/drive/MyDrive/Sport Data Campus/TFM/Matrix/")
+    FALLBACK_MIN    = Path("/content/drive/MyDrive/Sport Data Campus/TFM/Minutos/_salidas_minutos/")
+
+    CSV_MATRIX_POR_ROL  = next((p for p in [DIR_MATRIX/"_matrix_por_rol.csv", FALLBACK_MATRIX/"_matrix_por_rol.csv"] if p.exists()), None)
+    CSV_MATRIX_POR_JUG  = next((p for p in [DIR_MATRIX/"_matrix_por_jugador.csv", FALLBACK_MATRIX/"_matrix_por_jugador.csv"] if p.exists()), None)
+    CSV_FINAL_POR_ROL   = next((p for p in [DIR_MATRIX/"matrix_final_por_rol.csv", FALLBACK_MATRIX/"matrix_final_por_rol.csv"] if p.exists()), None)
+    CSV_FINAL_POR_JUG   = next((p for p in [DIR_MATRIX/"matrix_final_por_jugador.csv", FALLBACK_MATRIX/"matrix_final_por_jugador.csv"] if p.exists()), None)
+    CSV_MIN_POR_ROL     = next((p for p in [DIR_MINUTOS/"_salidas_minutos/minutos_por_partido_rol.csv", FALLBACK_MIN/"minutos_por_partido_rol.csv"] if p.exists()), None)
+    CSV_MIN_POR_JUG     = next((p for p in [DIR_MINUTOS/"_salidas_minutos/minutos_por_partido_total.csv", FALLBACK_MIN/"minutos_por_partido_total.csv"] if p.exists()), None)
+
+    # Chequeos mínimos
+    missing = []
+    if CSV_MATRIX_POR_ROL is None: missing.append("_matrix_por_rol.csv")
+    if CSV_MIN_POR_ROL   is None: missing.append("minutos_por_partido_rol.csv")
+    if CSV_MATRIX_POR_JUG is None: missing.append("_matrix_por_jugador.csv")
+    if CSV_MIN_POR_JUG    is None: missing.append("minutos_por_partido_total.csv")
+    if missing:
+        st.error("No encuentro archivos necesarios: " + ", ".join(missing))
+        st.stop()
+
+    # --- Carga base ---
+    df_mat_rol  = pd.read_csv(CSV_MATRIX_POR_ROL)
+    df_mat_jug  = pd.read_csv(CSV_MATRIX_POR_JUG)
+    df_min_rol  = pd.read_csv(CSV_MIN_POR_ROL)
+    df_min_jug  = pd.read_csv(CSV_MIN_POR_JUG)
+
+    # Normalizaciones de tipos
+    for d in (df_mat_rol, df_mat_jug):
+        if "jugador" in d.columns: d["jugador"] = d["jugador"].astype(str)
+        if "rol" in d.columns: d["rol"] = d["rol"].astype(str)
+        for c in ("partido_id","rival"):
+            if c in d.columns: d[c] = d[c].astype(str)
+
+    for d in (df_min_rol, df_min_jug):
+        if "nombre" in d.columns: d["nombre"] = d["nombre"].astype(str)
+        if "rol" in d.columns: d["rol"] = d["rol"].astype(str)
+        for c in ("partido_id","rival"):
+            if c in d.columns: d[c] = d[c].astype(str)
+
+    # --- Interfaz ---
+    scope = st.radio("Ámbito", ["Jugador (total)", "Por rol", "Jugador + Rol"], horizontal=True)
+    min_minutos = st.slider("Umbral mínimo de minutos (acumulado)", 0, 300, 120, 10)
+
+    # Tomamos columnas numéricas y separamos % de absolutos
+    def split_cols(df):
+        pct_cols = [c for c in df.columns if "%" in c or " % " in c or c.startswith("Tiros - %")]
+        id_cols  = {"partido_id","fecha","rival","archivo","hoja","jugador","rol","minutos","nombre"}
+        num_cols = [c for c in df.columns if c not in id_cols and pd.api.types.is_numeric_dtype(pd.to_numeric(df[c], errors="coerce"))]
+        abs_cols = [c for c in num_cols if c not in pct_cols]
+        return abs_cols, pct_cols
+
+    # --- Ensamble para cada scope ---
+    def build_dataset(scope: str):
+        """
+        Devuelve:
+         - df_plot: dataset agregado (cada fila = entidad comparada)
+         - label_id: nombre de la columna identificadora para la leyenda
+         - abs_cols, pct_cols: catálogos disponibles
+        """
+        if scope == "Jugador (total)":
+            # Intersección Matrix x Minutos a nivel jugador
+            valid = pd.merge(
+                df_mat_rol[["partido_id","fecha","rival","jugador"]],
+                df_min_jug[["partido_id","fecha","rival","nombre","minutos"]],
+                left_on=["partido_id","fecha","rival","jugador"],
+                right_on=["partido_id","fecha","rival","nombre"],
+                how="inner"
+            ).drop(columns=["nombre"])
+            # Min tot por jugador
+            mins_ok = (valid.groupby(["jugador"], as_index=False)["minutos"].sum()
+                             .query("minutos >= @min_minutos"))
+
+            # Normalizar acciones absolutas a 40' por partido y promediar por jugador
+            # 1) unimos matrix por rol con minutos por jugador-rol-partido (desde df_min_rol)
+            m = pd.merge(
+                df_mat_rol,
+                df_min_rol[["partido_id","fecha","rival","nombre","rol","minutos"]],
+                left_on=["partido_id","fecha","rival","jugador","rol"],
+                right_on=["partido_id","fecha","rival","nombre","rol"],
+                how="inner"
+            ).drop(columns=["nombre"])
+
+            abs_cols, pct_cols = split_cols(m)
+            if not abs_cols and not pct_cols:
+                return pd.DataFrame(), "jugador", [], []
+
+            m[abs_cols] = m[abs_cols].apply(pd.to_numeric, errors="coerce").fillna(0)
+            m["minutos"] = pd.to_numeric(m["minutos"], errors="coerce").fillna(0)
+
+            # 2) por partido: escalar absolutos a 40 según minutos jugados en ese partido
+            #    (evitamos div/0 manteniendo 0 si minutos=0)
+            for c in abs_cols:
+                m[c] = np.where(m["minutos"] > 0, m[c] * (40.0 / m["minutos"]), 0.0)
+
+            # 3) promedio por jugador (solo filas válidas) y unir filtro por minutos totales
+            keep_ids = m[["partido_id","fecha","rival","jugador"]].merge(
+                mins_ok[["jugador"]], on="jugador", how="inner"
+            )
+            m_keep = m.merge(keep_ids.drop_duplicates(), on=["partido_id","fecha","rival","jugador"], how="inner")
+
+            # promedios
+            grp = (m_keep.groupby(["jugador"], as_index=False)[abs_cols + pct_cols].mean())
+            grp = grp.merge(mins_ok, on="jugador", how="left")
+            return grp, "jugador", abs_cols, pct_cols
+
+        elif scope == "Por rol":
+            # Queremos comparar "ROL" agregado (promedio de jugadores en ese rol).
+            # Intersección válida a nivel jugador-rol
+            valid = pd.merge(
+                df_mat_rol[["partido_id","fecha","rival","jugador","rol"]],
+                df_min_rol[["partido_id","fecha","rival","nombre","rol","minutos"]],
+                left_on=["partido_id","fecha","rival","jugador","rol"],
+                right_on=["partido_id","fecha","rival","nombre","rol"],
+                how="inner"
+            ).drop(columns=["nombre"])
+
+            mins_ok = (valid.groupby(["rol"], as_index=False)["minutos"].sum()
+                             .query("minutos >= @min_minutos"))
+
+            m = pd.merge(
+                df_mat_rol,
+                df_min_rol[["partido_id","fecha","rival","nombre","rol","minutos"]],
+                left_on=["partido_id","fecha","rival","jugador","rol"],
+                right_on=["partido_id","fecha","rival","nombre","rol"],
+                how="inner"
+            ).drop(columns=["nombre"])
+
+            abs_cols, pct_cols = split_cols(m)
+            if not abs_cols and not pct_cols:
+                return pd.DataFrame(), "rol", [], []
+
+            m[abs_cols] = m[abs_cols].apply(pd.to_numeric, errors="coerce").fillna(0)
+            m["minutos"] = pd.to_numeric(m["minutos"], errors="coerce").fillna(0)
+
+            for c in abs_cols:
+                m[c] = np.where(m["minutos"] > 0, m[c] * (40.0 / m["minutos"]), 0.0)
+
+            keep_ids = m[["partido_id","fecha","rival","rol"]].merge(
+                mins_ok[["rol"]], on="rol", how="inner"
+            )
+            m_keep = m.merge(keep_ids.drop_duplicates(), on=["partido_id","fecha","rival","rol"], how="inner")
+
+            grp = (m_keep.groupby(["rol"], as_index=False)[abs_cols + pct_cols].mean())
+            grp = grp.merge(mins_ok, on="rol", how="left")
+            return grp, "rol", abs_cols, pct_cols
+
+        else:  # "Jugador + Rol"
+            valid = pd.merge(
+                df_mat_rol[["partido_id","fecha","rival","jugador","rol"]],
+                df_min_rol[["partido_id","fecha","rival","nombre","rol","minutos"]],
+                left_on=["partido_id","fecha","rival","jugador","rol"],
+                right_on=["partido_id","fecha","rival","nombre","rol"],
+                how="inner"
+            ).drop(columns=["nombre"])
+
+            mins_ok = (valid.groupby(["jugador","rol"], as_index=False)["minutos"].sum()
+                             .query("minutos >= @min_minutos"))
+
+            m = pd.merge(
+                df_mat_rol,
+                df_min_rol[["partido_id","fecha","rival","nombre","rol","minutos"]],
+                left_on=["partido_id","fecha","rival","jugador","rol"],
+                right_on=["partido_id","fecha","rival","nombre","rol"],
+                how="inner"
+            ).drop(columns=["nombre"])
+
+            abs_cols, pct_cols = split_cols(m)
+            if not abs_cols and not pct_cols:
+                return pd.DataFrame(), "jugador_rol", [], []
+
+            m[abs_cols] = m[abs_cols].apply(pd.to_numeric, errors="coerce").fillna(0)
+            m["minutos"] = pd.to_numeric(m["minutos"], errors="coerce").fillna(0)
+
+            for c in abs_cols:
+                m[c] = np.where(m["minutos"] > 0, m[c] * (40.0 / m["minutos"]), 0.0)
+
+            m["jugador_rol"] = m["jugador"].astype(str) + " (" + m["rol"].astype(str) + ")"
+
+            keep_ids = m[["partido_id","fecha","rival","jugador_rol"]].merge(
+                (mins_ok.assign(jugador_rol=lambda d: d["jugador"].astype(str) + " (" + d["rol"].astype(str) + ")"))[["jugador_rol"]],
+                on="jugador_rol", how="inner"
+            )
+            m_keep = m.merge(keep_ids.drop_duplicates(), on=["partido_id","fecha","rival","jugador_rol"], how="inner")
+
+            grp = (m_keep.groupby(["jugador_rol"], as_index=False)[abs_cols + pct_cols].mean())
+            grp = grp.merge((mins_ok.assign(jugador_rol=lambda d: d["jugador"].astype(str) + " (" + d["rol"].astype(str) + ")"))[["jugador_rol","minutos"]],
+                            on="jugador_rol", how="left")
+            return grp, "jugador_rol", abs_cols, pct_cols
+
+    df_plot, label_id, abs_cols_all, pct_cols_all = build_dataset(scope)
+    if df_plot.empty:
+        st.warning("No hay datos con el umbral de minutos y el alcance elegido.")
+        st.stop()
+
+    # --- Selección de entidades a comparar ---
+    entidades = st.multiselect("Elegí quiénes comparar", sorted(df_plot[label_id].unique()), default=sorted(df_plot[label_id].unique())[:5])
+    df_plot = df_plot[df_plot[label_id].isin(entidades)].reset_index(drop=True)
+    if df_plot.empty:
+        st.warning("Sin filas luego del filtro de entidades."); st.stop()
+
+    # --- Selección de variables ---
+    abs_cols_all = [c for c in abs_cols_all if c in df_plot.columns]
+    pct_cols_all = [c for c in pct_cols_all if c in df_plot.columns]
+    with st.expander("Variables disponibles", expanded=False):
+        col1, col2 = st.columns(2)
+        with col1:
+            vars_abs = st.multiselect("Absolutas (se escalan a 40’ por partido y luego se normalizan a 0–1)", sorted(abs_cols_all), default=sorted(abs_cols_all)[:4])
+        with col2:
+            vars_pct = st.multiselect("Porcentuales (normalizadas a 0–1)", sorted(pct_cols_all), default=[c for c in pct_cols_all if "Acciones Positivas" in c][:1])
+
+    sel_vars = vars_abs + vars_pct
+    if not sel_vars:
+        st.warning("Elegí al menos una variable para el radar.")
+        st.stop()
+
+    # --- Normalización a 0–1 para el radar ---
+    norm_mode = st.selectbox("Modo de normalización para el radar", ["Automático (abs min–max; % /100)", "Min–Max (todas)"])
+
+    X = df_plot[[label_id, "minutos"] + sel_vars].copy()
+    # aseguramos numérico
+    for c in sel_vars:
+        X[c] = pd.to_numeric(X[c], errors="coerce")
+
+    if norm_mode.startswith("Automático"):
+        # % → [0,1] dividiendo por 100 si vienen en 0–100
+        for c in vars_pct:
+            # si ya parecen 0–1 no tocamos
+            vmax = X[c].max(skipna=True)
+            if pd.notna(vmax) and vmax > 1.0:
+                X[c] = (X[c] / 100.0).clip(0, 1)
+        # absolutos → min–max por variable entre las entidades elegidas
+        for c in vars_abs:
+            col = X[c].astype(float)
+            mn, mx = np.nanmin(col.values), np.nanmax(col.values)
+            if pd.isna(mn) or pd.isna(mx) or mx == mn:
+                X[c] = 0.0  # si no hay variación
+            else:
+                X[c] = (col - mn) / (mx - mn)
+    else:
+        # Min–Max para todo
+        for c in sel_vars:
+            col = X[c].astype(float)
+            mn, mx = np.nanmin(col.values), np.nanmax(col.values)
+            if pd.isna(mn) or pd.isna(mx) or mx == mn:
+                X[c] = 0.0
+            else:
+                X[c] = (col - mn) / (mx - mn)
+
+    # --- Radar ---
+    labels = sel_vars
+    N = len(labels)
+    angles = [n / float(N) * 2 * pi for n in range(N)]
+    angles += angles[:1]
+
+    plt.close("all")
+    fig = plt.figure(figsize=(10, 10))
+    ax = plt.subplot(111, polar=True)
+    ax.set_theta_offset(pi/2); ax.set_theta_direction(-1)
+    ax.set_xticks(angles[:-1]); ax.set_xticklabels(labels, fontsize=10, fontweight="bold")
+    ax.set_rlabel_position(0)
+    ax.set_yticks([0.25, 0.5, 0.75, 1.0]); ax.set_yticklabels(["0.25","0.5","0.75","1.0"], fontsize=9)
+
+    n_series = len(X)
+    colors = plt.cm.tab10(np.linspace(0, 1, min(n_series, 10))) if n_series <= 10 else plt.cm.tab20(np.linspace(0, 1, min(n_series, 20)))
+
+    for i, (_, row) in enumerate(X.iterrows()):
+        vals = [row[c] if pd.notna(row[c]) else 0.0 for c in labels]
+        vals += vals[:1]
+        color = colors[i % len(colors)]
+        ax.plot(angles, vals, linewidth=2.2, marker="o", markersize=5, color=color,
+                label=f"{row[label_id]} ({int(round(row['minutos']))}m)")
+        ax.fill(angles, vals, alpha=0.15, color=color)
+
+    ax.legend(loc="upper right", bbox_to_anchor=(1.35, 1.1), fontsize=9, frameon=False)
+    ttl = "Radar — " + scope + f" (≥ {int(min_minutos)} min, {norm_mode})"
+    plt.title(ttl, fontsize=14, pad=20)
+    st.pyplot(fig, use_container_width=True)
+    plt.close(fig)
+
+    # --- Tabla exportable con valores originales y normalizados ---
+    with st.expander("Tabla (originales + normalizados)", expanded=False):
+        # Originales promediados (pero con % tal cual y absolutos ya per-40 promedio)
+        base_cols = [label_id, "minutos"] + sel_vars
+        st.dataframe(df_plot.loc[df_plot[label_id].isin(entidades), base_cols].round(2), use_container_width=True)
+        # Normalizados 0–1 usados en el radar
+        X_out = X[[label_id, "minutos"] + sel_vars].copy().round(3)
+        st.dataframe(X_out, use_container_width=True)
+
+        # CSV download
+        csv_bytes = X_out.to_csv(index=False).encode("utf-8")
+        st.download_button("Descargar normalizados (CSV)", data=csv_bytes, file_name="radar_normalizados.csv", mime="text/csv")
+
 
