@@ -2397,13 +2397,14 @@ if menu == "📈 Radar comparativo":
     st.dataframe(tabla.sort_values("minutos", ascending=False), use_container_width=True)
 
 # =========================
-# 🏆 TABLA & RESULTADOS — WEBALL
+# 🏆 TABLA & RESULTADOS — WEBALL (con "Tabla fecha a fecha")
 # =========================
 if menu == "🏆 Tabla & Resultados":
     import time, requests, pandas as pd
+    import numpy as np
 
-    # --- Endpoints (los que pasaste) ---
-    CLASIF_URL = "https://api.weball.me/public/tournament/176/phase/150/group/613/clasification?instanceUUID=2d260df1-7986-49fd-95a2-fcb046e7a4fb"
+    # --- Endpoints que pasaste ---
+    CLASIF_URL  = "https://api.weball.me/public/tournament/176/phase/150/group/613/clasification?instanceUUID=2d260df1-7986-49fd-95a2-fcb046e7a4fb"
     MATCHES_URL = "https://api.weball.me/public/tournament/176/phase/150/matches?instanceUUID=2d260df1-7986-49fd-95a2-fcb046e7a4fb"
 
     TARGET_CATEGORY = "2016 PROMOCIONALES"
@@ -2429,8 +2430,6 @@ if menu == "🏆 Tabla & Resultados":
         data = _req("GET", CLASIF_URL, timeout=25, retries=2)
 
         positions = None
-
-        # Respuestas tipo lista -> elegir el nodo de la categoría correcta
         if isinstance(data, list):
             chosen = None
             for node in data:
@@ -2444,13 +2443,10 @@ if menu == "🏆 Tabla & Resultados":
                 if isinstance(cat_name, str) and TARGET_CATEGORY in cat_name.upper():
                     chosen = node
                     break
-            # Fallback: si no lo encuentra, usa el índice 1 (como tu script original hacía)
             if chosen is None and len(data) > 1 and isinstance(data[1], dict):
                 chosen = data[1]
             if chosen and "positions" in chosen:
                 positions = chosen["positions"]
-
-        # Respuestas tipo dict simple
         elif isinstance(data, dict):
             positions = data.get("positions")
 
@@ -2499,7 +2495,6 @@ if menu == "🏆 Tabla & Resultados":
             try:
                 res = _req("POST", MATCHES_URL, json=payload, timeout=25, retries=1)
             except Exception:
-                # si una página falla, seguimos con las demás
                 continue
 
             page_data = res.get("data", []) or []
@@ -2508,11 +2503,9 @@ if menu == "🏆 Tabla & Resultados":
                                .get("categoryInstance", {}) \
                                .get("name", "")) or ""
 
-                # Filtrar la categoría objetivo
                 if TARGET_CATEGORY not in categoria.upper():
                     continue
 
-                # Extraer equipos (si falta alguno -> LIBRE)
                 try:
                     local = match['clubHome']['clubInscription']['club']['name']
                     visitante = match['clubAway']['clubInscription']['club']['name']
@@ -2520,7 +2513,7 @@ if menu == "🏆 Tabla & Resultados":
                     local = "LIBRE"
                     visitante = ""
 
-                # Omitir explícitamente “LIBRE”
+                # Omitir “LIBRE”
                 if isinstance(local, str) and "LIBRE" in local.upper():
                     continue
                 if isinstance(visitante, str) and "LIBRE" in visitante.upper():
@@ -2550,12 +2543,12 @@ if menu == "🏆 Tabla & Resultados":
         if df_partidos.empty:
             return pd.DataFrame(), pd.DataFrame()
 
-        # Mapear Jornada ID -> Fecha N (según orden ascendente de ids)
+        # Mapear Jornada ID -> Fecha N
         ids_ordenados = sorted(df_partidos["Jornada ID"].dropna().unique().tolist())
         mapa_fechas = {jid: f"Fecha {i+1}" for i, jid in enumerate(ids_ordenados)}
 
         df_partidos["Fecha"] = None
-        # asignar fecha sólo a finalizados
+        # asignar “Fecha N” solo a finalizados
         mask_fin = df_partidos["Estado"].str.lower() == "finalizado"
         df_partidos.loc[mask_fin, "Fecha"] = df_partidos.loc[mask_fin, "Jornada ID"].map(mapa_fechas)
 
@@ -2565,7 +2558,6 @@ if menu == "🏆 Tabla & Resultados":
 
         # Orden agradable
         if "Fecha" in df_resultados.columns:
-            # ordenar por número dentro de "Fecha N"
             def _fnum(s):
                 try:
                     return int(str(s).split()[-1])
@@ -2578,12 +2570,86 @@ if menu == "🏆 Tabla & Resultados":
 
         return df_resultados, df_fixture
 
+    # --- TABLA FECHA A FECHA (evolutiva) ---
+    def build_evolutive_table(df_resultados: pd.DataFrame) -> pd.DataFrame:
+        if df_resultados is None or df_resultados.empty:
+            return pd.DataFrame()
+
+        # Asegurar formatos
+        df = df_resultados.copy()
+        df["Fecha Técnica"] = pd.to_datetime(df["Fecha Técnica"], errors="coerce")
+        # Solo partidos con goles válidos
+        df["Goles Local"] = pd.to_numeric(df["Goles Local"], errors="coerce")
+        df["Goles Visitante"] = pd.to_numeric(df["Goles Visitante"], errors="coerce")
+        df = df.dropna(subset=["Goles Local","Goles Visitante"])
+
+        if df.empty:
+            return pd.DataFrame()
+
+        df = df.sort_values("Fecha Técnica").reset_index(drop=True)
+
+        equipos_unicos = pd.Series(
+            df["Equipo Local"].tolist() + df["Equipo Visitante"].tolist()
+        ).dropna().unique()
+
+        # Diccionario de stats acumuladas
+        stats = {e: {"Pts":0,"PJ":0,"PG":0,"PE":0,"PP":0,"GF":0,"GC":0} for e in equipos_unicos}
+
+        snapshots = []
+        for _, row in df.iterrows():
+            fecha = row["Fecha Técnica"]
+            loc   = row["Equipo Local"]
+            vis   = row["Equipo Visitante"]
+            gl    = int(row["Goles Local"])
+            gv    = int(row["Goles Visitante"])
+
+            # PJ
+            stats[loc]["PJ"] += 1
+            stats[vis]["PJ"] += 1
+
+            # Goles
+            stats[loc]["GF"] += gl; stats[loc]["GC"] += gv
+            stats[vis]["GF"] += gv; stats[vis]["GC"] += gl
+
+            # Puntos
+            if gl > gv:
+                stats[loc]["Pts"] += 3; stats[loc]["PG"] += 1; stats[vis]["PP"] += 1
+            elif gl < gv:
+                stats[vis]["Pts"] += 3; stats[vis]["PG"] += 1; stats[loc]["PP"] += 1
+            else:
+                stats[loc]["Pts"] += 1; stats[vis]["Pts"] += 1
+                stats[loc]["PE"] += 1; stats[vis]["PE"] += 1
+
+            # Snapshot de tabla luego de este partido
+            tabla_fecha = []
+            for e in equipos_unicos:
+                s = stats[e]
+                tabla_fecha.append({
+                    "Fecha Técnica": fecha,
+                    "Equipo": e,
+                    "Pts": s["Pts"],
+                    "PJ": s["PJ"],
+                    "PG": s["PG"],
+                    "PE": s["PE"],
+                    "PP": s["PP"],
+                    "GF": s["GF"],
+                    "GC": s["GC"],
+                    "DG": s["GF"] - s["GC"],
+                })
+            snap = pd.DataFrame(tabla_fecha).sort_values(
+                ["Pts","DG","GF"], ascending=[False, False, False]
+            ).reset_index(drop=True)
+            snap["Posición"] = snap.index + 1
+            snapshots.append(snap)
+
+        return pd.concat(snapshots, ignore_index=True) if snapshots else pd.DataFrame()
+
     # =========================
     # UI
     # =========================
     st.subheader("🏆 Tabla de posiciones y resultados")
 
-    tab1, tab2, tab3 = st.tabs(["Tabla", "Resultados", "Fixture"])
+    tab1, tab2, tab3, tab4 = st.tabs(["Tabla", "Resultados", "Fixture", "Tabla fecha a fecha"])
 
     with tab1:
         try:
@@ -2612,7 +2678,48 @@ if menu == "🏆 Tabla & Resultados":
         if df_fixture.empty:
             st.info("No hay próximos partidos programados.")
         else:
-            # Mostrar sin LIBRE (ya filtrado), ordenado por jornada
             cols = ["Jornada ID","Equipo Local","Equipo Visitante","Fecha Técnica","Estado"]
             st.dataframe(df_fixture[cols], use_container_width=True, hide_index=True)
+
+    with tab4:
+        # Usamos los resultados ya fetchados arriba (si no existen, los pedimos)
+        try:
+            _df_res = df_resultados if 'df_resultados' in locals() else fetch_matches()[0]
+        except Exception:
+            _df_res = pd.DataFrame()
+
+        if _df_res is None or _df_res.empty:
+            st.info("No hay resultados finalizados para construir la tabla fecha a fecha.")
+        else:
+            df_evo = build_evolutive_table(_df_res)
+
+            if df_evo.empty:
+                st.info("No se pudo construir la tabla evolutiva (verifica que haya marcadores de goles).")
+            else:
+                # Controles
+                fechas_orden = sorted(df_evo["Fecha Técnica"].dropna().unique())
+                sel_fecha = st.select_slider(
+                    "Corte temporal",
+                    options=fechas_orden,
+                    value=fechas_orden[-1],
+                    format_func=lambda d: pd.to_datetime(d).strftime("%Y-%m-%d %H:%M")
+                )
+
+                snap = (df_evo[df_evo["Fecha Técnica"] == sel_fecha]
+                        .sort_values(["Pts","DG","GF"], ascending=[False, False, False])
+                        .reset_index(drop=True))
+                snap["#"] = range(1, len(snap) + 1)
+                cols = ["#","Equipo","Pts","PJ","PG","PE","PP","GF","GC","DG","Posición"]
+                st.dataframe(snap[cols], use_container_width=True, hide_index=True)
+
+                # (Opcional) seguimiento de un equipo
+                equipos_list = sorted(df_evo["Equipo"].unique().tolist())
+                eq_focus = st.selectbox("Seguir posición de un equipo (opcional)", ["—"] + equipos_list, index=0)
+                if eq_focus != "—":
+                    serie = (df_evo[df_evo["Equipo"] == eq_focus]
+                             .sort_values("Fecha Técnica")[["Fecha Técnica","Posición"]])
+                    # Mostrar como tabla breve
+                    st.caption(f"Evolución de posición: {eq_focus}")
+                    st.dataframe(serie, use_container_width=True, hide_index=True)
+
 
