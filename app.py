@@ -127,6 +127,228 @@ def infer_paths_for_label(label: str) -> Tuple[Optional[str], Optional[str]]:
     return (xml_path if os.path.isfile(xml_path) else None), matrix_path
 
 # =========================
+# TIMELINE — helpers y parsers
+# =========================
+from matplotlib.patches import Circle
+
+BALL_ICON_PATH    = os.path.join(BANNER_DIR, "pelota.png")
+FOOTER_LEFT_LOGO  = os.path.join(BANNER_DIR, "SportData.png")
+FOOTER_RIGHT_LOGO = os.path.join(BANNER_DIR, "Sevilla.png")
+INCLUDE_GOALS_IN_SHOT_CIRCLES = True
+
+def is_shot(ev):
+    s = nlower(ev["code"])
+    if re.search(r"\btiro\b|\bremate\b", s): return True
+    return any(re.search(r"\btiro\b|\bremate\b", l) for l in ev["labels_lc"])
+
+def is_goal(ev):
+    s = nlower(ev["code"])
+    if re.match(r"^gol\b", s): return True
+    return any(re.match(r"^gol\b", l) for l in ev["labels_lc"])
+
+ON_TARGET_PAT = re.compile(
+    r"\b(al\s*arco|a\s*puerta|a\s*porter[ií]a|on\s*target|atajad[oa]|saved\s*shot)\b", re.IGNORECASE
+)
+def is_shot_on_target(ev):
+    s = nlower(ev["code"])
+    if ON_TARGET_PAT.search(s): return True
+    return any(ON_TARGET_PAT.search(l or "") for l in ev["labels_lc"])
+
+def minute_bucket(sec):
+    m = int(sec // 60)
+    return max(0, min(39, m))  # 0..39
+
+def build_timeline(xml_players_path):
+    evs = parse_instances_jugadores(xml_players_path)
+    M = 40
+    tl = dict(
+        passes_M=np.zeros(M, int), passes_R=np.zeros(M, int),
+        last_M=np.zeros(M, int),   last_R=np.zeros(M, int),
+        shots_on_M=np.zeros(M, int), shots_off_M=np.zeros(M, int),
+        shots_on_R=np.zeros(M, int), shots_off_R=np.zeros(M, int),
+        goals_M=np.zeros(M, int),  goals_R=np.zeros(M, int),
+    )
+    for ev in evs:
+        m = minute_bucket(ev.get("end", 0))
+
+        # pases + último tercio
+        if is_pass_attempt(ev):
+            if is_rival_code(ev["code"]): tl["passes_R"][m] += 1
+            else:                          tl["passes_M"][m] += 1
+            z = xy_to_zone(*(ev["end_xy"] or (None, None)))
+            if z is not None:
+                if is_rival_code(ev["code"]):
+                    if z in {1,4,7}: tl["last_R"][m] += 1
+                else:
+                    if z in {3,6,9}: tl["last_M"][m] += 1
+
+        # tiros / on target / goles
+        if is_shot(ev):
+            goal = is_goal(ev)
+            on_t = is_shot_on_target(ev) or goal
+
+            if is_rival_code(ev["code"]):
+                if goal:
+                    tl["goals_R"][m] += 1
+                    if INCLUDE_GOALS_IN_SHOT_CIRCLES: tl["shots_on_R"][m] += 1
+                else:
+                    (tl["shots_on_R"] if on_t else tl["shots_off_R"])[m] += 1
+            else:
+                if goal:
+                    tl["goals_M"][m] += 1
+                    if INCLUDE_GOALS_IN_SHOT_CIRCLES: tl["shots_on_M"][m] += 1
+                else:
+                    (tl["shots_on_M"] if on_t else tl["shots_off_M"])[m] += 1
+    return tl
+
+# Colores específicos del timeline
+yellow_on  = "#FFD54F"
+rival_g    = "#B9C4C9"
+white      = "#FFFFFF"
+rail       = "#0F5E29"
+
+def try_load_ball():
+    try:
+        im = Image.open(BALL_ICON_PATH); im.load()
+        if im.mode != "RGBA": im = im.convert("RGBA")
+        return np.array(im)
+    except Exception:
+        return None
+
+BALL_IMG = try_load_ball()
+
+def draw_ball(ax, x_center, y_center, size=0.018):
+    if BALL_IMG is None:
+        ax.text(x_center, y_center, "⚽", ha="center", va="center", fontsize=8)
+        return
+    h, wpx = BALL_IMG.shape[0], BALL_IMG.shape[1]
+    asp = h / wpx if wpx else 1.0
+    ax.imshow(
+        BALL_IMG,
+        extent=[x_center - size/2, x_center + size/2,
+                y_center - (size*asp)/2, y_center + (size*asp)/2],
+        zorder=9
+    )
+
+def draw_count_circle(ax, x, y, count, base_r=0.006, face=None, edge=white, lw=1.0, z=8):
+    if count <= 0: return
+    from math import sqrt
+    r = base_r * sqrt(count ** 0.5)
+    circ = Circle((x, y), radius=r, facecolor=face, edgecolor=edge, linewidth=lw, zorder=z)
+    ax.add_patch(circ)
+
+def draw_timeline_panel(rival_name: str, tl: dict,
+                        ferro_logo_path: Optional[str], rival_logo_path: Optional[str]):
+    plt.close("all")
+    fig_h = 11.8
+    fig = plt.figure(figsize=(10.8, fig_h))
+    ax  = fig.add_axes([0,0,1,1])
+    ax.set_xlim(0,1); ax.set_ylim(0,1); ax.axis("off")
+    ax.add_patch(Rectangle((0,0), 1, 1, facecolor=bg_green, edgecolor="none"))
+
+    # Banner sup
+    BANNER_H_loc = 0.14; BANNER_Y0 = 1 - BANNER_H_loc
+    ax.add_patch(Rectangle((0, BANNER_Y0), 1, BANNER_H_loc, facecolor=white, edgecolor="none"))
+    if ferro_logo_path: draw_logo(ax, ferro_logo_path, 0.075, BANNER_Y0+0.07, w=0.12)
+    if rival_logo_path: draw_logo(ax, rival_logo_path, 0.925, BANNER_Y0+0.07, w=0.12)
+    ax.text(0.5, BANNER_Y0+0.085, f"FERRO vs {rival_name.upper()}", ha="center", va="center",
+            color=bg_green, fontsize=30, weight="bold")
+    ax.text(0.5, BANNER_Y0+0.040, "TIMELINE", ha="center", va="center",
+            color=bg_green, fontsize=16, weight="bold")
+
+    # Banner inferior
+    FOOT_H, FOOT_Y0 = 0.12, 0.00
+    ax.add_patch(Rectangle((0, FOOT_Y0), 1, FOOT_H, facecolor=white, edgecolor="none"))
+    if os.path.isfile(FOOTER_LEFT_LOGO):  draw_logo(ax, FOOTER_LEFT_LOGO,  0.09, FOOT_Y0+FOOT_H*0.52, w=0.14)
+    if os.path.isfile(FOOTER_RIGHT_LOGO): draw_logo(ax, FOOTER_RIGHT_LOGO, 0.91, FOOT_Y0+FOOT_H*0.52, w=0.12)
+    ax.text(0.50, FOOT_Y0+FOOT_H*0.62, "TRABAJO FIN DE MÁSTER", ha="center", va="center",
+            color=bg_green, fontsize=18, weight="bold")
+    ax.text(0.50, FOOT_Y0+FOOT_H*0.32, "Cristian Dieguez", ha="center", va="center",
+            color=bg_green, fontsize=13, weight="bold")
+
+    # Panel central
+    panel_y0, panel_y1 = FOOT_Y0+FOOT_H+0.05, BANNER_Y0-0.05
+    panel_h = panel_y1 - panel_y0
+
+    x_center_gap_L = 0.47
+    x_center_gap_R = 0.53
+    x_bar_M_max = 0.22
+    x_bar_R_max = 0.78
+    x_shot_M  = 0.05
+    x_last_M  = 0.16
+    x_shot_R  = 0.95
+    x_last_R  = 0.84
+    x_goal_M  = x_shot_M - 0.025
+    x_goal_R  = x_shot_R + 0.025
+
+    # Títulos
+    ty = panel_y1 + 0.012
+    ax.text(x_last_M,  ty, "Últ. tercio", ha="center", va="bottom", fontsize=10, weight="bold")
+    ax.text((x_bar_M_max+x_center_gap_L)/2, ty, "Pases/min", ha="center", va="bottom", fontsize=10, weight="bold")
+    ax.text(x_shot_M,  ty, "Tiros / Goles", ha="center", va="bottom", fontsize=10, weight="bold")
+    ax.text((x_center_gap_L+x_center_gap_R)/2, ty, "Min.", ha="center", va="bottom", fontsize=10, weight="bold")
+    ax.text((x_center_gap_R+x_bar_R_max)/2, ty, "Pases/min", ha="center", va="bottom", fontsize=10, weight="bold")
+    ax.text(x_shot_R,  ty, "Tiros / Goles", ha="center", va="bottom", fontsize=10, weight="bold")
+    ax.text(x_last_R,  ty, "Últ. tercio", ha="center", va="bottom", fontsize=10, weight="bold")
+
+    # Minutos 0..40
+    M = 40
+    def y_of_index(i):
+        return panel_y1 - panel_h * (i + 0.5) / M
+
+    ax.add_line(plt.Line2D([x_center_gap_L, x_center_gap_L], [panel_y0, panel_y1], color=white, alpha=0.28, lw=1.2))
+    ax.add_line(plt.Line2D([x_center_gap_R, x_center_gap_R], [panel_y0, panel_y1], color=white, alpha=0.28, lw=1.2))
+    for m in range(0, 41, 5):
+        yy = y_of_index(min(m, 39))
+        ax.text(0.50, yy, f"{m:02d}'", ha="center", va="center", fontsize=8, alpha=0.90)
+
+    max_bar = max(tl["passes_M"].max() if tl["passes_M"].size else 1,
+                  tl["passes_R"].max() if tl["passes_R"].size else 1, 1)
+
+    def bar_width_left(cnt):
+        total_span = (x_center_gap_L - x_bar_M_max)
+        return total_span * (cnt / max_bar if max_bar else 0)
+
+    def bar_width_right(cnt):
+        total_span = (x_bar_R_max - x_center_gap_R)
+        return total_span * (cnt / max_bar if max_bar else 0)
+
+    bar_h = panel_h / M * 0.55
+
+    for m in range(M):
+        y = y_of_index(m)
+
+        # FERRO izquierda
+        wL = bar_width_left(tl["passes_M"][m]); x0L = x_center_gap_L - wL
+        ax.add_patch(Rectangle((x0L, y - bar_h/2), wL, bar_h, facecolor=orange_win, edgecolor="none"))
+        if tl["passes_M"][m] > 0:
+            ax.text(x0L - 0.006, y, f"{tl['passes_M'][m]}", ha="right", va="center", fontsize=8)
+
+        draw_count_circle(ax, x_last_M, y, tl["last_M"][m], base_r=0.006, face=white, edge=white, lw=0.0, z=7)
+        draw_count_circle(ax, x_shot_M, y, tl["shots_off_M"][m], base_r=0.006, face=None, edge=white, lw=1.0, z=8)
+        draw_count_circle(ax, x_shot_M, y, tl["shots_on_M"][m],  base_r=0.006, face=yellow_on, edge=white, lw=0.6, z=9)
+        if tl["goals_M"][m] > 0:
+            for k in range(int(tl["goals_M"][m])):
+                draw_ball(ax, x_goal_M - k*0.012, y, size=0.016)
+
+        # RIVAL derecha
+        wR = bar_width_right(tl["passes_R"][m]); x0R = x_center_gap_R
+        ax.add_patch(Rectangle((x0R, y - bar_h/2), wR, bar_h, facecolor=rival_g, edgecolor="none"))
+        if tl["passes_R"][m] > 0:
+            ax.text(x0R + wR + 0.006, y, f"{tl['passes_R'][m]}", ha="left", va="center", fontsize=8)
+
+        draw_count_circle(ax, x_last_R, y, tl["last_R"][m], base_r=0.006, face=white, edge=white, lw=0.0, z=7)
+        draw_count_circle(ax, x_shot_R, y, tl["shots_off_R"][m], base_r=0.006, face=None, edge=white, lw=1.0, z=8)
+        draw_count_circle(ax, x_shot_R, y, tl["shots_on_R"][m],  base_r=0.006, face=yellow_on, edge=white, lw=0.6, z=9)
+        if tl["goals_R"][m] > 0:
+            for k in range(int(tl["goals_R"][m])):
+                draw_ball(ax, x_goal_R + k*0.012, y, size=0.016)
+
+    st.pyplot(fig, use_container_width=True)
+    plt.close(fig)
+
+
+# =========================
 # PARSERS SEGÚN TU NOTEBOOK
 # =========================
 def parse_possession_from_equipo(xml_path: str) -> Tuple[float, float]:
@@ -439,7 +661,7 @@ def badge_path_for(name: str) -> Optional[str]:
 # =========================
 menu = st.sidebar.radio(
     "Menú",
-    ["📊 Estadísticas de partido", "⏱️ Minutos", "🎯 Tiros", "🗺️ Mapa 3x3", "🔗 Red de Pases", "⚡ Radar"],
+    ["📊 Estadísticas de partido", "⏱️ Timeline de Partido", "🎯 Tiros", "🗺️ Mapa 3x3", "🔗 Red de Pases", "⚡ Radar"],
     index=0
 )
 
@@ -529,3 +751,31 @@ if menu == "📊 Estadísticas de partido":
 
 else:
     st.info("Las demás secciones se irán conectando con tus notebooks en los próximos pasos.")
+
+elif menu == "🕒 Timeline":
+    matches = list_matches()
+    if not matches:
+        st.warning("No encontré partidos en data/minutos con patrón: 'Fecha N° - Rival - XML TotalValues.xml'.")
+        st.stop()
+
+    sel = st.selectbox("Elegí partido", matches, index=0)
+    rival = rival_from_label(sel)
+
+    XML_PATH, _ = infer_paths_for_label(sel)
+    if not XML_PATH:
+        st.error("No se encontró el XML del partido seleccionado.")
+        st.stop()
+
+    # timeline (usa el mismo XML de jugadores/totalvalues)
+    tl = build_timeline(XML_PATH)
+
+    ferro_logo = badge_path_for("ferro")
+    rival_logo = badge_path_for(rival)
+
+    draw_timeline_panel(
+        rival_name=rival,
+        tl=tl,
+        ferro_logo_path=ferro_logo,
+        rival_logo_path=rival_logo
+    )
+
