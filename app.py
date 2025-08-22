@@ -1150,7 +1150,7 @@ menu = st.sidebar.radio(
     "Menú",
     ["📊 Estadísticas de partido", "⏱️ Timeline de Partido", "🔥 Mapas de calor",
      "🕓 Distribución de minutos","🔗 Red de Pases", "📬 Destino de pases", 
-     "🛡️ Pérdidas y Recuperaciones","🎯 Mapa de tiros", "📈 Radar comparativo (jugador/rol)"
+     "🛡️ Pérdidas y Recuperaciones","🎯 Mapa de tiros", "📈 Radar comparativo"
     ],
     index=0
 )
