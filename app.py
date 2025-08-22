@@ -2397,19 +2397,17 @@ if menu == "📈 Radar comparativo":
     st.dataframe(tabla.sort_values("minutos", ascending=False), use_container_width=True)
 
 # =========================
-# 🏆 TABLA & RESULTADOS — WEBALL (con "Tabla fecha a fecha")
+# 🏆 TABLA & RESULTADOS — WEBALL (con evolución, flechas, tendencia y racha)
 # =========================
 if menu == "🏆 Tabla & Resultados":
-    import time, requests, pandas as pd
-    import numpy as np
+    import time, requests, pandas as pd, numpy as np
+    import math
 
-    # --- Endpoints que pasaste ---
     CLASIF_URL  = "https://api.weball.me/public/tournament/176/phase/150/group/613/clasification?instanceUUID=2d260df1-7986-49fd-95a2-fcb046e7a4fb"
     MATCHES_URL = "https://api.weball.me/public/tournament/176/phase/150/matches?instanceUUID=2d260df1-7986-49fd-95a2-fcb046e7a4fb"
-
     TARGET_CATEGORY = "2016 PROMOCIONALES"
 
-    # --- Helper HTTP con reintentos/backoff ---
+    # -------- HTTP helper (retries) --------
     def _req(method: str, url: str, *, json=None, timeout=20, retries=2, sleep=1):
         last_err = None
         for i in range(retries + 1):
@@ -2424,7 +2422,7 @@ if menu == "🏆 Tabla & Resultados":
                 else:
                     raise last_err
 
-    # --- TABLA (Clasificación) ---
+    # -------- TABLA (Clasificación actual) --------
     @st.cache_data(ttl=300)
     def fetch_table() -> pd.DataFrame:
         data = _req("GET", CLASIF_URL, timeout=25, retries=2)
@@ -2478,9 +2476,12 @@ if menu == "🏆 Tabla & Resultados":
         df.insert(0, "#", df.index)
         return df
 
-    # --- RESULTADOS / FIXTURE ---
+    # -------- RESULTADOS / FIXTURE --------
     @st.cache_data(ttl=300)
     def fetch_matches():
+        def _norm_cat(s):
+            return str(s or "").upper()
+
         try:
             first = _req("POST", MATCHES_URL, json={}, timeout=25, retries=2)
         except Exception as e:
@@ -2502,21 +2503,17 @@ if menu == "🏆 Tabla & Resultados":
                 categoria = (match.get("category", {}) \
                                .get("categoryInstance", {}) \
                                .get("name", "")) or ""
-
-                if TARGET_CATEGORY not in categoria.upper():
+                if TARGET_CATEGORY not in _norm_cat(categoria):
                     continue
 
                 try:
                     local = match['clubHome']['clubInscription']['club']['name']
                     visitante = match['clubAway']['clubInscription']['club']['name']
                 except Exception:
-                    local = "LIBRE"
-                    visitante = ""
+                    local = "LIBRE"; visitante = ""
 
-                # Omitir “LIBRE”
-                if isinstance(local, str) and "LIBRE" in local.upper():
-                    continue
-                if isinstance(visitante, str) and "LIBRE" in visitante.upper():
+                # Omitir LIBRE
+                if "LIBRE" in _norm_cat(local) or "LIBRE" in _norm_cat(visitante):
                     continue
 
                 goles_local = match.get("scoreHome")
@@ -2543,20 +2540,18 @@ if menu == "🏆 Tabla & Resultados":
         if df_partidos.empty:
             return pd.DataFrame(), pd.DataFrame()
 
-        # Mapear Jornada ID -> Fecha N
+        # Mapear “Jornada ID” → “Fecha N” sólo para finalizados
         ids_ordenados = sorted(df_partidos["Jornada ID"].dropna().unique().tolist())
         mapa_fechas = {jid: f"Fecha {i+1}" for i, jid in enumerate(ids_ordenados)}
 
         df_partidos["Fecha"] = None
-        # asignar “Fecha N” solo a finalizados
         mask_fin = df_partidos["Estado"].str.lower() == "finalizado"
         df_partidos.loc[mask_fin, "Fecha"] = df_partidos.loc[mask_fin, "Jornada ID"].map(mapa_fechas)
 
-        # Split
         df_resultados = df_partidos[mask_fin].copy()
         df_fixture = df_partidos[~df_partidos["Estado"].str.lower().isin(["finalizado", "cancelado"])].copy()
 
-        # Orden agradable
+        # Orden
         if "Fecha" in df_resultados.columns:
             def _fnum(s):
                 try:
@@ -2565,37 +2560,29 @@ if menu == "🏆 Tabla & Resultados":
                     return 9999
             df_resultados["FechaNum"] = df_resultados["Fecha"].apply(_fnum)
             df_resultados = df_resultados.sort_values(["FechaNum", "Fecha Técnica"]).drop(columns=["FechaNum"])
-
         df_fixture = df_fixture.sort_values(["Jornada ID","Fecha Técnica"])
 
         return df_resultados, df_fixture
 
-    # --- TABLA FECHA A FECHA (evolutiva) ---
+    # -------- TABLA FECHA A FECHA (snapshot tras cada partido) --------
     def build_evolutive_table(df_resultados: pd.DataFrame) -> pd.DataFrame:
         if df_resultados is None or df_resultados.empty:
             return pd.DataFrame()
 
-        # Asegurar formatos
         df = df_resultados.copy()
         df["Fecha Técnica"] = pd.to_datetime(df["Fecha Técnica"], errors="coerce")
-        # Solo partidos con goles válidos
         df["Goles Local"] = pd.to_numeric(df["Goles Local"], errors="coerce")
         df["Goles Visitante"] = pd.to_numeric(df["Goles Visitante"], errors="coerce")
         df = df.dropna(subset=["Goles Local","Goles Visitante"])
-
         if df.empty:
             return pd.DataFrame()
 
         df = df.sort_values("Fecha Técnica").reset_index(drop=True)
+        equipos_unicos = pd.Series(df["Equipo Local"].tolist() + df["Equipo Visitante"].tolist()).dropna().unique()
 
-        equipos_unicos = pd.Series(
-            df["Equipo Local"].tolist() + df["Equipo Visitante"].tolist()
-        ).dropna().unique()
-
-        # Diccionario de stats acumuladas
         stats = {e: {"Pts":0,"PJ":0,"PG":0,"PE":0,"PP":0,"GF":0,"GC":0} for e in equipos_unicos}
-
         snapshots = []
+
         for _, row in df.iterrows():
             fecha = row["Fecha Técnica"]
             loc   = row["Equipo Local"]
@@ -2603,15 +2590,10 @@ if menu == "🏆 Tabla & Resultados":
             gl    = int(row["Goles Local"])
             gv    = int(row["Goles Visitante"])
 
-            # PJ
-            stats[loc]["PJ"] += 1
-            stats[vis]["PJ"] += 1
-
-            # Goles
+            stats[loc]["PJ"] += 1; stats[vis]["PJ"] += 1
             stats[loc]["GF"] += gl; stats[loc]["GC"] += gv
             stats[vis]["GF"] += gv; stats[vis]["GC"] += gl
 
-            # Puntos
             if gl > gv:
                 stats[loc]["Pts"] += 3; stats[loc]["PG"] += 1; stats[vis]["PP"] += 1
             elif gl < gv:
@@ -2620,7 +2602,6 @@ if menu == "🏆 Tabla & Resultados":
                 stats[loc]["Pts"] += 1; stats[vis]["Pts"] += 1
                 stats[loc]["PE"] += 1; stats[vis]["PE"] += 1
 
-            # Snapshot de tabla luego de este partido
             tabla_fecha = []
             for e in equipos_unicos:
                 s = stats[e]
@@ -2644,11 +2625,122 @@ if menu == "🏆 Tabla & Resultados":
 
         return pd.concat(snapshots, ignore_index=True) if snapshots else pd.DataFrame()
 
-    # =========================
-    # UI
-    # =========================
-    st.subheader("🏆 Tabla de posiciones y resultados")
+    # -------- util: ΔPos + flechas --------
+    def add_movement_and_trends(df_evo: pd.DataFrame, last_n_list=(3,5)) -> pd.DataFrame:
+        # Δ vs corte previo dentro de cada equipo
+        df = df_evo.copy().sort_values(["Equipo","Fecha Técnica"]).reset_index(drop=True)
+        df["ΔPos"] = np.nan
+        df["Mov"]  = "＝"
+        for equipo, g in df.groupby("Equipo"):
+            g = g.sort_values("Fecha Técnica")
+            prev = None
+            deltas = []
+            movs   = []
+            for pos in g["Posición"].tolist():
+                if prev is None:
+                    deltas.append(np.nan); movs.append("＝")
+                else:
+                    d = prev - pos  # positivo = mejora (sube)
+                    deltas.append(d)
+                    if d > 0:
+                        movs.append("▲")
+                    elif d < 0:
+                        movs.append("▼")
+                    else:
+                        movs.append("＝")
+                prev = pos
+            df.loc[g.index, "ΔPos"] = deltas
+            df.loc[g.index, "Mov"]  = movs
 
+        # tendencias por ventana (3,5): media de (prev-pos) -> signo
+        for w in last_n_list:
+            col = f"Tend.{w}"
+            df[col] = "→"
+            for equipo, g in df.groupby("Equipo"):
+                g = g.sort_values("Fecha Técnica")
+                # score = pos[t-1] - pos[t]  (positivo = mejora)
+                score = [np.nan]
+                for i in range(1, len(g)):
+                    score.append(g["Posición"].iloc[i-1] - g["Posición"].iloc[i])
+                score = pd.Series(score, index=g.index)
+                roll = score.rolling(window=w, min_periods=w).mean()
+                sym = roll.apply(lambda x: "↗︎" if x>0 else ("↘︎" if x<0 else "→"))
+                df.loc[g.index, col] = sym.fillna("→")
+        return df
+
+    # -------- util: racha G/E/P por equipo --------
+    def build_streaks(df_resultados: pd.DataFrame) -> pd.DataFrame:
+        if df_resultados is None or df_resultados.empty:
+            return pd.DataFrame(columns=["Fecha Técnica","Equipo","Racha"])
+        df = df_resultados.copy()
+        df["Fecha Técnica"] = pd.to_datetime(df["Fecha Técnica"], errors="coerce")
+        df = df.sort_values("Fecha Técnica")
+
+        rows = []
+        for _, r in df.iterrows():
+            gl = int(r["Goles Local"]); gv = int(r["Goles Visitante"])
+            if gl > gv:
+                rows.append((r["Fecha Técnica"], r["Equipo Local"], "G"))
+                rows.append((r["Fecha Técnica"], r["Equipo Visitante"], "P"))
+            elif gl < gv:
+                rows.append((r["Fecha Técnica"], r["Equipo Local"], "P"))
+                rows.append((r["Fecha Técnica"], r["Equipo Visitante"], "G"))
+            else:
+                rows.append((r["Fecha Técnica"], r["Equipo Local"], "E"))
+                rows.append((r["Fecha Técnica"], r["Equipo Visitante"], "E"))
+
+        hist = pd.DataFrame(rows, columns=["Fecha Técnica","Equipo","Res"]).sort_values(["Equipo","Fecha Técnica"])
+        hist["Racha"] = ""
+        for equipo, g in hist.groupby("Equipo"):
+            g = g.sort_values("Fecha Técnica")
+            streak = 0; last = None
+            vals = []
+            for res in g["Res"]:
+                if res == last:
+                    streak += 1
+                else:
+                    streak = 1; last = res
+                vals.append(f"{res}×{streak}")
+            hist.loc[g.index, "Racha"] = vals
+        return hist[["Fecha Técnica","Equipo","Racha"]]
+
+    # -------- (Opcional) ELO compacto --------
+    def build_elo(df_resultados: pd.DataFrame, K=40, init=1000, home_adv=100):
+        if df_resultados is None or df_resultados.empty:
+            return pd.DataFrame()
+        df = df_resultados.copy()
+        df["Fecha Técnica"] = pd.to_datetime(df["Fecha Técnica"], errors="coerce")
+        df = df.sort_values("Fecha Técnica")
+        equipos = pd.Series(df["Equipo Local"].tolist() + df["Equipo Visitante"].tolist()).unique()
+        idx = {e:init for e in equipos}
+        evo = []
+        for f in df["Fecha Técnica"].unique():
+            sub = df[df["Fecha Técnica"]==f]
+            for _, r in sub.iterrows():
+                L, V = r["Equipo Local"], r["Equipo Visitante"]
+                gl, gv = int(r["Goles Local"]), int(r["Goles Visitante"])
+                rL = 1 if gl>gv else 0 if gl<gv else 0.5
+                rV = 1 - rL if gl!=gv else 0.5
+                eL = 1/(1+10**(((idx[V]-idx[L]+home_adv)/400)))
+                eV = 1/(1+10**(((idx[L]-idx[V]-home_adv)/400)))
+                adjL = K*(rL-eL); adjV = K*(rV-eV)
+                dg = abs(gl-gv); mult = 1 + (dg/4)
+                idx[L] += adjL*mult; idx[V] += adjV*mult
+            for e in equipos:
+                evo.append({"Fecha Técnica": f, "Equipo": e, "ELO": idx[e]})
+        elo = pd.DataFrame(evo).sort_values(["Equipo","Fecha Técnica"])
+        elo["ΔELO"] = elo.groupby("Equipo")["ELO"].diff().fillna(0.0)
+        # tendencia (3)
+        def _sym(x): 
+            return "↗︎" if x>1 else ("↘︎" if x<-1 else "→")
+        elo["Tend.ELO(3)"] = (elo.groupby("Equipo")["ΔELO"]
+                                .rolling(3, min_periods=3).mean()
+                                .reset_index(level=0, drop=True)
+                                .apply(_sym).fillna("→"))
+        return elo
+
+    # ========================= UI =========================
+    st.subheader("🏆 Tabla de posiciones y resultados")
     tab1, tab2, tab3, tab4 = st.tabs(["Tabla", "Resultados", "Fixture", "Tabla fecha a fecha"])
 
     with tab1:
@@ -2670,33 +2762,46 @@ if menu == "🏆 Tabla & Resultados":
                 df_resultados[[
                     "Fecha","Equipo Local","Goles Local","Goles Visitante","Equipo Visitante","Fecha Técnica"
                 ]],
-                use_container_width=True,
-                hide_index=True
+                use_container_width=True, hide_index=True
             )
 
     with tab3:
         if df_fixture.empty:
             st.info("No hay próximos partidos programados.")
         else:
-            cols = ["Jornada ID","Equipo Local","Equipo Visitante","Fecha Técnica","Estado"]
-            st.dataframe(df_fixture[cols], use_container_width=True, hide_index=True)
+            st.dataframe(
+                df_fixture[["Jornada ID","Equipo Local","Equipo Visitante","Fecha Técnica","Estado"]],
+                use_container_width=True, hide_index=True
+            )
 
     with tab4:
-        # Usamos los resultados ya fetchados arriba (si no existen, los pedimos)
+        # Asegurar resultados
         try:
             _df_res = df_resultados if 'df_resultados' in locals() else fetch_matches()[0]
         except Exception:
             _df_res = pd.DataFrame()
 
         if _df_res is None or _df_res.empty:
-            st.info("No hay resultados finalizados para construir la tabla fecha a fecha.")
+            st.info("No hay resultados finalizados para construir la tabla evolutiva.")
         else:
-            df_evo = build_evolutive_table(_df_res)
-
-            if df_evo.empty:
+            df_evo_base = build_evolutive_table(_df_res)
+            if df_evo_base.empty:
                 st.info("No se pudo construir la tabla evolutiva (verifica que haya marcadores de goles).")
             else:
-                # Controles
+                df_evo = add_movement_and_trends(df_evo_base, last_n_list=(3,5))
+                df_racha = build_streaks(_df_res)
+
+                # (Opcional) ELO
+                colA, colB = st.columns([1,1])
+                with colA:
+                    use_elo = st.checkbox("Calcular ELO (opcional)", value=False)
+                if use_elo:
+                    df_elo = build_elo(_df_res)
+                    df_evo = df_evo.merge(df_elo, on=["Fecha Técnica","Equipo"], how="left")
+
+                df_evo = df_evo.merge(df_racha, on=["Fecha Técnica","Equipo"], how="left")
+
+                # Corte temporal
                 fechas_orden = sorted(df_evo["Fecha Técnica"].dropna().unique())
                 sel_fecha = st.select_slider(
                     "Corte temporal",
@@ -2709,17 +2814,43 @@ if menu == "🏆 Tabla & Resultados":
                         .sort_values(["Pts","DG","GF"], ascending=[False, False, False])
                         .reset_index(drop=True))
                 snap["#"] = range(1, len(snap) + 1)
-                cols = ["#","Equipo","Pts","PJ","PG","PE","PP","GF","GC","DG","Posición"]
-                st.dataframe(snap[cols], use_container_width=True, hide_index=True)
 
-                # (Opcional) seguimiento de un equipo
-                equipos_list = sorted(df_evo["Equipo"].unique().tolist())
-                eq_focus = st.selectbox("Seguir posición de un equipo (opcional)", ["—"] + equipos_list, index=0)
-                if eq_focus != "—":
-                    serie = (df_evo[df_evo["Equipo"] == eq_focus]
-                             .sort_values("Fecha Técnica")[["Fecha Técnica","Posición"]])
-                    # Mostrar como tabla breve
-                    st.caption(f"Evolución de posición: {eq_focus}")
-                    st.dataframe(serie, use_container_width=True, hide_index=True)
+                cols_base = ["#","Equipo","Pts","PJ","PG","PE","PP","GF","GC","DG","Posición","ΔPos","Mov","Tend.3","Tend.5","Racha"]
+                cols = cols_base.copy()
+                if use_elo and "ELO" in snap.columns:
+                    # redondeo ELO para mostrar limpio
+                    snap["ELO"] = snap["ELO"].round(1)
+                    snap["ΔELO"] = snap["ΔELO"].round(2)
+                    # insertar ELO después de Posición
+                    cols = ["#","Equipo","Pts","PJ","PG","PE","PP","GF","GC","DG","Posición","ELO","ΔELO","Tend.ELO(3)","ΔPos","Mov","Tend.3","Tend.5","Racha"]
+
+                st.dataframe(
+                    snap[[c for c in cols if c in snap.columns]],
+                    use_container_width=True, hide_index=True
+                )
+
+                # (opcional) evolución de 1–2 equipos
+                equipos_list = ["—"] + sorted(df_evo["Equipo"].unique().tolist())
+                st.markdown("**Seguimiento de posición (opcional)**")
+                c1, c2 = st.columns(2)
+                with c1:
+                    eq1 = st.selectbox("Equipo 1", equipos_list, index=0)
+                with c2:
+                    eq2 = st.selectbox("Equipo 2", equipos_list, index=0)
+
+                def _serie_pos(eq):
+                    if eq == "—": return None
+                    s = (df_evo[df_evo["Equipo"]==eq]
+                         .sort_values("Fecha Técnica")[["Fecha Técnica","Posición","Mov","Tend.3","Tend.5","Racha"]])
+                    return s
+
+                s1, s2 = _serie_pos(eq1), _serie_pos(eq2)
+                if s1 is not None:
+                    st.caption(f"Evolución {eq1}")
+                    st.dataframe(s1, use_container_width=True, hide_index=True)
+                if s2 is not None:
+                    st.caption(f"Evolución {eq2}")
+                    st.dataframe(s2, use_container_width=True, hide_index=True)
+
 
 
