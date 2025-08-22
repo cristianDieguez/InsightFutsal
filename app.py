@@ -2399,7 +2399,7 @@ if menu == "📈 Radar comparativo":
 # =========================
 # 📋 TABLA & RESULTADOS
 # =========================
-if menu == "📋 Tabla & Resultados":
+if menu == "🏆 Tabla & Resultados":
     import requests, pandas as pd, numpy as np
     from datetime import datetime
     import time
