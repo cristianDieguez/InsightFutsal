@@ -351,6 +351,54 @@ def draw_timeline_panel(rival_name: str, tl: dict,
     st.pyplot(fig, use_container_width=True)
     plt.close(fig)
 
+@st.cache_data(show_spinner=False)
+def discover_matches():
+    """
+    Escanea DATA_MINUTOS y devuelve lista de dicts:
+    {label, xml_players, rival, matrix_path, xml_equipo}
+    label = 'Fecha N° - Rival'
+    """
+    if not os.path.isdir(DATA_MINUTOS):
+        return []
+
+    # XML de jugadores (aceptamos dos sufijos típicos)
+    pats = glob.glob(os.path.join(DATA_MINUTOS, "* - XML TotalValues.xml"))
+    pats += glob.glob(os.path.join(DATA_MINUTOS, "* - asXML TotalValues.xml"))
+
+    matches = []
+    for p in sorted(pats):
+        base = os.path.basename(p)
+        label = re.sub(r"(?i)\s*-\s*as?xml\s*totalvalues\.xml$", "", base).strip()
+        parts = [x.strip() for x in label.split(" - ")]
+        rival = parts[-1] if len(parts) >= 2 else parts[0]
+
+        # Matrix (opcional) con el MISMO label en DATA_MATRIX
+        mx_xlsx = os.path.join(DATA_MATRIX, f"{label} - Matrix.xlsx")
+        mx_csv  = os.path.join(DATA_MATRIX,  f"{label} - Matrix.csv")
+        matrix_path = mx_xlsx if os.path.isfile(mx_xlsx) else (mx_csv if os.path.isfile(mx_csv) else None)
+
+        # XML de equipo (opcional) para posesión/minutos por rol
+        cand_eq = []
+        for v in {rival, rival.replace(" ", ""), rival.replace(" ", "_"), rival.upper(), rival.lower()}:
+            cand_eq += glob.glob(os.path.join(DATA_MINUTOS, f"{v}Eq - asXML*.xml"))
+            cand_eq += glob.glob(os.path.join(DATA_MINUTOS, f"{v}Eq - XML*.xml"))
+        xml_equipo = cand_eq[0] if cand_eq else None
+
+        matches.append({
+            "label": label,
+            "xml_players": p,
+            "rival": rival,
+            "matrix_path": matrix_path,
+            "xml_equipo": xml_equipo,
+        })
+    return matches
+
+def get_match_by_label(label: str):
+    for m in discover_matches():
+        if m["label"] == label:
+            return m
+    return None
+    
 # =========================
 # HEATMAPS — helpers
 # =========================
