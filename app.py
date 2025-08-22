@@ -91,12 +91,12 @@ def list_matches() -> List[str]:
     """Devuelve ['Fecha 8 - Union Ezpeleta', ...] a partir de los XML en data/minutos."""
     if not os.path.isdir(DATA_DIR): return []
     # buscamos archivos '* - asXML TotalValues.xml' (jugadores)
-    pats = glob.glob(os.path.join(DATA_DIR, "* - asXML TotalValues.xml"))
+    pats = glob.glob(os.path.join(DATA_DIR, "* - XML TotalValues.xml"))
     out = []
     for p in sorted(pats):
         base = os.path.basename(p)
         # 'Union Ezpeleta - asXML TotalValues.xml' -> rival
-        rival = re.sub(r"(?i)\s*-\s*asxml\s*totalvalues\.xml$", "", base).strip()
+        rival = re.sub(r"(?i)\s*-\s*xml\s*totalvalues\.xml$", "", base).strip()
         # si existe un archivo 'Fecha N - Rival - XML TotalValues.xml', usamos ese texto para el selector
         # si no, mostramos solo el rival
         # En tu repo los “Fecha” pueden estar en otra carpeta, así que seleccionamos por rival.
@@ -123,8 +123,8 @@ def selected_rival_from_label(label: str) -> str:
 def infer_paths_for_rival(rival: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """
     Dado 'Union Ezpeleta' busca:
-      XML_EQUIPO:   data/minutos/UnionEzpeletaEq - asXML TotalValues.xml (o variantes)
-      XML_JUGADORES:data/minutos/Union Ezpeleta - asXML TotalValues.xml
+      XML_EQUIPO:   data/minutos/UnionEzpeletaEq - XML TotalValues.xml (o variantes)
+      XML_JUGADORES:data/minutos/Union Ezpeleta - XML TotalValues.xml
       MATRIX_PATH:  data/minutos/Union Ezpeleta - Matrix.xlsx/.csv (opcional)
     """
     cand_eq = []
@@ -138,8 +138,8 @@ def infer_paths_for_rival(rival: str) -> Tuple[Optional[str], Optional[str], Opt
         rival.lower(),
     ]
     for v in variations:
-        cand_eq += glob.glob(os.path.join(DATA_DIR, f"{v}Eq - asXML TotalValues.xml"))
-        cand_jg += glob.glob(os.path.join(DATA_DIR, f"{v} - asXML TotalValues.xml"))
+        cand_eq += glob.glob(os.path.join(DATA_DIR, f"{v}Eq - XML TotalValues.xml"))
+        cand_jg += glob.glob(os.path.join(DATA_DIR, f"{v} - XML TotalValues.xml"))
         cand_mx += glob.glob(os.path.join(DATA_DIR, f"{v} - Matrix.xlsx"))
         cand_mx += glob.glob(os.path.join(DATA_DIR, f"{v} - Matrix.csv"))
     xml_eq = cand_eq[0] if cand_eq else None
