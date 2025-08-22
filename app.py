@@ -352,48 +352,58 @@ def draw_timeline_panel(rival_name: str, tl: dict,
     plt.close(fig)
 
 @st.cache_data(show_spinner=False)
-def discover_matches():
-    """
-    Escanea DATA_MINUTOS y devuelve lista de dicts:
-    {label, xml_players, rival, matrix_path, xml_equipo}
-    label = 'Fecha N° - Rival'
-    """
+def discover_matches() -> List[Dict]:
     if not os.path.isdir(DATA_MINUTOS):
         return []
 
-    # XML de jugadores (aceptamos dos sufijos típicos)
-    pats = glob.glob(os.path.join(DATA_MINUTOS, "* - XML TotalValues.xml"))
-    pats += glob.glob(os.path.join(DATA_MINUTOS, "* - asXML TotalValues.xml"))
+    # Solo buscamos XML NacSport y, si no existe para ese label, TotalValues
+    pats = []
+    pats += glob.glob(os.path.join(DATA_MINUTOS, "* - XML NacSport.xml"))
+    pats += glob.glob(os.path.join(DATA_MINUTOS, "* - XML TotalValues.xml"))
+
+    files = sorted(set(pats))
+
+    # agrupar por label: “Fecha X - Rival”
+    buckets: Dict[str, List[str]] = {}
+    for p in files:
+        base = os.path.basename(p)
+        label = re.sub(r"(?i)\s*-\s*xml\s*(nacsport|totalvalues)\.xml$", "", base).strip()
+        buckets.setdefault(label, []).append(p)
+
+    def pref_key(path: str) -> int:
+        b = os.path.basename(path).lower()
+        # prioridad: NacSport (0) luego TotalValues (1)
+        if "xml nacsport" in b:   return 0
+        if "totalvalues" in b:    return 1
+        return 2
 
     matches = []
-    for p in sorted(pats):
-        base = os.path.basename(p)
-        label = re.sub(r"(?i)\s*-\s*as?xml\s*totalvalues\.xml$", "", base).strip()
+    for label, paths in buckets.items():
+        pick = sorted(paths, key=pref_key)[0]
         parts = [x.strip() for x in label.split(" - ")]
-        rival = parts[-1] if len(parts) >= 2 else parts[0]
+        rival = parts[-1] if parts else label
 
-        # Matrix (opcional) con el MISMO label en DATA_MATRIX
         mx_xlsx = os.path.join(DATA_MATRIX, f"{label} - Matrix.xlsx")
         mx_csv  = os.path.join(DATA_MATRIX,  f"{label} - Matrix.csv")
         matrix_path = mx_xlsx if os.path.isfile(mx_xlsx) else (mx_csv if os.path.isfile(mx_csv) else None)
 
-        # XML de equipo (opcional) para posesión/minutos por rol
-        cand_eq = []
-        for v in {rival, rival.replace(" ", ""), rival.replace(" ", "_"), rival.upper(), rival.lower()}:
-            cand_eq += glob.glob(os.path.join(DATA_MINUTOS, f"{v}Eq - asXML*.xml"))
-            cand_eq += glob.glob(os.path.join(DATA_MINUTOS, f"{v}Eq - XML*.xml"))
-        xml_equipo = cand_eq[0] if cand_eq else None
-
         matches.append({
             "label": label,
-            "xml_players": p,
+            "xml_players": pick,   # NacSport si hay; si no, TotalValues
             "rival": rival,
             "matrix_path": matrix_path,
-            "xml_equipo": xml_equipo,
+            "xml_equipo": None,    # no lo usamos en estas vistas
         })
-    return matches
 
-def get_match_by_label(label: str):
+    # ordenar por número de fecha si aparece, si no alfabético
+    def date_key(m):
+        mlabel = m["label"].lower()
+        mnum = re.search(r"fecha\s*([0-9]+)", mlabel)
+        return (0, int(mnum.group(1))) if mnum else (1, m["label"])
+
+    return sorted(matches, key=date_key)
+
+def get_match_by_label(label: str) -> Optional[Dict]:
     for m in discover_matches():
         if m["label"] == label:
             return m
@@ -655,21 +665,27 @@ def fig_barh_minutos(labels, vals_sec, title, xlabel="Minutos"):
     return fig
 
 # ========= Minutos desde XML TotalValues (sin XML de Equipo) =========
-_ACCENTS = {"á":"a","é":"e","í":"i","ó":"o","ú":"u","Á":"A","É":"E","Í":"I","Ó":"O","Ú":"U"}
+ ========= Filtros de códigos =========
+_EXCLUDE_PREFIXES = tuple([  # normalizados a lower y sin tildes
+    "categoria - equipo rival",
+    "tiempo posecion ferro", "tiempo posesion ferro",
+    "tiempo posecion rival", "tiempo posesion rival",
+    "tiempo no jugado",
+])
+_NAME_ROLE_RE = re.compile(r"^\s*([^(]+?)\s*\(([^)]+)\)\s*$")
 
 def _strip_accents(s: str) -> str:
-    return "".join(_ACCENTS.get(ch, ch) for ch in str(s))
+    import unicodedata
+    s = unicodedata.normalize("NFD", str(s))
+    return "".join(ch for ch in s if unicodedata.category(ch) != "Mn")
 
-_EXCLUDE_PREFIXES = (
-    "categoria - equipo rival",
-    "tiempo posecion ferro",
-    "tiempo posesion ferro",
-    "tiempo posecion rival",
-    "tiempo posesion rival",
-    "tiempo no jugado",
-)
-
-_NAME_ROLE_RE = re.compile(r"^\s*([^(]+?)\s*\(([^)]+)\)\s*$")
+def is_player_code(code: str) -> bool:
+    """True si code es 'Nombre (Rol)' válido y NO está en la lista de excluidos."""
+    if not code: return False
+    code_norm = _strip_accents(code).lower().strip()
+    if any(code_norm.startswith(pref) for pref in _EXCLUDE_PREFIXES):
+        return False
+    return _NAME_ROLE_RE.match(code) is not None
 
 def _split_name_role_if_player(code: str):
     """
@@ -688,19 +704,19 @@ def _split_name_role_if_player(code: str):
 
 def cargar_minutos_desde_xml_totalvalues(xml_path: str) -> pd.DataFrame:
     """
-    Lee el XML TotalValues del partido y devuelve presencias:
-    columnas: code, nombre, rol, start_s, end_s, dur_s
-    (Solo 'Jugador (Rol)'; excluye rival/posesiones/no jugado)
+    Lee el XML (NacSport o TotalValues) y devuelve presencias:
+    code, nombre, rol, start_s, end_s, dur_s — sólo 'Jugador (Rol)' (excluye rivales/tiempos).
     """
     if not xml_path or not os.path.isfile(xml_path):
         return pd.DataFrame(columns=["code","nombre","rol","start_s","end_s","dur_s"])
+
     root = ET.parse(xml_path).getroot()
     rows = []
     for inst in root.findall(".//instance"):
         code = inst.findtext("code") or ""
-        nombre, rol = _split_name_role_if_player(code)
-        if not nombre:  # no jugador (rol) válido
+        if not is_player_code(code):
             continue
+        m = _NAME_ROLE_RE.match(code); nombre, rol = m.group(1).strip(), m.group(2).strip()
         st = inst.findtext("start"); en = inst.findtext("end")
         try:
             s = float(st) if st is not None else None
@@ -709,14 +725,7 @@ def cargar_minutos_desde_xml_totalvalues(xml_path: str) -> pd.DataFrame:
             s, e = None, None
         if s is None or e is None or e <= s:
             continue
-        rows.append({
-            "code": code,
-            "nombre": nombre,
-            "rol": rol,
-            "start_s": s,
-            "end_s": e,
-            "dur_s": e - s
-        })
+        rows.append({"code": code, "nombre": nombre, "rol": rol, "start_s": s, "end_s": e, "dur_s": e - s})
     return pd.DataFrame(rows)
 
 # =========================
@@ -774,102 +783,94 @@ PASS_KEYWORDS = [
 PASS_KEYWORDS = [k.lower() for k in PASS_KEYWORDS]
 
 def red_de_pases_por_rol(df: pd.DataFrame):
-    """
-    Construye red de pases por ROL (no por jugador individual):
-    - Nodo = rol (posición media del primer punto del pase).
-    - Arista grosor ~ cantidad ida+vuelta entre roles.
-    - Texto en nodo = total de pases hechos por ese rol.
-    """
     from collections import defaultdict
     import numpy as np
+    fig, ax = plt.subplots(figsize=(10, 6))
+    draw_futsal_pitch_horizontal(ax)
+
+    PASS_KEYWORDS = [
+        "pase corto frontal", "pase corto lateral",
+        "pase largo frontal", "pase largo lateral",
+        "pase progresivo frontal", "pase progresivo lateral",
+        "pase progresivo frontal cpie", "pase progresivo lateral cpie",
+        "salida de arco progresivo cmano",
+        "pase corto frontal cpie", "pase corto lateral cpie",
+        "salida de arco corto cmano",
+    ]
+    PASS_KEYWORDS = [k.lower() for k in PASS_KEYWORDS]
 
     coords_origen = defaultdict(list)
     totales_hechos_por_rol = defaultdict(int)
     conteo_roles_total = defaultdict(int)
 
     for _, row in df.iterrows():
-        labels_lower = [str(lbl).lower() for lbl in row['labels'] if lbl]
-        # filtrar eventos de pase
+        code = row.get("jugador") or ""
+        if not is_player_code(code):
+            continue  # sólo “Nombre (Rol)”
+        labels_lower = [(_strip_accents(lbl).lower() if lbl else "") for lbl in row.get("labels", [])]
         if not any(k in lbl for lbl in labels_lower for k in PASS_KEYWORDS):
             continue
 
-        # Rol de origen: jugador viene con "Nombre (Rol)"
-        if "(" in row['jugador'] and ")" in row['jugador']:
-            rol_origen = row['jugador'].split("(")[1].replace(")", "").strip()
-        else:
-            rol_origen = row['jugador'].strip()
+        # rol de origen
+        rol_origen = _NAME_ROLE_RE.match(code).group(2).strip()
 
-        # excluir rivales/categorías genéricas si aparecieran en code
-        low = rol_origen.lower()
-        if low.startswith("categoria") or "rival" in low:
-            continue
-
-        # rol destino: primera etiqueta con formato (Rol) distinta del origen
+        # rol destino: primera etiqueta con (Rol) distinta a origen
         rol_destino = None
-        for lbl in row['labels']:
+        for lbl in row.get("labels", []):
             if lbl and "(" in lbl and ")" in lbl:
-                posible = lbl.split("(")[1].replace(")", "").strip()
-                if posible != rol_origen:
-                    rol_destino = posible
+                pos = lbl.split("(")[1].replace(")", "").strip()
+                if pos and pos != rol_origen:
+                    rol_destino = pos
                     break
 
-        # coordenada del ORIGEN: tomamos primer punto (inicio del pase)
-        if row['pos_x_list'] and row['pos_y_list']:
-            # transformar a cancha 35x20 manteniendo tu rotación (ataque a la derecha)
-            x_origen = 35 - (row['pos_y_list'][0] * (35.0 / 40.0))
-            y_origen = row['pos_x_list'][0]
-            coords_origen[rol_origen].append((x_origen, y_origen))
+        # coordenada de inicio del pase (rotación a 35x20)
+        px, py = row.get("pos_x_list") or [], row.get("pos_y_list") or []
+        if px and py:
+            x0 = 35 - (py[0] * (35.0 / 40.0))  # y original (0..40) -> x cancha 35
+            y0 = px[0]                         # x original (0..20) -> y cancha 20
+            coords_origen[rol_origen].append((x0, y0))
 
         totales_hechos_por_rol[rol_origen] += 1
-
         if rol_destino and rol_destino != rol_origen:
-            key = tuple(sorted([rol_origen, rol_destino]))
-            conteo_roles_total[key] += 1
+            conteo_roles_total[tuple(sorted([rol_origen, rol_destino]))] += 1
 
-    # promedio de coordenadas por rol
+    # promedios por rol
     rol_coords = {}
     for rol, coords in coords_origen.items():
         arr = np.array(coords)
         rol_coords[rol] = (arr[:,0].mean(), arr[:,1].mean())
 
-    # colocar arquero fijo si existe
+    # ajustes heurísticos
     if "Arq" in rol_coords:
         rol_coords["Arq"] = (3, 10)
-
-    # invertir alas si quedaron cruzadas (manteniendo tu heurística)
     if "Ala I" in rol_coords and "Ala D" in rol_coords:
-        yI = rol_coords["Ala I"][1]; yD = rol_coords["Ala D"][1]
+        yI, yD = rol_coords["Ala I"][1], rol_coords["Ala D"][1]
         if yI < yD:
             rol_coords["Ala I"], rol_coords["Ala D"] = rol_coords["Ala D"], rol_coords["Ala I"]
-            # actualizar conteos con swap
-            new_counts = defaultdict(int)
-            for (a,b), val in conteo_roles_total.items():
+            # swap en conteos y totales
+            from collections import defaultdict as dd
+            new_counts = dd(int)
+            for (a,b), v in conteo_roles_total.items():
                 aa = "Ala D" if a=="Ala I" else ("Ala I" if a=="Ala D" else a)
                 bb = "Ala D" if b=="Ala I" else ("Ala I" if b=="Ala D" else b)
-                new_counts[tuple(sorted([aa,bb]))] += val
+                new_counts[tuple(sorted([aa,bb]))] += v
             conteo_roles_total = new_counts
-            # swap totales
-            new_tot = defaultdict(int)
+            new_tot = dd(int)
             for r,t in totales_hechos_por_rol.items():
                 if r=="Ala I": new_tot["Ala D"] = t
                 elif r=="Ala D": new_tot["Ala I"] = t
                 else: new_tot[r] = t
             totales_hechos_por_rol = new_tot
 
-    # figura
-    fig, ax = plt.subplots(figsize=(10, 6))
-    draw_futsal_pitch_horizontal(ax)
-
-    # aristas
+    # dibujar edges
     max_pases = max(conteo_roles_total.values()) if conteo_roles_total else 1
     for (ra, rb), count in conteo_roles_total.items():
         if ra in rol_coords and rb in rol_coords:
             x1,y1 = rol_coords[ra]; x2,y2 = rol_coords[rb]
             lw = 1 + (count / max_pases) * 5
-            ax.plot([x1, x2], [y1, y2], color='red', linewidth=lw, alpha=0.7, zorder=3)
-            xm, ym = (x1+x2)/2, (y1+y2)/2
-            ax.text(xm, ym, str(count), color='blue', fontsize=10, ha='center', va='center',
-                    fontweight='bold', zorder=6)
+            ax.plot([x1,x2], [y1,y2], color='red', linewidth=lw, alpha=0.7, zorder=3)
+            ax.text((x1+x2)/2, (y1+y2)/2, str(count), color='blue', fontsize=10,
+                    ha='center', va='center', fontweight='bold', zorder=6)
 
     # nodos
     for rol, (x,y) in rol_coords.items():
@@ -877,9 +878,10 @@ def red_de_pases_por_rol(df: pd.DataFrame):
         ax.text(x, y, f"{rol}\n{totales_hechos_por_rol.get(rol,0)}", ha='center', va='center',
                 fontsize=10, fontweight='bold', color='black', zorder=7)
 
-    ax.set_title("Red de Pases por Rol (nodos=rol, azul=conteo ida+vuelta, negro=hechos)", fontsize=13)
+    ax.set_title("Red de Pases por Rol (NacSport/TotalValues; sólo Jugador (Rol))", fontsize=13)
     plt.tight_layout()
     return fig
+
 
 # =========================
 # PARSERS SEGÚN TU NOTEBOOK
