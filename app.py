@@ -2397,53 +2397,60 @@ if menu == "📈 Radar comparativo":
     st.dataframe(tabla.sort_values("minutos", ascending=False), use_container_width=True)
 
 # =========================
-# 📋 TABLA & RESULTADOS
+# 📋 TABLA & RESULTADOS (REEMPLAZAR TODO EL BLOQUE)
 # =========================
 if menu == "🏆 Tabla & Resultados":
     import requests, pandas as pd, numpy as np
-    from datetime import datetime
+    from datetime import datetime, date
     import time
+    import matplotlib.pyplot as plt
 
     st.subheader("📋 Tabla & Resultados")
 
-    # --- Parámetros de la competencia (los que vos pasaste que funcionan) ---
+    # ---------- Helpers genéricos ----------
+    def _autoh(st_df, row_px=38):
+        """Altura automática para mostrar la tabla completa sin scroll."""
+        n = int(getattr(st_df, "shape", (0,0))[0])
+        return max(140, int(row_px * (n + 1)))
+
+    def show_full_table(df):
+        st.dataframe(df, use_container_width=True, height=_autoh(df))
+
+    # --- Parámetros de la competencia (los tuyos) ---
     URL_TABLA   = "https://api.weball.me/public/tournament/176/phase/150/group/613/clasification?instanceUUID=2d260df1-7986-49fd-95a2-fcb046e7a4fb"
     URL_MATCHES = "https://api.weball.me/public/tournament/176/phase/150/matches?instanceUUID=2d260df1-7986-49fd-95a2-fcb046e7a4fb"
     HEADERS     = {"Content-Type": "application/json"}
-    CATEG_FILTRO = "2016 PROMOCIONALES"     # incluimos SOLO esta categoría
+    CATEG_FILTRO = "2016 PROMOCIONALES"
     EXCLUIR_LIBRE = True
 
-    # ---------- Helpers ----------
+    # ---------- Fetchers cacheados (sin tocar tu lógica) ----------
     @st.cache_data(ttl=300, show_spinner=False)
     def _safe_get(url, max_tries=3, sleep_s=0.8):
         last_err = None
-        for i in range(max_tries):
+        for _ in range(max_tries):
             try:
                 r = requests.get(url, timeout=15)
                 r.raise_for_status()
                 return r.json()
             except Exception as e:
-                last_err = e
-                time.sleep(sleep_s)
+                last_err = e; time.sleep(sleep_s)
         raise last_err
 
     @st.cache_data(ttl=300, show_spinner=False)
     def _safe_post(url, payload, max_tries=3, sleep_s=0.8):
         last_err = None
-        for i in range(max_tries):
+        for _ in range(max_tries):
             try:
                 r = requests.post(url, headers=HEADERS, json=payload, timeout=20)
                 r.raise_for_status()
                 return r.json()
             except Exception as e:
-                last_err = e
-                time.sleep(sleep_s)
+                last_err = e; time.sleep(sleep_s)
         raise last_err
 
     @st.cache_data(ttl=300)
     def fetch_tabla():
         data = _safe_get(URL_TABLA)
-        # La tabla correcta está en data[1]['positions'] (como mostraste)
         positions = data[1]['positions']
         equipos = []
         for equipo in positions:
@@ -2458,11 +2465,9 @@ if menu == "🏆 Tabla & Resultados":
 
     @st.cache_data(ttl=300)
     def fetch_partidos():
-        # primera página para saber totalPages
         d0 = _safe_post(URL_MATCHES, {})
         total_pages = int(d0.get("totalPages", 1))
         partidos = []
-
         for page in range(1, total_pages + 1):
             d = _safe_post(URL_MATCHES, {"page": page})
             for match in d.get("data", []):
@@ -2479,7 +2484,7 @@ if menu == "🏆 Tabla & Resultados":
                 except Exception:
                     local, visitante = "LIBRE", ""
 
-                if EXCLUIR_LIBRE and (local.upper() == "LIBRE" or visitante.upper() == "LIBRE"):
+                if EXCLUIR_LIBRE and (local.upper() == "LIBRE" or (visitante or "").upper() == "LIBRE"):
                     continue
 
                 gl = match.get("scoreHome")
@@ -2507,393 +2512,260 @@ if menu == "🏆 Tabla & Resultados":
         if df.empty:
             return df, pd.DataFrame(), pd.DataFrame()
 
-        # mapear Jornada ID -> Fecha N SÓLO para finalizados
-        ids_ordenados = sorted(df["Jornada ID"].dropna().unique())
-        mapa_fechas = {jid: f"Fecha {i+1}" for i, jid in enumerate(ids_ordenados)}
-        df["Fecha"] = None
+        df["Fecha Técnica"] = pd.to_datetime(df["Fecha Técnica"], errors="coerce")
+
         fin_mask = df["Estado"].str.lower().eq("finalizado")
-        df.loc[fin_mask, "Fecha"] = df.loc[fin_mask, "Jornada ID"].map(mapa_fechas)
-
-        # Partidos jugados / fixture
-        df_res = df[fin_mask].copy()
+        df_res = df[fin_mask].copy().sort_values("Fecha Técnica")
         df_fix = df[~df["Estado"].str.lower().isin(["finalizado","cancelado"])].copy()
-
-        # cast fechas
-        for dff in (df, df_res, df_fix):
-            dff["Fecha Técnica"] = pd.to_datetime(dff["Fecha Técnica"], errors="coerce")
 
         return df, df_res, df_fix
 
-    # ---------- Rachas por equipo (en fechas jugadas) ----------
-    def build_streaks(df_resultados: pd.DataFrame) -> pd.DataFrame:
-        """
-        Devuelve racha (G×n / E×n / P×n) SOLO en fechas jugadas por equipo (sin fill).
-        """
-        if df_resultados is None or df_resultados.empty:
-            return pd.DataFrame(columns=["Fecha Técnica","Equipo","Racha"])
+    # ---------- Utilidades de “Tabla fecha a fecha” ----------
+    def _resultado(gl, gv):
+        if gl > gv: return "G"
+        if gl < gv: return "P"
+        return "E"
 
-        df = df_resultados.copy()
-        df["Fecha Técnica"] = pd.to_datetime(df["Fecha Técnica"], errors="coerce")
-        df = df.sort_values("Fecha Técnica")
+    def tabla_a_fecha(df_res, corte_ts):
+        """Tabla a una fecha de corte."""
+        d = df_res[df_res["Fecha Técnica"] <= corte_ts].copy()
+        if d.empty:
+            return pd.DataFrame(columns=["Pos","Equipo","Pts","PJ","PG","PE","PP","GF","GC","DG","Movimiento","Racha"])
+        rows = {}
+        equipos = pd.unique(pd.concat([d["Equipo Local"], d["Equipo Visitante"]]))
+        for eq in equipos:
+            rows[eq] = {"Equipo": eq, "Pts":0,"PJ":0,"PG":0,"PE":0,"PP":0,"GF":0,"GC":0}
 
+        for _, r in d.iterrows():
+            gl, gv = int(r["Goles Local"]), int(r["Goles Visitante"])
+            el, ev = r["Equipo Local"], r["Equipo Visitante"]
+            res_l = _resultado(gl, gv); res_v = _resultado(gv, gl)
+            # Local
+            rows[el]["PJ"] += 1; rows[el]["GF"] += gl; rows[el]["GC"] += gv
+            if res_l=="G": rows[el]["PG"]+=1; rows[el]["Pts"]+=3
+            elif res_l=="E": rows[el]["PE"]+=1; rows[el]["Pts"]+=1
+            else: rows[el]["PP"]+=1
+            # Visitante
+            rows[ev]["PJ"] += 1; rows[ev]["GF"] += gv; rows[ev]["GC"] += gl
+            if res_v=="G": rows[ev]["PG"]+=1; rows[ev]["Pts"]+=3
+            elif res_v=="E": rows[ev]["PE"]+=1; rows[ev]["Pts"]+=1
+            else: rows[ev]["PP"]+=1
+
+        df_tab = pd.DataFrame(rows.values())
+        df_tab["DG"] = df_tab["GF"] - df_tab["GC"]
+        df_tab = df_tab.sort_values(["Pts","DG","GF"], ascending=[False,False,False]).reset_index(drop=True)
+        df_tab.insert(0, "Pos", df_tab.index + 1)
+
+        # Movimiento vs snapshot anterior
+        prev_dates = d["Fecha Técnica"].unique()
+        prev_dates = prev_dates[prev_dates < corte_ts]
+        if prev_dates.size:
+            prev = tabla_a_fecha(df_res, prev_dates.max()).set_index("Equipo")["Pos"]
+            mov = []
+            for _, row in df_tab.iterrows():
+                eq, pos = row["Equipo"], int(row["Pos"])
+                pprev = int(prev.get(eq, pos))
+                delta = pprev - pos
+                if   delta >  0: mov.append(f"↑ +{delta}")
+                elif delta <  0: mov.append(f"↓ {delta}")
+                else:            mov.append("= 0")
+            df_tab["Movimiento"] = mov
+        else:
+            df_tab["Movimiento"] = "= 0"
+
+        # Racha viva (G/E/P consecutivos al final)
+        rachas = []
+        for eq in df_tab["Equipo"]:
+            h = []
+            for _, r in d[(d["Equipo Local"]==eq) | (d["Equipo Visitante"]==eq)].sort_values("Fecha Técnica").iterrows():
+                if r["Equipo Local"]==eq: h.append(_resultado(int(r["Goles Local"]), int(r["Goles Visitante"])))
+                else:                     h.append(_resultado(int(r["Goles Visitante"]), int(r["Goles Local"])))
+            if not h:
+                rachas.append("—")
+            else:
+                last = h[-1]; c=1
+                for x in reversed(h[:-1]):
+                    if x==last: c+=1
+                    else: break
+                tag = {"G":"G","E":"E","P":"P"}[last] + f"x{c}"
+                rachas.append(tag)
+        df_tab["Racha"] = rachas
+        return df_tab
+
+    def build_elo(df_res, k=24, base=1000):
+        if df_res.empty:
+            return pd.DataFrame(columns=["Fecha","Equipo","ELO"])
+        teams = pd.unique(pd.concat([df_res["Equipo Local"], df_res["Equipo Visitante"]])).tolist()
+        rating = {t: base for t in teams}
         rows = []
-        for _, r in df.iterrows():
-            gl = int(r["Goles Local"]); gv = int(r["Goles Visitante"])
-            f  = r["Fecha Técnica"]
-            if gl > gv:
-                rows.append((f, r["Equipo Local"], "G"))
-                rows.append((f, r["Equipo Visitante"], "P"))
-            elif gl < gv:
-                rows.append((f, r["Equipo Local"], "P"))
-                rows.append((f, r["Equipo Visitante"], "G"))
-            else:
-                rows.append((f, r["Equipo Local"], "E"))
-                rows.append((f, r["Equipo Visitante"], "E"))
+        for _, r in df_res.sort_values("Fecha Técnica").iterrows():
+            el, ev = r["Equipo Local"], r["Equipo Visitante"]
+            gl, gv = int(r["Goles Local"]), int(r["Goles Visitante"])
+            Ra, Rb = rating[el], rating[ev]
+            Ea = 1.0 / (1 + 10 ** ((Rb - Ra) / 400))
+            Eb = 1.0 - Ea
+            Sa = 1.0 if gl > gv else (0.5 if gl==gv else 0.0)
+            Sb = 1.0 - Sa
+            rating[el] = Ra + k * (Sa - Ea)
+            rating[ev] = Rb + k * (Sb - Eb)
+            rows.append({"Fecha": r["Fecha Técnica"], "Equipo": el, "ELO": rating[el]})
+            rows.append({"Fecha": r["Fecha Técnica"], "Equipo": ev, "ELO": rating[ev]})
+        elo = pd.DataFrame(rows)
+        elo["Fecha"] = pd.to_datetime(elo["Fecha"])
+        return elo
 
-        hist = pd.DataFrame(rows, columns=["Fecha Técnica","Equipo","Res"]).sort_values(["Equipo","Fecha Técnica"])
+    def plot_elo_suave(elo_df, corte_ts):
+        if elo_df.empty:
+            st.info("Sin datos de ELO para graficar."); return
+        d = elo_df[elo_df["Fecha"] <= corte_ts]
+        if d.empty:
+            st.info("No hay ELO antes del corte seleccionado."); return
 
-        out = []
-        for eq, g in hist.groupby("Equipo"):
-            last = None; streak = 0
-            for _, rr in g.iterrows():
-                res = rr["Res"]
-                if res == last:
-                    streak += 1
-                else:
-                    last = res
-                    streak = 1
-                out.append({"Fecha Técnica": rr["Fecha Técnica"], "Equipo": eq, "Racha": f"{res}×{streak}"})
+        fig, ax = plt.subplots(figsize=(10, 6))
+        teams = sorted(d["Equipo"].unique())
+        cmap = plt.get_cmap('tab20', len(teams))
+        colors = {t: cmap(i) for i,t in enumerate(teams)}
 
-        return pd.DataFrame(out).sort_values(["Equipo","Fecha Técnica"])
+        tips = []  # (team, x_last, y_last)
+        for t in teams:
+            s = (d[d["Equipo"]==t]
+                 .sort_values("Fecha")
+                 .set_index("Fecha")["ELO"]
+                 .asfreq("D")
+                 .interpolate(method="time")
+                 .rolling(3, min_periods=1).mean())  # suavizado suave
+            ax.plot(s.index, s.values, lw=1.9, color=colors[t])
+            tips.append((t, s.index[-1], float(s.values[-1])))
 
-    # ---------- Evolución: tabla fecha a fecha + movimiento + racha (forward-fill) ----------
-    def build_tabla_evolutiva(df_resultados: pd.DataFrame) -> pd.DataFrame:
-        """
-        Construye snapshots de tabla luego de cada partido finalizado.
-        Agrega Posición, Movimiento vs snapshot anterior (▲/▼/＝) y Racha forward-filled.
-        """
-        if df_resultados is None or df_resultados.empty:
+        # Etiquetas en la punta, separadas
+        tips.sort(key=lambda x: x[2])
+        offs = np.linspace(-8, 8, num=len(tips))
+        xmax = max(x for _,x,_ in tips)
+        for off, (t, x, y) in zip(offs, tips):
+            ax.text(x + pd.Timedelta(days=3), y + off, t, fontsize=9, va="center", color=colors[t])
+            ax.plot([x, x + pd.Timedelta(days=3)], [y, y + off], lw=0.8, color=colors[t], alpha=0.6)
+
+        ax.set_xlim(d["Fecha"].min(), xmax + pd.Timedelta(days=20))
+        ax.set_ylabel("Índice ELO")
+        ax.grid(True, ls="--", alpha=0.3)
+        st.pyplot(fig)
+
+    def build_wdl(df_res):
+        if df_res.empty:
             return pd.DataFrame()
+        rows = []
+        for _, r in df_res.iterrows():
+            gl, gv = int(r["Goles Local"]), int(r["Goles Visitante"])
+            for eq, gf, gc in [(r["Equipo Local"], gl, gv), (r["Equipo Visitante"], gv, gl)]:
+                res = "W" if gf>gc else ("D" if gf==gc else "L")
+                rows.append({"Fecha": r["Fecha Técnica"], "Equipo": eq, "GF": gf, "GC": gc, "R": res,
+                             "Pts": 3 if res=="W" else (1 if res=="D" else 0)})
+        out = pd.DataFrame(rows).sort_values("Fecha")
+        return out
 
-        # Orden cronológico
-        df = df_resultados.copy().sort_values("Fecha Técnica").reset_index(drop=True)
+    # ---------- Datos base ----------
+    df_tabla = fetch_tabla()
+    df_all, df_res, df_fix = fetch_partidos()
 
-        # Equipos
-        equipos = pd.Series(df["Equipo Local"].tolist() + df["Equipo Visitante"].tolist()).unique()
-        stats = {e: {"Pts":0,"PJ":0,"PG":0,"PE":0,"PP":0,"GF":0,"GC":0} for e in equipos}
+    # ---------- Tabs ----------
+    tab1, tab2, tab3, tab4 = st.tabs(["🏆 Tabla actual", "📜 Resultados", "📅 Próximos", "📊 Tabla fecha a fecha"])
 
-        snapshots = []
+    # --- TAB 1: TABLA ACTUAL (completa) ---
+    with tab1:
+        show_full_table(df_tabla)
 
-        # armamos snapshot luego de CADA partido finalizado (orden real por fecha técnica)
-        for _, row in df.iterrows():
-            local = row["Equipo Local"]; visitante = row["Equipo Visitante"]
-            gl = int(row["Goles Local"]); gv = int(row["Goles Visitante"])
-            ftec = row["Fecha Técnica"]
-
-            # PJ
-            stats[local]["PJ"] += 1; stats[visitante]["PJ"] += 1
-            # Goles
-            stats[local]["GF"] += gl; stats[local]["GC"] += gv
-            stats[visitante]["GF"] += gv; stats[visitante]["GC"] += gl
-            # Puntos
-            if gl > gv:
-                stats[local]["Pts"] += 3; stats[local]["PG"] += 1; stats[visitante]["PP"] += 1
-            elif gl < gv:
-                stats[visitante]["Pts"] += 3; stats[visitante]["PG"] += 1; stats[local]["PP"] += 1
-            else:
-                stats[local]["Pts"] += 1; stats[visitante]["Pts"] += 1
-                stats[local]["PE"] += 1; stats[visitante]["PE"] += 1
-
-            # snapshot ordenado
-            tabla = []
-            for e in equipos:
-                tabla.append({
-                    "Fecha Técnica": ftec,
-                    "Equipo": e,
-                    "Pts": stats[e]["Pts"],
-                    "PJ": stats[e]["PJ"],
-                    "PG": stats[e]["PG"],
-                    "PE": stats[e]["PE"],
-                    "PP": stats[e]["PP"],
-                    "GF": stats[e]["GF"],
-                    "GC": stats[e]["GC"],
-                    "DG": stats[e]["GF"] - stats[e]["GC"]
-                })
-            snap = pd.DataFrame(tabla).sort_values(["Pts","DG","GF"], ascending=[False,False,False]).reset_index(drop=True)
-            snap["Posición"] = snap.index + 1
-            snapshots.append(snap)
-
-        evo = pd.concat(snapshots, ignore_index=True)
-
-        # Movimiento vs snapshot anterior por equipo
-        evo = evo.sort_values(["Fecha Técnica","Equipo"])
-        evo["Movimiento"] = "＝ 0"
-        for e, g in evo.groupby("Equipo"):
-            g = g.sort_values("Fecha Técnica")
-            mov = ["＝ 0"]
-            for i in range(1, len(g)):
-                delta = int(g.iloc[i-1]["Posición"]) - int(g.iloc[i]["Posición"])
-                if delta > 0:
-                    mov.append(f"▲ +{delta}")
-                elif delta < 0:
-                    mov.append(f"▼ {delta}")
-                else:
-                    mov.append("＝ 0")
-            evo.loc[g.index, "Movimiento"] = mov
-
-        # Racha (jugadas) + forward-fill a TODOS los snapshots
-        df_racha_jug = build_streaks(df)
-        calendar = (evo[["Fecha Técnica","Equipo"]]
-                    .drop_duplicates()
-                    .sort_values(["Equipo","Fecha Técnica"]))
-        df_racha_full = calendar.merge(df_racha_jug, on=["Fecha Técnica","Equipo"], how="left")
-        df_racha_full["Racha"] = (df_racha_full
-                                  .sort_values(["Equipo","Fecha Técnica"])
-                                  .groupby("Equipo")["Racha"]
-                                  .ffill()
-                                  .fillna("—"))  # antes del debut
-
-        evo = evo.merge(df_racha_full, on=["Fecha Técnica","Equipo"], how="left")
-        return evo.sort_values(["Fecha Técnica","Posición"])
-
-    # ---------- UI ----------
-    tabs = st.tabs(["🏆 Tabla actual", "📊 Resultados", "📅 Próximos", "📈 Tabla fecha a fecha"])
-
-    # TABLA ACTUAL
-    with tabs[0]:
-        try:
-            df_tabla = fetch_tabla()
-            st.dataframe(
-                df_tabla,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "Pos": st.column_config.NumberColumn("Pos", width="small"),
-                    "Pts": st.column_config.NumberColumn("Pts", width="small"),
-                    "PJ": st.column_config.NumberColumn("PJ", width="small"),
-                    "PG": st.column_config.NumberColumn("PG", width="small"),
-                    "PE": st.column_config.NumberColumn("PE", width="small"),
-                    "PP": st.column_config.NumberColumn("PP", width="small"),
-                    "GF": st.column_config.NumberColumn("GF", width="small"),
-                    "GC": st.column_config.NumberColumn("GC", width="small"),
-                    "DG": st.column_config.NumberColumn("DG", width="small"),
-                }
-            )
-        except Exception as e:
-            st.error(f"Error consultando tabla: {e}")
-
-    # RESULTADOS & FIXTURE (y base para evolutiva)
-    try:
-        df_all, df_resultados, df_fixture = fetch_partidos()
-    except Exception as e:
-        df_resultados = pd.DataFrame(); df_fixture = pd.DataFrame()
-        st.error(f"Error consultando partidos: {e}")
-
-    # RESULTADOS
-    with tabs[1]:
-        if df_resultados.empty:
-            st.info("No hay resultados disponibles.")
+    # --- TAB 2: RESULTADOS (filtros equipo + fecha) ---
+    with tab2:
+        d = df_res.copy()
+        if d.empty:
+            st.info("Sin resultados finalizados."); 
         else:
-            df_view = df_resultados.sort_values("Fecha Técnica", ascending=True).copy()
-            df_view["Fecha Técnica"] = df_view["Fecha Técnica"].dt.strftime("%Y-%m-%d %H:%M")
-            st.dataframe(
-                df_view[["Fecha","Fecha Técnica","Equipo Local","Goles Local","Goles Visitante","Equipo Visitante"]],
-                use_container_width=True, hide_index=True
-            )
+            equipos = sorted(pd.unique(pd.concat([d["Equipo Local"], d["Equipo Visitante"]]).dropna()))
+            col1, col2 = st.columns([2,2])
+            with col1:
+                sel_eq = st.multiselect("Equipo(s)", equipos)
+            with col2:
+                fmin, fmax = d["Fecha Técnica"].min().date(), d["Fecha Técnica"].max().date()
+                rango = st.date_input("Rango de fechas", (fmin, fmax))
+            mask = pd.Series(True, index=d.index)
+            if sel_eq:
+                mask &= (d["Equipo Local"].isin(sel_eq) | d["Equipo Visitante"].isin(sel_eq))
+            if isinstance(rango, (list, tuple)) and len(rango)==2:
+                d1, d2 = map(pd.to_datetime, rango)
+                mask &= (d["Fecha Técnica"] >= d1) & (d["Fecha Técnica"] <= d2)
+            out = d.loc[mask].sort_values("Fecha Técnica")
+            show_full_table(out)
 
-    # PRÓXIMOS
-    with tabs[2]:
-        if df_fixture.empty:
-            st.info("No hay próximos partidos publicados.")
+    # --- TAB 3: PRÓXIMOS (solo futuros + filtro equipo) ---
+    with tab3:
+        d = df_fix.copy()
+        if d.empty:
+            st.info("Sin próximos programados."); 
         else:
-            df_fix_view = df_fixture.sort_values("Fecha Técnica", ascending=True).copy()
-            df_fix_view["Fecha Técnica"] = df_fix_view["Fecha Técnica"].dt.strftime("%Y-%m-%d %H:%M")
-            st.dataframe(
-                df_fix_view[["Fecha Técnica","Equipo Local","Equipo Visitante","Estado"]],
-                use_container_width=True, hide_index=True
-            )
+            today = pd.Timestamp.now().normalize()
+            d = d[pd.to_datetime(d["Fecha Técnica"], errors="coerce") >= today]
+            equipos = sorted(pd.unique(pd.concat([d["Equipo Local"], d["Equipo Visitante"]]).dropna()))
+            sel_eq = st.multiselect("Equipo(s)", equipos)
+            if sel_eq:
+                d = d[(d["Equipo Local"].isin(sel_eq)) | (d["Equipo Visitante"].isin(sel_eq))]
+            d = d.sort_values("Fecha Técnica")
+            show_full_table(d)
 
-    # TABLA FECHA A FECHA
-    with tabs[3]:
-        if df_resultados.empty:
-            st.info("Necesito resultados finalizados para construir la evolución.")
+    # --- TAB 4: TABLA FECHA A FECHA + ELO + W/D/L ---
+    with tab4:
+        if df_res.empty:
+            st.info("Aún no hay partidos finalizados para construir la tabla por fecha.")
         else:
-            evo = build_tabla_evolutiva(df_resultados)
+            min_d = df_res["Fecha Técnica"].min().date()
+            max_d = df_res["Fecha Técnica"].max().date()
+            corte = st.slider("Corte temporal", min_value=min_d, max_value=max_d, value=max_d)
+            corte_ts = pd.to_datetime(corte)
 
-            # Selector de corte temporal (snapshot más cercano a la Fecha seleccionada)
-            fechas_disp = evo["Fecha Técnica"].dropna().sort_values().unique()
-            sel_fecha = st.select_slider("Corte temporal", options=list(fechas_disp), value=fechas_disp[-1],
-                                         format_func=lambda d: pd.to_datetime(d).strftime("%Y-%m-%d %H:%M"))
+            # Tabla a la fecha (con Movimiento y Racha)
+            df_fecha = tabla_a_fecha(df_res, corte_ts)
+            show_full_table(df_fecha)
 
-            snap = (evo[evo["Fecha Técnica"] <= pd.to_datetime(sel_fecha)]
-                        .sort_values(["Fecha Técnica"])
-                        .groupby("Equipo", as_index=False).tail(1))
+            # ELO suave controlado por el mismo corte
+            st.markdown("**Evolución del índice ELO por Fecha Real**")
+            elo_df = build_elo(df_res)
+            plot_elo_suave(elo_df, corte_ts)
 
-            snap = snap.sort_values(["Pts","DG","GF"], ascending=[False,False,False]).reset_index(drop=True)
-            snap.insert(0, "Pos", snap.index + 1)
+            # Evolutivo W/D/L con comparación
+            st.markdown("**Evolutivo de resultados (W/D/L) y puntos acumulados**")
+            wdl = build_wdl(df_res[df_res["Fecha Técnica"] <= corte_ts])
+            equipos = sorted(wdl["Equipo"].unique())
+            c1, c2 = st.columns(2)
+            with c1:
+                eq1 = st.selectbox("Equipo A", equipos, index=0)
+            with c2:
+                eq2 = st.selectbox("Equipo B (opcional)", ["(ninguno)"]+equipos, index=0)
 
-            # Orden amigable columnas
-            cols = ["Pos","Equipo","Pts","PJ","PG","PE","PP","GF","GC","DG","Movimiento","Racha"]
-            cols = [c for c in cols if c in snap.columns]
-            st.dataframe(
-                snap[cols],
-                use_container_width=True, hide_index=True
-            )
+            def _linea_puntos(eq, ax):
+                s = (wdl[wdl["Equipo"]==eq]
+                     .sort_values("Fecha")
+                     .assign(PtsAcum=lambda d: d["Pts"].cumsum()))
+                ax.plot(s["Fecha"], s["PtsAcum"], lw=2, label=eq)
 
-            st.caption("Movimiento: comparación contra el snapshot inmediato anterior (▲ sube / ▼ baja / ＝ igual).  Racha: última secuencia viva (G/E/P).")
+            fig1, ax1 = plt.subplots(figsize=(9,4))
+            _linea_puntos(eq1, ax1)
+            if eq2 != "(ninguno)":
+                _linea_puntos(eq2, ax1)
+            ax1.grid(True, ls='--', alpha=0.3); ax1.set_title("Puntos acumulados por fecha"); ax1.legend()
+            st.pyplot(fig1)
 
-                    # =========================
-            # 📈 Evolución ELO (gráfico)
-            # =========================
-            import numpy as np
-            import matplotlib.pyplot as plt
-            import matplotlib.dates as mdates
+            color_res = {'W':'#2ca02c','D':'#7f7f7f','L':'#d62728'}
+            def _tira(eq, ax, y0):
+                s = wdl[wdl["Equipo"]==eq].sort_values("Fecha")
+                ax.scatter(s["Fecha"], np.full(len(s), y0), s=80, c=s["R"].map(color_res), edgecolor='k')
+                for x, r in zip(s["Fecha"], s["R"]):
+                    ax.text(x, y0+0.12, r, ha='center', va='bottom', fontsize=8)
 
-            @st.cache_data(ttl=300)
-            def compute_elo_evolution(df_resultados: pd.DataFrame,
-                                      K: float = 40,
-                                      idx0: float = 1000.0,
-                                      bonus_local: float = 100.0) -> pd.DataFrame:
-                """
-                Calcula ELO por 'Fecha Técnica' a partir de df_resultados (finalizados).
-                Devuelve: Fecha Técnica, Equipo, Indice (ELO), Delta, Resultado (G/E/P).
-                """
-                if df_resultados is None or df_resultados.empty:
-                    return pd.DataFrame(columns=["Fecha Técnica","Equipo","Indice","Delta","Resultado"])
-
-                df = df_resultados.copy()
-                df["Fecha Técnica"] = pd.to_datetime(df["Fecha Técnica"], errors="coerce")
-                df = df.sort_values("Fecha Técnica")
-
-                equipos = pd.Series(df["Equipo Local"].tolist() + df["Equipo Visitante"].tolist()).unique()
-                indices = {e: float(idx0) for e in equipos}
-                evol = []
-
-                # iterar por fecha real
-                for ftec in df["Fecha Técnica"].unique():
-                    fecha_rows = df[df["Fecha Técnica"] == ftec]
-                    for _, r in fecha_rows.iterrows():
-                        local = r["Equipo Local"]; visitante = r["Equipo Visitante"]
-                        gl = int(r["Goles Local"]); gv = int(r["Goles Visitante"])
-
-                        il = indices[local]; iv = indices[visitante]
-                        # resultado real
-                        if gl > gv:
-                            rl, rv = 1.0, 0.0
-                        elif gl < gv:
-                            rl, rv = 0.0, 1.0
-                        else:
-                            rl = rv = 0.5
-
-                        # expected con ventaja de localía
-                        el = 1 / (1 + 10 ** ((iv - il + bonus_local) / 400.0))
-                        ev = 1 / (1 + 10 ** ((il - iv - bonus_local) / 400.0))
-
-                        adj_l = K * (rl - el)
-                        adj_v = K * (rv - ev)
-
-                        # margen (soft)
-                        dg = abs(gl - gv)
-                        mult = 1 + (dg / 4.0)
-
-                        # ajuste ofensivo/defensivo suave
-                        max_idx = max(indices.values()) if indices else 1.0
-                        of_l = (gl / (1 + gv)) * (iv / max_idx)
-                        de_l = (gv / (1 + gl)) * (1 - iv / max_idx)
-                        of_v = (gv / (1 + gl)) * (il / max_idx)
-                        de_v = (gl / (1 + gv)) * (1 - il / max_idx)
-
-                        total_l = (adj_l * mult) + of_l - de_l
-                        total_v = (adj_v * mult) + of_v - de_v
-
-                        indices[local] += total_l
-                        indices[visitante] += total_v
-
-                    # registrar valores tras procesar todos los partidos de esa fecha
-                    for e in equipos:
-                        evol.append({"Fecha Técnica": ftec, "Equipo": e, "Indice": round(indices[e], 2)})
-
-                df_evo = pd.DataFrame(evol).sort_values(["Equipo","Fecha Técnica"]).reset_index(drop=True)
-
-                # Delta + Resultado (según sus propios partidos jugados)
-                res_rows = []
-                for _, r in df.iterrows():
-                    ftec = r["Fecha Técnica"]; l = r["Equipo Local"]; v = r["Equipo Visitante"]
-                    gl = int(r["Goles Local"]); gv = int(r["Goles Visitante"])
-                    if gl > gv:
-                        res_rows.append((ftec, l, "G")); res_rows.append((ftec, v, "P"))
-                    elif gl < gv:
-                        res_rows.append((ftec, l, "P")); res_rows.append((ftec, v, "G"))
-                    else:
-                        res_rows.append((ftec, l, "E")); res_rows.append((ftec, v, "E"))
-                df_res = pd.DataFrame(res_rows, columns=["Fecha Técnica","Equipo","Resultado"])
-
-                df_evo = df_evo.merge(df_res, on=["Fecha Técnica","Equipo"], how="left")
-
-                # Delta por equipo
-                df_evo["Delta"] = 0.0
-                for e, g in df_evo.groupby("Equipo"):
-                    g = g.sort_values("Fecha Técnica")
-                    deltas = [g["Indice"].iloc[i] - (idx0 if i == 0 else g["Indice"].iloc[i-1]) for i in range(len(g))]
-                    df_evo.loc[g.index, "Delta"] = np.round(deltas, 2)
-
-                return df_evo.sort_values(["Fecha Técnica","Equipo"]).reset_index(drop=True)
-
-            # Construir ELO (desde los resultados finalizados ya obtenidos)
-            df_elo_evolucion = compute_elo_evolution(df_resultados)
-
-            st.markdown("### 📈 Evolución del índice ELO")
-            if df_elo_evolucion.empty:
-                st.info("No hay datos suficientes para calcular el ELO.")
-            else:
-                # Opciones de visualización
-                colE1, colE2 = st.columns([1,1])
-                with colE1:
-                    equipo_focus = st.text_input("Resaltar equipo (exacto)", value="FERRO CARRIL OESTE")
-                with colE2:
-                    show_labels = st.checkbox("Etiquetas finales", value=True)
-
-                df_plot = df_elo_evolucion.copy()
-                df_plot["Fecha Técnica"] = pd.to_datetime(df_plot["Fecha Técnica"])
-                # promedio final
-                ultimo = (df_plot.sort_values("Fecha Técnica")
-                                   .groupby("Equipo", as_index=False)
-                                   .tail(1))
-                promedio_final = ultimo["Indice"].mean()
-
-                # figura
-                fig = plt.figure(figsize=(11.5, 7.0))
-                ax = fig.add_subplot(111)
-
-                teams = df_plot["Equipo"].unique()
-                for team in teams:
-                    dft = df_plot[df_plot["Equipo"] == team].sort_values("Fecha Técnica")
-                    lw = 2.6 if team.strip().upper() == (equipo_focus or "").strip().upper() else 1.2
-                    color = "darkgreen" if team.strip().upper() == (equipo_focus or "").strip().upper() else None
-                    ax.plot(dft["Fecha Técnica"], dft["Indice"], label=team, linewidth=lw, color=color)
-
-                # línea de promedio
-                ax.axhline(promedio_final, linestyle="--", color="gray", linewidth=1.2, label="Promedio general")
-
-                # etiquetas finales opcionales
-                if show_labels:
-                    for team in teams:
-                        dft = df_plot[df_plot["Equipo"] == team].sort_values("Fecha Técnica")
-                        x = dft["Fecha Técnica"].iloc[-1]
-                        y = dft["Indice"].iloc[-1]
-                        ax.text(x + pd.Timedelta(days=2), y, team, fontsize=8, va='center')
-
-                ax.set_title("Evolución del Índice ELO por Fecha Real")
-                ax.set_xlabel("Fecha"); ax.set_ylabel("Índice ELO")
-                ax.grid(True, linestyle="--", alpha=0.5)
-                ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
-                fig.autofmt_xdate()
-                ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0), fontsize=8, frameon=False)
-                plt.tight_layout()
-
-                st.pyplot(fig, use_container_width=True)
-                plt.close(fig)
-
+            fig2, ax2 = plt.subplots(figsize=(9,2.6))
+            _tira(eq1, ax2, 0.0)
+            if eq2 != "(ninguno)":
+                _tira(eq2, ax2, 0.5)
+            ax2.set_yticks([]); ax2.grid(True, axis='x', ls='--', alpha=0.3); ax2.set_title("Resultados por fecha (W/D/L)")
+            st.pyplot(fig2)
 
 
 
