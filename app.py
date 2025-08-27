@@ -1221,17 +1221,35 @@ def draw_key_stats_panel(home_name: str, away_name: str,
 # =========================
 
 # --------- UI: mostrar tablas completas (sin scroll vertical) ----------
+# --------- UI: mostrar tablas completas (sin scroll vertical) ----------
 def show_full_table(df: pd.DataFrame, max_px: int = 1000):
-    """Muestra el DataFrame completo sin scroll + oculta índice."""
+    """
+    Muestra el DataFrame completo sin índice y sin la columna 'Movimiento'.
+    """
     import streamlit as st
-    if df is None:
+    if df is None or df.empty:
+        st.dataframe(pd.DataFrame(), use_container_width=True, height=200)
         return
-    df = df.reset_index(drop=True)  # <- oculta índice duro-dura
-    n = int(len(df))
-    row_h = 35
+
+    d = df.copy()
+    if "Movimiento" in d.columns:
+        d = d.drop(columns=["Movimiento"])
+
+    # nos aseguramos de resetear índice para que no aparezca la col. 0..n
+    d = d.reset_index(drop=True)
+
+    n = int(len(d))
+    row_h = 35   # alto aprox por fila
     hdr_h = 38
     height = max(140, min(max_px, hdr_h + n * row_h))
-    st.dataframe(df, use_container_width=True, height=height, hide_index=True)
+
+    # Streamlit >=1.31
+    try:
+        st.dataframe(d, use_container_width=True, height=height, hide_index=True)
+    except TypeError:
+        # fallback para versiones sin 'hide_index'
+        st.dataframe(d.style.hide(axis="index"), use_container_width=True, height=height)
+
 
 # --------- Jornada: índice 1..N a partir de "Jornada ID" ----------
 def _build_jornada_index(df_res: pd.DataFrame) -> tuple[pd.DataFrame, dict[int, int]]:
@@ -1524,34 +1542,85 @@ def plot_wdl_por_jornada(
 
 def tabla_a_jornada(df_res: pd.DataFrame, j_corte: int) -> pd.DataFrame:
     """
-    Tabla 'pareja' a la jornada: para cada equipo toma sus primeros j_corte
-    partidos (ordenados por JornadaN y fecha), y luego calcula la tabla.
+    Construye la tabla tomando EXACTAMENTE los primeros j_corte partidos de cada equipo.
+    (PJ parejos para todos)
     """
-    # Indexar jornadas
-    d_j, _ = _build_jornada_index(df_res)
-    d = d_j.dropna(subset=["JornadaN", "Goles Local", "Goles Visitante"]).copy()
+    if df_res is None or df_res.empty:
+        return pd.DataFrame(columns=["Pos","Equipo","Pts","PJ","PG","PE","PP","GF","GC","DG","Racha"])
 
+    # Aseguramos JornadaN
+    d_j, _ = _build_jornada_index(df_res)
+    d = d_j.dropna(subset=["JornadaN","Goles Local","Goles Visitante"]).copy()
     if d.empty:
         return pd.DataFrame(columns=["Pos","Equipo","Pts","PJ","PG","PE","PP","GF","GC","DG","Racha"])
 
     # Lista de equipos
     equipos = pd.unique(pd.concat([d["Equipo Local"], d["Equipo Visitante"]], ignore_index=True))
 
-    # Para cada equipo, me quedo con sus primeros j_corte partidos (por JornadaN, luego por Fecha)
-    partes = []
+    # helper resultado
+    def _res(gl, gv):
+        return "G" if gl>gv else ("E" if gl==gv else "P")
+
+    rows = []
+    rachas_dict = {eq: [] for eq in equipos}
+
     for eq in equipos:
-        m = (d["Equipo Local"].eq(eq)) | (d["Equipo Visitante"].eq(eq))
-        g = d.loc[m].sort_values(["JornadaN", "Fecha Técnica"])
-        partes.append(g.head(int(j_corte)))
+        # Partidos del equipo ordenados por jornada
+        m1 = d[d["Equipo Local"].eq(eq)]
+        m2 = d[d["Equipo Visitante"].eq(eq)]
+        dd = pd.concat([m1, m2], ignore_index=True).sort_values("JornadaN")
 
-    d_cut = (pd.concat(partes, ignore_index=True)
-               .drop_duplicates(subset=["JornadaN","Equipo Local","Equipo Visitante","Goles Local","Goles Visitante"]))
+        # Tomamos exactamente los primeros j_corte (si tiene menos, serán menos)
+        dd = dd.head(j_corte)
 
-    # Calcula tabla con tu función existente (sin recorte por timestamp)
-    df_tab = tabla_a_fecha(d_cut, pd.Timestamp.max)
+        if dd.empty:
+            rows.append({"Equipo": eq, "Pts":0,"PJ":0,"PG":0,"PE":0,"PP":0,"GF":0,"GC":0})
+            rachas_dict[eq] = []
+            continue
 
-    # Si existiera 'Movimiento', la vamos a sacar en el paso 3 (display)
+        PJ=PG=PE=PP=GF=GC=PTS=0
+        hist = []
+        for _, r in dd.iterrows():
+            gl, gv = int(r["Goles Local"]), int(r["Goles Visitante"])
+            if r["Equipo Local"] == eq:
+                gf, gc = gl, gv; rr = _res(gl, gv)
+            else:
+                gf, gc = gv, gl; rr = _res(gv, gl)
+
+            PJ += 1; GF += gf; GC += gc
+            if rr == "G": PG += 1; PTS += 3
+            elif rr == "E": PE += 1; PTS += 1
+            else: PP += 1
+            hist.append(rr)
+
+        rows.append({"Equipo": eq, "Pts": PTS,"PJ": PJ,"PG": PG,"PE": PE,"PP": PP,"GF": GF,"GC": GC})
+        rachas_dict[eq] = hist
+
+    df_tab = pd.DataFrame(rows)
+    df_tab["DG"] = df_tab["GF"] - df_tab["GC"]
+    df_tab = df_tab.sort_values(["Pts","DG","GF"], ascending=[False,False,False]).reset_index(drop=True)
+    df_tab.insert(0, "Pos", df_tab.index + 1)
+
+    # Racha viva (últimos iguales consecutivos) sobre esos j_corte partidos
+    rachas = []
+    for eq in df_tab["Equipo"]:
+        h = rachas_dict.get(eq, [])
+        if not h:
+            rachas.append("—")
+        else:
+            last = h[-1]; c=1
+            for x in reversed(h[:-1]):
+                if x==last: c+=1
+                else: break
+            rachas.append(f"{last}x{c}")
+    df_tab["Racha"] = rachas
+
+    # sin Movimiento aquí
+    if "Movimiento" in df_tab.columns:
+        df_tab = df_tab.drop(columns=["Movimiento"])
+
     return df_tab
+
 
 
 # =========================
