@@ -2512,7 +2512,12 @@ if menu == "🏆 Tabla & Resultados":
         if df.empty:
             return df, pd.DataFrame(), pd.DataFrame()
 
-        df["Fecha Técnica"] = pd.to_datetime(df["Fecha Técnica"], errors="coerce")
+        # DESPUÉS (normaliza a naive, sin tz)
+        df["Fecha Técnica"] = (
+            pd.to_datetime(df["Fecha Técnica"], utc=True, errors="coerce")
+              .dt.tz_convert(None)
+        )
+
 
         fin_mask = df["Estado"].str.lower().eq("finalizado")
         df_res = df[fin_mask].copy().sort_values("Fecha Técnica")
@@ -2677,6 +2682,11 @@ if menu == "🏆 Tabla & Resultados":
     # --- TAB 2: RESULTADOS (filtros equipo + fecha) ---
     with tab2:
         d = df_res.copy()
+        # Asegurar que la columna es datetime naive (sin tz)
+        d["Fecha Técnica"] = pd.to_datetime(d["Fecha Técnica"], errors="coerce")
+        if pd.api.types.is_datetime64tz_dtype(d["Fecha Técnica"]):
+            d["Fecha Técnica"] = d["Fecha Técnica"].dt.tz_localize(None)
+
         if d.empty:
             st.info("Sin resultados finalizados."); 
         else:
@@ -2691,25 +2701,38 @@ if menu == "🏆 Tabla & Resultados":
             if sel_eq:
                 mask &= (d["Equipo Local"].isin(sel_eq) | d["Equipo Visitante"].isin(sel_eq))
             if isinstance(rango, (list, tuple)) and len(rango)==2:
-                d1, d2 = map(pd.to_datetime, rango)
-                mask &= (d["Fecha Técnica"] >= d1) & (d["Fecha Técnica"] <= d2)
+            # DESPUÉS (fin de día inclusivo, todo naive)
+            d1 = pd.Timestamp(rango[0])
+            d2 = pd.Timestamp(rango[1]) + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1)
+            mask &= d["Fecha Técnica"].between(d1, d2)
+
             out = d.loc[mask].sort_values("Fecha Técnica")
             show_full_table(out)
 
-    # --- TAB 3: PRÓXIMOS (solo futuros + filtro equipo) ---
+     # --- TAB 3: PRÓXIMOS (solo futuros + filtro equipo) ---
     with tab3:
         d = df_fix.copy()
+    
+        # 1) Normalizá la columna a datetime "naive" (sin timezone)
+        d["Fecha Técnica"] = pd.to_datetime(d["Fecha Técnica"], errors="coerce", utc=True).dt.tz_convert(None)
+    
+        # 2) >>> ESTE ES EL CORTE A FUTURO <<<
+        #    "today" a las 00:00 (hoy), y nos quedamos solo con fechas >= hoy
+        today = pd.Timestamp.now().normalize()
+        d = d[d["Fecha Técnica"] >= today]
+    
         if d.empty:
-            st.info("Sin próximos programados."); 
+            st.info("Sin próximos programados.")
         else:
-            today = pd.Timestamp.now().normalize()
-            d = d[pd.to_datetime(d["Fecha Técnica"], errors="coerce") >= today]
+            # filtros por equipo (opcional)
             equipos = sorted(pd.unique(pd.concat([d["Equipo Local"], d["Equipo Visitante"]]).dropna()))
             sel_eq = st.multiselect("Equipo(s)", equipos)
             if sel_eq:
                 d = d[(d["Equipo Local"].isin(sel_eq)) | (d["Equipo Visitante"].isin(sel_eq))]
+    
             d = d.sort_values("Fecha Técnica")
-            show_full_table(d)
+            # mostrar tabla completa (sin scroll)
+            st.dataframe(d, use_container_width=True, height=max(140, 38 * (len(d) + 1)))
 
     # --- TAB 4: TABLA FECHA A FECHA + ELO + W/D/L ---
     with tab4:
