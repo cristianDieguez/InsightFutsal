@@ -1280,7 +1280,7 @@ def plot_elo_por_jornada(elo_pivot: pd.DataFrame, equipos: list[str], max_j: int
 
     # Ordeno por Y y hago 'jitter' mínimo
     ends.sort(key=lambda t: t[2])
-    min_gap = 7.0     # puntos de ELO mínimos entre etiquetas
+    min_gap = 6.0     # puntos de ELO mínimos entre etiquetas
     for k in range(1, len(ends)):
         prev_y = ends[k-1][2]
         cur    = list(ends[k])
@@ -1292,7 +1292,7 @@ def plot_elo_por_jornada(elo_pivot: pd.DataFrame, equipos: list[str], max_j: int
         ax.text(
             max_j + 0.1, y_end, eq.upper(),
             va="center", ha="left",
-            fontsize=9.2, color=col,
+            fontsize=8.8, color=col,
             path_effects=[pe.withStroke(linewidth=3, foreground="white")],
             clip_on=False, zorder=3
         )
@@ -1306,28 +1306,29 @@ def plot_elo_por_jornada(elo_pivot: pd.DataFrame, equipos: list[str], max_j: int
 
     return fig
 
-
-
-# --------- W/D/L por jornada ----------
+# --------- W/D/L por jornada (usando JornadaN=1..N) ----------
 def build_wdl_por_jornada(df_res: pd.DataFrame) -> pd.DataFrame:
     """
-    Devuelve filas (Equipo, Jornada, Res) para cada partido finalizado de df_res.
-    Res ∈ {'W','D','L'}. Jornada sale de 'Jornada ID'.
+    Devuelve (Equipo, Jornada, R) con R ∈ {'W','D','L'}.
+    Usa JornadaN (1..N). Si no existe, la crea con _build_jornada_index.
     """
     if df_res is None or df_res.empty:
-        return pd.DataFrame(columns=["Equipo", "Jornada", "Res"])
+        return pd.DataFrame(columns=["Equipo", "Jornada", "R"])
+
+    d = df_res.copy()
+    if "JornadaN" not in d.columns:
+        d, _ = _build_jornada_index(d)   # agrega JornadaN=1..N
+
+    # Sólo partidos con goles válidos y jornada conocida
+    d = d.dropna(subset=["JornadaN", "Goles Local", "Goles Visitante"])
+    if d.empty:
+        return pd.DataFrame(columns=["Equipo", "Jornada", "R"])
 
     rows = []
-    for _, r in df_res.iterrows():
-        j = r.get("Jornada ID")
-        if pd.isna(j):
-            continue
-        j = int(j)
-
-        gl = int(r["Goles Local"])
-        gv = int(r["Goles Visitante"])
-        loc = r["Equipo Local"]
-        vis = r["Equipo Visitante"]
+    for _, r in d.iterrows():
+        j = int(r["JornadaN"])
+        gl, gv = int(r["Goles Local"]), int(r["Goles Visitante"])
+        loc, vis = r["Equipo Local"], r["Equipo Visitante"]
 
         if gl > gv:
             res_loc, res_vis = "W", "L"
@@ -1336,14 +1337,11 @@ def build_wdl_por_jornada(df_res: pd.DataFrame) -> pd.DataFrame:
         else:
             res_loc = res_vis = "D"
 
-        rows.append({"Equipo": loc, "Jornada": j, "Res": res_loc})
-        rows.append({"Equipo": vis, "Jornada": j, "Res": res_vis})
+        rows.append({"Equipo": loc, "Jornada": j, "R": res_loc})
+        rows.append({"Equipo": vis, "Jornada": j, "R": res_vis})
 
     out = pd.DataFrame(rows)
-    if out.empty:
-        return out
     return out.sort_values(["Equipo", "Jornada"]).reset_index(drop=True)
-
 
 def plot_wdl_por_jornada(wdl_jornada_df: pd.DataFrame, eq_a: str, eq_b: str|None, max_j: int) -> plt.Figure:
     BG = "#E8F5E9"
@@ -1389,14 +1387,14 @@ def plot_wdl_por_jornada(wdl_jornada_df: pd.DataFrame, eq_a: str, eq_b: str|None
         ax.set_yticks([0, 1, 2])
         ax.set_yticklabels(["Derrota", "Empate", "Victoria"])
         ax.grid(True, axis="x", ls="--", lw=0.8, color=GRID, alpha=0.55)
-        ax.set_xlim(0.5, max_j + 0.5)   # puntos extremos visibles completos
+        ax.set_xlim(0.5, max_j + 0.5)   # puntos extremos completos
         ax.set_ylim(-0.45, 2.45)
         ax.set_title(eq.upper(), pad=6, fontsize=12, color="#1F1F1F")
         ax.tick_params(colors="#1F1F1F")
         for spine in ax.spines.values():
             spine.set_color("#1F1F1F")
 
-    axes[-1].set_xticks(list(range(1, max_j + 1)))   # solo números (1..N)
+    axes[-1].set_xticks(list(range(1, max_j + 1)))   # sólo números (1..N)
     axes[-1].set_xlabel("Fecha (Jornada)", fontsize=12, color="#1F1F1F")
     plt.tight_layout()
     return fig
@@ -3028,20 +3026,15 @@ with tab4:
         st.pyplot(fig_elo, use_container_width=True)
 
         # 4) W/D/L por jornada (dos bandas)
-        # df_res_j ya tiene JornadaN (viene de _build_jornada_index)
         wdl_jornada_df = build_wdl_por_jornada(df_res_j[df_res_j["JornadaN"].le(j_corte)])
         
-        # normalizo el nombre de la columna de resultado
-        if "Res" in wdl_jornada_df.columns and "R" not in wdl_jornada_df.columns:
-            wdl_jornada_df = wdl_jornada_df.rename(columns={"Res": "R"})
-
         eqs = sorted(wdl_jornada_df["Equipo"].unique())
         c1, c2 = st.columns(2)
         with c1:
             eq1 = st.selectbox("Equipo A", eqs, index=0)
         with c2:
             eq2 = st.selectbox("Equipo B (opcional)", ["(ninguno)"] + eqs, index=0)
-
+        
         fig_wdl = plot_wdl_por_jornada(
             wdl_jornada_df,
             eq1,
@@ -3049,4 +3042,5 @@ with tab4:
             j_corte
         )
         st.pyplot(fig_wdl, use_container_width=True)
+
 
