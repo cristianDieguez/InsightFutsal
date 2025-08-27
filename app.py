@@ -1205,54 +1205,78 @@ def _smooth_series(y: list[float], passes: int = 2) -> list[float]:
         s = s.rolling(3, center=True, min_periods=1).mean()
     return s.tolist()
 
-def plot_elo_por_jornada(traj: dict[str, list[tuple[int,float]]],
-                         equipos_sel: list[str] | None,
-                         max_j: int,
-                         title: str = "Evolución del índice ELO por Jornada") -> plt.Figure:
+def plot_elo_por_jornada(elo_pivot: pd.DataFrame, equipos_sel: list[str], max_j: int) -> plt.Figure:
     """
-    Dibuja ELO por JornadaN, sin leyenda; etiqueta cada línea en su último punto visible
-    y separa etiquetas superpuestas con un desplazamiento vertical mínimo.
+    Dibuja ELO por Jornada (1..max_j) para los equipos seleccionados.
+    - Robusto si el pivot viene vacío o con NAs.
+    - Suavizado lineal (interp) para que no quede “a escalones” pero sin SciPy.
     """
     plt.close("all")
-    fig = plt.figure(figsize=(11.5, 6.8))
-    ax = fig.add_axes([0.06, 0.10, 0.88, 0.82])
+    fig, ax = plt.subplots(figsize=(10.5, 6.2))
 
-    keys = sorted(traj.keys()) if not equipos_sel else equipos_sel
-    colors = plt.cm.tab20(np.linspace(0, 1, max(2, min(20, len(keys)))))
+    # Caso sin datos
+    if not isinstance(elo_pivot, pd.DataFrame) or elo_pivot.empty:
+        ax.text(0.5, 0.5, "Sin datos de ELO para el rango seleccionado",
+                ha="center", va="center", fontsize=12, color="w")
+        ax.axis("off")
+        return fig
 
-    last_points = []  # para etiquetar
-    for i, k in enumerate(keys):
-        xs = [x for (x, _) in traj[k] if x <= max_j]
-        ys = [y for (x, y) in traj[k] if x <= max_j]
-        if not xs:
+    # Asegurar índice numérico (jornadas) y ordenado
+    df = elo_pivot.copy()
+    # si el index no es int, lo intento castear; si falla, lo reseteo a 1..N
+    try:
+        df.index = pd.to_numeric(df.index, errors="coerce").astype("Int64")
+    except Exception:
+        df.index = pd.Series(range(1, len(df) + 1), dtype="Int64")
+    df = df.sort_index()
+
+    # filtrar al rango [1..max_j] por seguridad
+    if pd.notna(max_j):
+        df = df.loc[df.index.astype(float) <= float(max_j)]
+
+    # Si no hay columnas seleccionadas, nada que graficar
+    col_all = list(df.columns)
+    equipos = [e for e in (equipos_sel or []) if e in col_all]
+    if not equipos:
+        ax.text(0.5, 0.5, "Elegí al menos un equipo para graficar",
+                ha="center", va="center", fontsize=12, color="w")
+        ax.axis("off")
+        return fig
+
+    # Trajectorias como listas de puntos (x = jornada, y = elo)
+    def _traj(col_name: str):
+        s = pd.to_numeric(df[col_name], errors="coerce").dropna()
+        xs = s.index.astype(float).to_list()
+        ys = s.values.astype(float).tolist()
+        return xs, ys
+
+    for k in equipos:
+        xs, ys = _traj(k)
+        if len(xs) == 0:
             continue
-        ys = _smooth_series(ys, passes=2)  # leve “curva”
-        ax.plot(xs, ys, lw=2.0, color=colors[i % len(colors)], solid_capstyle="round")
 
-        last_points.append((k, xs[-1], ys[-1], colors[i % len(colors)]))
+        # Suavizado lineal: densifico el eje X y hago np.interp
+        if len(xs) >= 2:
+            x_min, x_max = float(min(xs)), float(max(xs))
+            # 20 puntos por jornada para que se vea fluido
+            n_points = max(50, int((x_max - x_min) * 20) + 1)
+            xnew = np.linspace(x_min, x_max, n_points)
+            ynew = np.interp(xnew, xs, ys)
+            ln, = ax.plot(xnew, ynew, lw=2.2, label=k)
+            col = ln.get_color()
+            ax.text(xnew[-1] + 0.1, ynew[-1], k, fontsize=9, color=col,
+                    ha="left", va="center")
+        else:
+            ln, = ax.plot(xs, ys, lw=2.2, label=k)
+            col = ln.get_color()
+            ax.text(xs[-1] + 0.1, ys[-1], k, fontsize=9, color=col,
+                    ha="left", va="center")
 
-    # Ejes
-    ax.set_xlim(1, max_j)
-    ax.set_xticks(range(1, max_j + 1))
-    ax.set_xticklabels([f"Fecha {j}" for j in range(1, max_j + 1)], rotation=0)
-    ax.set_ylabel("Índice ELO")
-    ax.grid(axis="both", linestyle=":", alpha=0.35)
-    ax.set_title(title, fontsize=15, weight="bold", pad=6)
-
-    # Etiquetas en el borde derecho con anti-colisión vertical simple
-    last_points.sort(key=lambda t: t[2])  # por y
-    min_gap = 6.0  # puntos ELO de separación mínima entre etiquetas
-    last_y = -1e9
-    y_offset = {}
-    for name, x, y, col in last_points:
-        y_adj = y if (y - last_y) >= min_gap else (last_y + min_gap)
-        y_offset[name] = y_adj - y
-        last_y = y_adj
-
-    for name, x, y, col in last_points:
-        ax.text(x + 0.20, y + y_offset[name], name,
-                color=col, fontsize=10, weight="bold", va="center")
-
+    ax.set_xlim(1, float(max_j) if pd.notna(max_j) else max(1.0, float(df.index.max())))
+    ax.set_xlabel("Fecha (Jornada)", fontsize=11)
+    ax.set_ylabel("Índice ELO", fontsize=11)
+    ax.grid(True, ls="--", alpha=0.28)
+    # sin leyenda (etiquetamos al final de cada línea)
     return fig
 
 def plot_wdl_por_jornada(df_matches: pd.DataFrame, teamA: str, teamB: str | None,
