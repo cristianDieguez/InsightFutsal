@@ -428,16 +428,27 @@ def compute_from_matrix(path: str) -> Dict[str, Dict[str, float]]:
         return out
 
     def sum_by_names(mask, names: list[str]) -> int:
+        # junta columnas por nombres normalizados
         targets = set()
         for nm in names:
-            targets |= _expand_variants(nm)
+            targets |= _expand_variants(nlower(nm))
         cols = []
         for t in targets:
             cols += norm2cols.get(t, [])
+    
         if not cols:
             return 0
-        vals = pd.to_numeric(df.loc[mask, cols], errors="coerce").fillna(0)
-        return int(vals.sum(numeric_only=True).sum())
+    
+        block = df.loc[mask, cols]
+    
+        # ya tenemos números por cómo carga load_matrix(), pero
+        # hacemos la suma de forma segura para Serie o DataFrame
+        if isinstance(block, pd.Series):
+            return int(pd.to_numeric(block, errors="coerce").fillna(0).sum())
+        else:
+            block_num = block.apply(pd.to_numeric, errors="coerce").fillna(0)
+            return int(block_num.sum(numeric_only=True).sum())
+
 
     # --- listas exactas (según tu definición) --------------------------------
     PASSES_BASE = [
