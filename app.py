@@ -1360,9 +1360,8 @@ def build_wdl_por_jornada(df_res: pd.DataFrame) -> pd.DataFrame:
     out = pd.DataFrame(rows)
     return out.sort_values(["Equipo", "Jornada"]).reset_index(drop=True)
 
-# --- alias de compatibilidad por si queda alguna llamada vieja ---
-def build_wdl_jornada(df_res: pd.DataFrame) -> pd.DataFrame:
-    return build_wdl_por_jornada(df_res)
+# --- alias LEGACY: cualquier llamada vieja seguirá funcionando ---
+build_wdl_jornada = build_wdl_por_jornada
 
 def plot_wdl_por_jornada(wdl_jornada_df: pd.DataFrame, eq_a: str, eq_b: str|None, max_j: int) -> plt.Figure:
     BG = "#E8F5E9"
