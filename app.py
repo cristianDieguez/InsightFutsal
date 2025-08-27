@@ -49,11 +49,11 @@ LOGO_Z_WDL_DOUBLE = 0.06
 WDL_MAX_LOGOS     = 18   # si hay más puntos que esto, usamos puntos en vez de logos
 
 # Tamaños de escudos (ajustables)
-LOGO_PX_ELO_DEFAULT = 12      # antes 32 (ELO más chico)
+LOGO_PX_ELO_DEFAULT = 14      # antes 32 (ELO más chico)
 # --- Ajustes de tamaño/espaciado de logos (¡todos iguales y chicos!) ---
 LOGO_PX_ELO         = 12   # tamaño en píxeles del logo en el gráfico ELO
-LOGO_PX_WDL_SINGLE  = 12   # tamaño en píxeles (W/D/L con 1 panel)
-LOGO_PX_WDL_DOUBLE  = 10   # tamaño en píxeles (W/D/L con 2 paneles)
+LOGO_PX_WDL_SINGLE  = 14   # tamaño en píxeles (W/D/L con 1 panel)
+LOGO_PX_WDL_DOUBLE  = 12   # tamaño en píxeles (W/D/L con 2 paneles)
 RIGHT_MARGIN_ELO    = 0.40 # margen a la derecha para encajar logos en ELO (0.30–0.55)
 MIN_GAP_ELO         = 2.0  # separación mínima vertical entre logos en ELO
 
