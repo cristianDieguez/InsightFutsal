@@ -59,12 +59,12 @@ MIN_GAP_ELO         = 10.0  # separación mínima vertical entre logos en ELO
 
 
 BANNER_H   = 0.145
-LOGO_W     = 0.118
+LOGO_W     = 0.105
 TITLE_FS   = 32
 SUB_FS     = 19
 
 FOOTER_H        = 0.120
-FOOTER_LOGO_W   = 0.110
+FOOTER_LOGO_W   = 0.105
 FOOTER_TITLE_FS = 20
 FOOTER_SUB_FS   = 14
 
@@ -331,23 +331,44 @@ def cargar_datos_nacsport(xml_path: str) -> pd.DataFrame:
 
 # ------ para estadísticas de partido ------
 def parse_possession_from_equipo(xml_path: str) -> Tuple[float, float]:
-    """Posesión desde códigos 'tiempo posecion ferro/rival'."""
-    if not xml_path or not os.path.isfile(xml_path): return 0.0, 0.0
+    """
+    Lee el XML (NacSport o TotalValues) y suma los tramos de:
+      - 'Tiempo Posesion Ferro' / 'Tiempo Posecion Ferro'
+      - 'Tiempo Posesion Rival' / 'Tiempo Posecion Rival'
+    Devuelve (FERRO%, RIVAL%) con 1 decimal.
+    """
+    if not xml_path or not os.path.isfile(xml_path):
+        return 0.0, 0.0
+
+    pat_ferro = re.compile(r"^tiempo\s*pose[cs]ion\s*ferro$", re.I)
+    pat_rival = re.compile(r"^tiempo\s*pose[cs]ion\s*rival$", re.I)
+
+    def norm(s: str) -> str:
+        s = _strip_accents(s or "").lower()
+        return re.sub(r"\s+", " ", s).strip()
+
+    t_ferro = 0.0
+    t_rival = 0.0
+
     root = ET.parse(xml_path).getroot()
-    t_ferro = t_rival = 0.0
     for inst in root.findall(".//instance"):
-        code = nlower(inst.findtext("code"))
+        code_raw = inst.findtext("code") or ""
+        code = norm(code_raw)
         try:
             stt = float(inst.findtext("start") or "0")
             enn = float(inst.findtext("end") or "0")
-        except:
+        except Exception:
             continue
         dur = max(0.0, enn - stt)
-        if code == "tiempo posecion ferro":  t_ferro += dur
-        elif code == "tiempo posecion rival": t_rival += dur
+        if pat_ferro.match(code):
+            t_ferro += dur
+        elif pat_rival.match(code):
+            t_rival += dur
+
     tot = t_ferro + t_rival
-    if tot <= 0: return 0.0, 0.0
-    return round(100*t_ferro/tot,1), round(100*t_rival/tot,1)
+    if tot <= 0:
+        return 0.0, 0.0
+    return round(100.0 * t_ferro / tot, 1), round(100.0 * t_rival / tot, 1)
 
 def load_matrix(path: str) -> Tuple[pd.DataFrame, str, Dict[str,str]]:
     if path.lower().endswith(".xlsx"):
@@ -1140,25 +1161,35 @@ def draw_key_stats_panel(home_name: str, away_name: str,
     ax = fig.add_axes([0,0,1,1]); ax.set_xlim(0,1); ax.set_ylim(0,1); ax.axis("off")
     ax.add_patch(Rectangle((0,0), 1, 1, facecolor=bg_green, edgecolor="none", zorder=-10))
 
-    # Banner sup
+    # ---------- Banner superior ----------
     BANNER_Y0 = 1.0 - (BANNER_H + 0.02)
     ax.add_patch(Rectangle((0, BANNER_Y0), 1, BANNER_H, facecolor="white", edgecolor="none", zorder=5))
+
+    # logos más chicos (usa LOGO_W)
     if ferro_logo_path: draw_logo(ax, ferro_logo_path, 0.09, BANNER_Y0 + BANNER_H*0.52, LOGO_W)
     if rival_logo_path: draw_logo(ax, rival_logo_path, 0.91, BANNER_Y0 + BANNER_H*0.52, LOGO_W)
+
     ax.text(0.5, BANNER_Y0 + BANNER_H*0.63, f"{home_name.upper()} vs {away_name.upper()}",
             ha="center", va="center", fontsize=TITLE_FS, weight="bold", color=bg_green, zorder=7)
     ax.text(0.5, BANNER_Y0 + BANNER_H*0.29, "KEY STATS",
             ha="center", va="center", fontsize=SUB_FS, weight="bold", color=bg_green, zorder=7)
 
-    # Banner inferior
+    # ---------- Banner inferior ----------
     FOOTER_Y0 = 0.02
     ax.add_patch(Rectangle((0, FOOTER_Y0), 1, FOOTER_H, facecolor="white", edgecolor="none", zorder=5))
+
+    # ⬅️ Sport Data Campus (izq) — ➡️ Sevilla (der), igual que en Timeline
+    if os.path.isfile(FOOTER_LEFT_LOGO):
+        draw_logo(ax, FOOTER_LEFT_LOGO,  0.09, FOOTER_Y0 + FOOTER_H*0.52, FOOTER_LOGO_W)
+    if os.path.isfile(FOOTER_RIGHT_LOGO):
+        draw_logo(ax, FOOTER_RIGHT_LOGO, 0.91, FOOTER_Y0 + FOOTER_H*0.52, FOOTER_LOGO_W)
+
     ax.text(0.5, FOOTER_Y0 + FOOTER_H*0.63, "Trabajo Fin de Máster",
             ha="center", va="center", fontsize=FOOTER_TITLE_FS, weight="bold", color=bg_green, zorder=7)
     ax.text(0.5, FOOTER_Y0 + FOOTER_H*0.28, "Cristian Dieguez",
             ha="center", va="center", fontsize=FOOTER_SUB_FS,   weight="bold", color=bg_green, zorder=7)
 
-    # Cuerpo
+    # ---------- Cuerpo ----------
     EXTRA_GAP_BELOW_BANNER = 0.075
     top_y    = BANNER_Y0 - EXTRA_GAP_BELOW_BANNER
     bottom_y = FOOTER_Y0 + FOOTER_H + 0.012
@@ -1657,22 +1688,27 @@ if menu == "📊 Estadísticas de partido":
 
     # 1) Posesión
     pos_m, pos_r = parse_possession_from_equipo(XML_PATH) if XML_PATH else (0.0, 0.0)
-
+    
     # 2) Matrix
     if MATRIX_PATH and os.path.isfile(MATRIX_PATH):
         try:
             mx = compute_from_matrix(MATRIX_PATH)
-            FERRO, RIVAL = mx["FERRO"], mx["RIVAL"]   # ✅ dentro del try
+            FERRO, RIVAL = mx["FERRO"], mx["RIVAL"]
         except Exception as e:
             st.error(f"No pude leer MATRIX '{os.path.basename(MATRIX_PATH)}': {e}")
-            FERRO, RIVAL = {}, {}                     # ✅ si falla, inicializa vacío
+            FERRO, RIVAL = {}, {}
     else:
         FERRO, RIVAL = {}, {}
-
+    
+    # 👉 inyectar posesión en los dicts que usa el panel
+    FERRO["Posesión %"] = pos_m
+    RIVAL["Posesión %"] = pos_r
+    
     # 3) Dibujar panel
     ferro_logo = badge_path_for("ferro")
     rival_logo = badge_path_for(rival)
     draw_key_stats_panel("Ferro", rival, FERRO, RIVAL, ferro_logo, rival_logo)
+
 
 
 # =========================
