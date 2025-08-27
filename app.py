@@ -2682,30 +2682,33 @@ if menu == "🏆 Tabla & Resultados":
     # --- TAB 2: RESULTADOS (filtros equipo + fecha) ---
     with tab2:
         d = df_res.copy()
-        # Asegurar que la columna es datetime naive (sin tz)
-        d["Fecha Técnica"] = pd.to_datetime(d["Fecha Técnica"], errors="coerce")
-        if pd.api.types.is_datetime64tz_dtype(d["Fecha Técnica"]):
-            d["Fecha Técnica"] = d["Fecha Técnica"].dt.tz_localize(None)
-
+    
         if d.empty:
-            st.info("Sin resultados finalizados."); 
+            st.info("Sin resultados finalizados.")
         else:
+            # Asegurar datetime naive (sin tz) para comparaciones
+            d["Fecha Técnica"] = pd.to_datetime(d["Fecha Técnica"], errors="coerce", utc=True).dt.tz_convert(None)
+    
             equipos = sorted(pd.unique(pd.concat([d["Equipo Local"], d["Equipo Visitante"]]).dropna()))
-            col1, col2 = st.columns([2,2])
+            col1, col2 = st.columns([2, 2])
             with col1:
                 sel_eq = st.multiselect("Equipo(s)", equipos)
             with col2:
                 fmin, fmax = d["Fecha Técnica"].min().date(), d["Fecha Técnica"].max().date()
                 rango = st.date_input("Rango de fechas", (fmin, fmax))
+    
+            # Filtro
             mask = pd.Series(True, index=d.index)
+    
             if sel_eq:
                 mask &= (d["Equipo Local"].isin(sel_eq) | d["Equipo Visitante"].isin(sel_eq))
-            if isinstance(rango, (list, tuple)) and len(rango)==2:
-            # DESPUÉS (fin de día inclusivo, todo naive)
-            d1 = pd.Timestamp(rango[0])
-            d2 = pd.Timestamp(rango[1]) + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1)
-            mask &= d["Fecha Técnica"].between(d1, d2)
-
+    
+            # --- ESTA ES LA PARTE QUE TE MARCABA EL ERROR (ojo con la sangría) ---
+            if isinstance(rango, (list, tuple)) and len(rango) == 2:
+                d1 = pd.Timestamp(rango[0])  # inicio del día
+                d2 = pd.Timestamp(rango[1]) + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1)  # fin del día
+                mask &= d["Fecha Técnica"].between(d1, d2)
+    
             out = d.loc[mask].sort_values("Fecha Técnica")
             show_full_table(out)
 
