@@ -49,9 +49,9 @@ LOGO_Z_WDL_DOUBLE = 0.06
 WDL_MAX_LOGOS     = 18   # si hay más puntos que esto, usamos puntos en vez de logos
 
 # Tamaños de escudos (ajustables)
-LOGO_PX_ELO_DEFAULT = 26      # antes 32 (ELO más chico)
-LOGO_PX_WDL_SINGLE  = 42      # WDL cuando se muestra 1 equipo
-LOGO_PX_WDL_DOUBLE  = 34      # WDL cuando se muestran 2 equipos
+LOGO_PX_ELO_DEFAULT = 14      # antes 32 (ELO más chico)
+LOGO_PX_WDL_SINGLE  = 14      # WDL cuando se muestra 1 equipo
+LOGO_PX_WDL_DOUBLE  = 12      # WDL cuando se muestran 2 equipos
 
 BANNER_H   = 0.145
 LOGO_W     = 0.118
@@ -1358,7 +1358,7 @@ def plot_elo_por_jornada(elo_pivot: pd.DataFrame, equipos: list[str], max_j: int
                     path_effects=[pe.withStroke(linewidth=3, foreground="white")], clip_on=False, zorder=3)
 
 
-    ax.set_xlim(0.5, max_j + 1.0)  # deja margen para logos
+    ax.set_xlim(0.5, max_j + 0.6)  # deja margen para logos
     ax.set_xticks(list(range(1, max_j + 1)))
     ax.set_xlabel("Fecha (Jornada)", fontsize=12, color="#1F1F1F")
     ax.set_ylabel("Índice ELO",    fontsize=12, color="#1F1F1F")
@@ -1418,20 +1418,19 @@ def _badge_arr_cached(path: str, trim: bool=True, bg_tol: int=16):
         arr = trim_margins(arr, bg_tol=bg_tol)
     return arr
 
-def _logo_image_for(team: str, target_px: int | None = None,
-                    min_px: int = 28, max_px: int = 64,
-                    zoom: float | None = None):
+def _logo_image_for(team: str, target_px: int = 14, min_px: int = 10, max_px: int = 32):
     p = badge_path_for(team)
-    if not p:
-        return None
+    if not p: return None
     try:
-        arr = _badge_arr_cached(p, TRIM_LOGO_BORDERS, 16)
-        # si no dan un zoom explícito, usamos uno chico y uniforme
-        if zoom is None:
-            zoom = 0.07
+        arr = load_any_image(p)
+        if TRIM_LOGO_BORDERS:
+            arr = trim_margins(arr, bg_tol=16)
+        h = np.clip(arr.shape[0], min_px, max_px)
+        zoom = float(target_px) / float(h)
         return OffsetImage(arr, zoom=zoom, interpolation="lanczos")
     except Exception:
         return None
+
 
 from matplotlib.offsetbox import AnnotationBbox
 
@@ -1463,32 +1462,28 @@ def plot_wdl_por_jornada(wdl_jornada_df: pd.DataFrame, eq_a: str, eq_b: str|None
     for ax_idx, (eq, dd) in enumerate([(eq_a, d1), (eq_b, d2)]):
         if dd is None:
             continue
-
         ax = axes[ax_idx]
         fig.patch.set_facecolor(BG); ax.set_facecolor(BG)
-
-        # línea
+    
+        # línea de unión
         if not dd.empty:
             ax.plot(dd["Jornada"], dd["y"], color="#455A64", lw=1.4, alpha=0.9, zorder=2)
-
-        # ¿usamos logos o puntos?
-        use_dots = (len(dd) > WDL_MAX_LOGOS)
-
-        # cache local de OffsetImage por rival (reuso, no reabrimos archivos)
-        z = LOGO_Z_WDL_DOUBLE if (d2 is not None) else LOGO_Z_WDL_SINGLE
-        rivals = sorted(dd["Rival"].dropna().unique())
-        oi_cache = {rv: _logo_image_for(rv, zoom=z) for rv in rivals}
-
+    
+        # ⬇️ tamaños de escudos para este panel
+        target_px = LOGO_PX_WDL_DOUBLE if (d2 is not None) else LOGO_PX_WDL_SINGLE
+    
+        # puntos / logos
         for _, rr in dd.iterrows():
-            if use_dots or (oi_cache.get(rr["Rival"]) is None):
-                col = {"W": COL_WIN, "D": COL_DRAW, "L": COL_LOSS}[rr["R"]]
-                ax.scatter([rr["Jornada"]], [rr["y"]], s=85, c=col,
-                           edgecolor="black", linewidths=0.7, zorder=3, rasterized=True)
-            else:
-                ab = AnnotationBbox(oi_cache[rr["Rival"]], (rr["Jornada"], rr["y"]),
+            oi = _logo_image_for(rr["Rival"], target_px=target_px)
+            if oi is not None:
+                ab = AnnotationBbox(oi, (rr["Jornada"], rr["y"]),
                                     frameon=False, pad=0.0, zorder=4, clip_on=True)
                 ax.add_artist(ab)
-
+            else:
+                # fallback: punto de color
+                col = {"W": "#2E7D32", "D": "#FBC02D", "L": "#C62828"}[rr["R"]]
+                ax.scatter([rr["Jornada"]], [rr["y"]], s=60, c=col, edgecolor="black", linewidths=0.7, zorder=3)
+    
         ax.set_yticks([0, 1, 2]); ax.set_yticklabels(["Derrota", "Empate", "Victoria"])
         ax.grid(True, axis="x", ls="--", lw=0.8, color=GRID, alpha=0.55)
         ax.set_xlim(0.5, max_j + 0.5); ax.set_ylim(-0.45, 2.45)
@@ -1496,6 +1491,7 @@ def plot_wdl_por_jornada(wdl_jornada_df: pd.DataFrame, eq_a: str, eq_b: str|None
         ax.tick_params(colors="#1F1F1F")
         for spine in ax.spines.values():
             spine.set_color("#1F1F1F")
+
 
     axes[-1].set_xticks(list(range(1, max_j + 1)))
     axes[-1].set_xlabel("Fecha (Jornada)", fontsize=12, color="#1F1F1F")
