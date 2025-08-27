@@ -3028,7 +3028,13 @@ with tab4:
         st.pyplot(fig_elo, use_container_width=True)
 
         # 4) W/D/L por jornada (dos bandas)
-        wdl_jornada_df = build_wdl_jornada(df_res_j[df_res_j["JornadaN"].le(j_corte)])
+        # df_res_j ya tiene JornadaN (viene de _build_jornada_index)
+        wdl_jornada_df = build_wdl_por_jornada(df_res_j[df_res_j["JornadaN"].le(j_corte)])
+        
+        # normalizo el nombre de la columna de resultado
+        if "Res" in wdl_jornada_df.columns and "R" not in wdl_jornada_df.columns:
+            wdl_jornada_df = wdl_jornada_df.rename(columns={"Res": "R"})
+
         eqs = sorted(wdl_jornada_df["Equipo"].unique())
         c1, c2 = st.columns(2)
         with c1:
