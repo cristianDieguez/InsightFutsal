@@ -20,6 +20,13 @@ import seaborn as sns
 from collections import Counter, defaultdict
 
 import streamlit as st
+APP_BUILD = "wdl-guard-v3"
+import time, pathlib
+try:
+    _mt = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(pathlib.Path(__file__).stat().st_mtime))
+except Exception:
+    _mt = "?"
+st.sidebar.markdown(f"🧪 **Build:** {APP_BUILD} — mtime: {_mt}")
 
 with st.sidebar.expander("⚙️ Debug"):
     if st.button("♻️ Forzar recarga (clear cache)"):
@@ -3046,8 +3053,11 @@ if menu == "🏆 Tabla & Resultados":
             st.pyplot(fig_elo, use_container_width=True)
     
             # 4) W/D/L por jornada (dos bandas)
-            wdl_jornada_df = build_wdl_por_jornada(df_res_j[df_res_j["JornadaN"].le(j_corte)])
-            
+            # wdl_jornada_df = build_wdl_por_jornada(df_res_j[df_res_j["JornadaN"].le(j_corte)])
+            src_wdl = df_res_j[df_res_j["JornadaN"].le(j_corte)]
+            wdl_jornada_df = (build_wdl_jornada(src_wdl) if "build_wdl_jornada" in globals()
+                              else build_wdl_por_jornada(src_wdl))
+
             eqs = sorted(wdl_jornada_df["Equipo"].unique())
             c1, c2 = st.columns(2)
             with c1:
