@@ -1332,18 +1332,20 @@ def plot_elo_por_jornada(elo_pivot: pd.DataFrame, equipos: list[str], max_j: int
             cur[2] = prev_y + min_gap
             ends[k] = tuple(cur)
 
+    LOGO_PX_ELO = 32  # probá 32–38 según tu gusto
+    
+    # ...
     for eq, x_end, y_end, col in ends:
-        oi = _logo_image_for(eq, zoom=0.07)
+        oi = _logo_image_for(eq, target_px=LOGO_PX_ELO)
         if oi is not None:
             ab = AnnotationBbox(oi, (max_j + 0.25, y_end), frameon=False,
-                                box_alignment=(0,0.5), pad=0.0, zorder=4)
+                                box_alignment=(0, 0.5), pad=0.0, zorder=4)
             ax.add_artist(ab)
         else:
-            # fallback: texto chico
-            ax.text(max_j + 0.10, y_end, eq.upper(),
-                    va="center", ha="left", fontsize=8.8, color=col,
-                    path_effects=[pe.withStroke(linewidth=3, foreground="white")],
-                    clip_on=False, zorder=3)
+            # fallback texto...
+            ax.text(max_j + 0.10, y_end, eq.upper(), va="center", ha="left", fontsize=8.8, color=col,
+                    path_effects=[pe.withStroke(linewidth=3, foreground="white")], clip_on=False, zorder=3)
+
 
     ax.set_xlim(0.5, max_j + 1.0)  # deja margen para logos
     ax.set_xticks(list(range(1, max_j + 1)))
@@ -1396,17 +1398,20 @@ build_wdl_jornada = build_wdl_por_jornada
 
 from matplotlib.offsetbox import OffsetImage, AnnotationBbox
 
-def _logo_image_for(team: str, zoom=0.065):
-    p = badge_path_for(team)  # ya la tenés en helpers
-    if not p: 
-        return None
+def _logo_image_for(team: str, target_px: int = 36, min_px: int = 28, max_px: int = 64):
+    p = badge_path_for(team)
+    if not p: return None
     try:
-        im = Image.open(p)
-        if im.mode != "RGBA": 
-            im = im.convert("RGBA")
-        return OffsetImage(np.array(im), zoom=zoom, interpolation="lanczos")
+        arr = load_any_image(p)
+        if TRIM_LOGO_BORDERS:
+            arr = trim_margins(arr, bg_tol=16)  # un poco más severo
+        h = np.clip(arr.shape[0], min_px, max_px)
+        zoom = float(target_px) / float(h)
+        return OffsetImage(arr, zoom=zoom, interpolation="lanczos")
     except Exception:
         return None
+
+
 
 def plot_wdl_por_jornada(wdl_jornada_df: pd.DataFrame, eq_a: str, eq_b: str|None, max_j: int) -> plt.Figure:
     BG = "#E8F5E9"; GRID = "#9E9E9E"
@@ -1443,18 +1448,19 @@ def plot_wdl_por_jornada(wdl_jornada_df: pd.DataFrame, eq_a: str, eq_b: str|None
 
         # línea de unión
         if not dd.empty:
-            ax.plot(dd["Jornada"], dd["y"], color="#455A64", lw=1.4, alpha=0.9, zorder=2)
+        ax.plot(dd["Jornada"], dd["y"], color="#455A64", lw=1.4, alpha=0.9, zorder=2)
 
-            # punto con escudo del RIVAL (fallback: círculo de color)
-            for _, rr in dd.iterrows():
-                oi = _logo_image_for(rr["Rival"], zoom=0.06)
-                if oi is not None:
-                    ab = AnnotationBbox(oi, (rr["Jornada"], rr["y"]), frameon=False, pad=0.0, zorder=4)
-                    ax.add_artist(ab)
-                else:
-                    col = {"W": COL_WIN, "D": COL_DRAW, "L": COL_LOSS}[rr["R"]]
-                    ax.scatter([rr["Jornada"]], [rr["y"]], s=110, c=col,
-                               edgecolor="black", linewidths=0.7, zorder=3)
+        target_px = LOGO_PX_WDL_DOUBLE if (d2 is not None) else LOGO_PX_WDL_SINGLE
+        for _, rr in dd.iterrows():
+            oi = _logo_image_for(rr["Rival"], target_px=target_px)
+            if oi is not None:
+                ab = AnnotationBbox(oi, (rr["Jornada"], rr["y"]),
+                                    frameon=False, pad=0.0, zorder=4, clip_on=True)
+                ax.add_artist(ab)
+            else:
+                # fallback: punto de color
+                col = {"W": "#2E7D32", "D": "#FBC02D", "L": "#C62828"}[rr["R"]]
+                ax.scatter([rr["Jornada"]], [rr["y"]], s=110, c=col, edgecolor="black", linewidths=0.7, zorder=3)
 
         ax.set_yticks([0, 1, 2]); ax.set_yticklabels(["Derrota", "Empate", "Victoria"])
         ax.grid(True, axis="x", ls="--", lw=0.8, color=GRID, alpha=0.55)
