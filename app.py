@@ -49,11 +49,11 @@ LOGO_Z_WDL_DOUBLE = 0.06
 WDL_MAX_LOGOS     = 18   # si hay más puntos que esto, usamos puntos en vez de logos
 
 # Tamaños de escudos (ajustables)
-LOGO_PX_ELO_DEFAULT = 12      # antes 32 (ELO más chico)
-LOGO_PX_WDL_SINGLE  = 14      # WDL cuando se muestra 1 equipo
-LOGO_PX_WDL_DOUBLE  = 12      # WDL cuando se muestran 2 equipos
+LOGO_PX_ELO_DEFAULT = 1      # antes 32 (ELO más chico)
+LOGO_PX_WDL_SINGLE  = 1      # WDL cuando se muestra 1 equipo
+LOGO_PX_WDL_DOUBLE  = 1      # WDL cuando se muestran 2 equipos
 
-RIGHT_MARGIN_ELO    = 0.45   # ELO: margen a la derecha (espacio para logos/etiquetas)
+RIGHT_MARGIN_ELO    = 0.05   # ELO: margen a la derecha (espacio para logos/etiquetas)
 MIN_GAP_ELO         = 2.5    # ELO: separación vertical mínima entre logos
 
 BANNER_H   = 0.145
