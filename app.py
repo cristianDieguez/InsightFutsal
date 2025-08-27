@@ -175,17 +175,73 @@ def draw_logo(ax, path, cx, cy, width):
     aspect = h / w if w else 1.0
     ax.imshow(img, extent=[cx - width/2, cx + width/2, cy - (width*aspect)/2, cy + (width*aspect)/2], zorder=6)
 
+# === Normalización y alias de nombres de equipos ===
+def _norm_key(s: str) -> str:
+    s = unicodedata.normalize("NFD", str(s))
+    s = "".join(ch for ch in s if unicodedata.category(ch) != "Mn")
+    s = re.sub(r"[^a-z0-9]+", " ", s.lower()).strip()
+    return re.sub(r"\s+", " ", s)
+
+# Si tu filename no coincide 1:1 con el nombre de la tabla, mapealo acá.
+BADGE_ALIASES = {
+    "FERRO CARRIL OESTE": "ferro",                # si el archivo es images/equipos/ferro.png
+    "VELEZ SARSFIELD":   "velez sarsfield",
+    "UNION EZPELETA":    "union ezpeleta",
+    "SAN LORENZO":       "san lorenzo",
+    "RIVER PLATE":       "river plate",
+    "BOCA JUNIORS":      "boca juniors",
+    "SOCIEDAD HEBRAICA": "sociedad hebraica",
+    "FRANJA DE ORO":     "franja de oro",
+    "INDEPENDIENTE (A)": "independiente a",
+    "MIRIÑAQUE":         "mirinaque",             # por la ñ → n, si tu archivo está sin tilde
+    "17 DE AGOSTO":      "17 de agosto",
+    "KIMBERLEY":         "kimberley",
+    "PINOCHO":           "pinocho",
+    "VILLA MODELO":      "villa modelo",
+    "CISSAB":            "cissab",
+}
+
+_BADGE_INDEX: dict[str, str] | None = None
+
+def _build_badge_index() -> dict[str, str]:
+    idx = {}
+    if not os.path.isdir(BADGE_DIR):
+        return idx
+    exts = ("*.png","*.jpg","*.jpeg","*.webp","*.svg")
+    files = []
+    for e in exts:
+        files.extend(glob.glob(os.path.join(BADGE_DIR, e)))
+    for p in files:
+        stem = os.path.splitext(os.path.basename(p))[0]
+        k = _norm_key(stem)
+        idx[k] = p
+        # Variantes típicas
+        idx[_norm_key(stem.replace("_"," "))] = p
+        idx[_norm_key(stem.replace("-"," "))] = p
+        idx[_norm_key(re.sub(r"\bclub\b","", stem))] = p
+    # Aplicar ALIASES si el destino existe en el index
+    for src, dst in BADGE_ALIASES.items():
+        dst_key = _norm_key(dst)
+        if dst_key in idx:
+            idx[_norm_key(src)] = idx[dst_key]
+    return idx
+
 def badge_path_for(name: str) -> Optional[str]:
-    nm = name.strip().lower()
-    cands = [
-        os.path.join(BADGE_DIR, f"{nm}.png"), os.path.join(BADGE_DIR, f"{nm}.jpg"),
-        os.path.join(BADGE_DIR, f"{nm.replace(' ','_')}.png"),
-        os.path.join(BADGE_DIR, f"{nm.replace(' ','')}.png"),
-        os.path.join(BADGE_DIR, f"{nm.replace(' ','-')}.png"),
-    ]
-    for p in cands:
-        if os.path.isfile(p): return p
+    """Devuelve el path del escudo para 'name' buscando en images/equipos."""
+    global _BADGE_INDEX
+    if _BADGE_INDEX is None:
+        _BADGE_INDEX = _build_badge_index()
+    if not name:
+        return None
+    k = _norm_key(name)
+    if k in _BADGE_INDEX:
+        return _BADGE_INDEX[k]
+    # Fallback suave: substring match
+    for kk, path in _BADGE_INDEX.items():
+        if k in kk or kk in k:
+            return path
     return None
+
 
 # =========================
 # CANCHA (UNIFICADA 35x20)
@@ -3028,18 +3084,14 @@ if menu == "🏆 Tabla & Resultados":
             df_res_j, _ = _build_jornada_index(df_res)
             d_ok = df_res_j.dropna(subset=["JornadaN","Goles Local","Goles Visitante"]).copy()
             
-            # equipos presentes en el dataset
-            teams = pd.unique(pd.concat([d_ok["Equipo Local"], d_ok["Equipo Visitante"]], ignore_index=True))
+            # Máximo de jornadas observado (y forzá 15 si tu torneo tiene 15)
+            J_MAX = pd.to_numeric(d_ok["JornadaN"], errors="coerce").dropna()
+            J_MAX = int(J_MAX.max()) if not J_MAX.empty else 1
+            J_MAX = max(15, J_MAX)  # dejalo en 15 si ese es tu total real
             
-            def _cnt_distinct_jornadas(team: str) -> int:
-                m = (d_ok["Equipo Local"].eq(team)) | (d_ok["Equipo Visitante"].eq(team))
-                return int(d_ok.loc[m, "JornadaN"].nunique())
-            
-            # máximo “parejo” (todos al menos con esa cantidad de jornadas)
-            max_uniform = int(min([_cnt_distinct_jornadas(t) for t in teams], default=1))
-            
-            j_corte = st.slider("Corte por fecha (Jornada)", min_value=1, max_value=max_uniform, value=max_uniform)
-            st.caption(f"Mostrando hasta la jornada {j_corte} (PJ parejos para todos).")
+            j_corte = st.slider("Corte por fecha (Jornada)", min_value=1, max_value=J_MAX, value=J_MAX, step=1)
+            st.caption(f"Mostrando hasta la jornada {j_corte}.")
+
             
             # 2) TABLA a la jornada (PJ parejos) y sin recorte por fecha real
             df_fecha = tabla_a_jornada(df_res, j_corte)
