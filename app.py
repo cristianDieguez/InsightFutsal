@@ -332,42 +332,46 @@ def cargar_datos_nacsport(xml_path: str) -> pd.DataFrame:
 # ------ para estadísticas de partido ------
 def parse_possession_from_equipo(xml_path: str) -> Tuple[float, float]:
     """
-    Lee el XML (NacSport o TotalValues) y suma los tramos de:
-      - 'Tiempo Posesion Ferro' / 'Tiempo Posecion Ferro'
-      - 'Tiempo Posesion Rival' / 'Tiempo Posecion Rival'
-    Devuelve (FERRO%, RIVAL%) con 1 decimal.
+    Lee del XML los códigos de posesión escritos como:
+      - 'Tiempo Posesión Ferro' / 'Tiempo Posecion Ferro'
+      - 'Tiempo Posesión Rival' / 'Tiempo Posecion Rival'
+    (con o sin tilde, mayúsculas, espacios extra).
+    Devuelve (posesión_ferro_pct, posesión_rival_pct).
     """
     if not xml_path or not os.path.isfile(xml_path):
         return 0.0, 0.0
 
-    pat_ferro = re.compile(r"^tiempo\s*pose[cs]ion\s*ferro$", re.I)
-    pat_rival = re.compile(r"^tiempo\s*pose[cs]ion\s*rival$", re.I)
-
-    def norm(s: str) -> str:
-        s = _strip_accents(s or "").lower()
-        return re.sub(r"\s+", " ", s).strip()
+    try:
+        root = ET.parse(xml_path).getroot()
+    except Exception:
+        return 0.0, 0.0
 
     t_ferro = 0.0
     t_rival = 0.0
 
-    root = ET.parse(xml_path).getroot()
     for inst in root.findall(".//instance"):
-        code_raw = inst.findtext("code") or ""
-        code = norm(code_raw)
+        # normaliza: sin tildes, minúscula y colapsa espacios
+        raw = inst.findtext("code") or ""
+        code = re.sub(r"\s+", " ", nlower(raw)).strip()
+
+        # duraciones
         try:
             stt = float(inst.findtext("start") or "0")
             enn = float(inst.findtext("end") or "0")
         except Exception:
             continue
         dur = max(0.0, enn - stt)
-        if pat_ferro.match(code):
+
+        # acepta 'posesion' y 'posecion'
+        if code in {"tiempo posesion ferro", "tiempo posecion ferro"}:
             t_ferro += dur
-        elif pat_rival.match(code):
+        elif code in {"tiempo posesion rival", "tiempo posecion rival"}:
             t_rival += dur
 
     tot = t_ferro + t_rival
     if tot <= 0:
         return 0.0, 0.0
+
     return round(100.0 * t_ferro / tot, 1), round(100.0 * t_rival / tot, 1)
 
 def load_matrix(path: str) -> Tuple[pd.DataFrame, str, Dict[str,str]]:
