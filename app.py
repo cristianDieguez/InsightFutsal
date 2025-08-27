@@ -19,30 +19,6 @@ from PIL import Image
 import seaborn as sns
 from collections import Counter, defaultdict
 
-import streamlit as st
-APP_BUILD = "wdl-guard-v3"
-import time, pathlib
-try:
-    _mt = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(pathlib.Path(__file__).stat().st_mtime))
-except Exception:
-    _mt = "?"
-st.sidebar.markdown(f"🧪 **Build:** {APP_BUILD} — mtime: {_mt}")
-
-with st.sidebar.expander("⚙️ Debug"):
-    if st.button("♻️ Clear cache"):
-        try:
-            st.cache_data.clear()
-        except Exception:
-            pass
-        try:
-            st.cache_resource.clear()
-        except Exception:
-            pass
-        try:
-            st.rerun()
-        except Exception:
-            st.experimental_rerun()
-
 # =========================
 # CONFIG / ESTILO
 # =========================
