@@ -1225,51 +1225,87 @@ def _compute_elo_by_jornada(df_res_cut: pd.DataFrame, base_elo: float = 1000.0, 
 
 
 # --------- Plot: ELO por jornada (con etiquetas al final, sin leyenda lateral) ----------
-def plot_elo_por_jornada(elo_pivot: pd.DataFrame, equipos: list[str] | None, max_j: int) -> plt.Figure:
+from matplotlib import patheffects as pe
+
+def plot_elo_por_jornada(elo_pivot: pd.DataFrame, equipos: list[str], max_j: int) -> plt.Figure:
     """
-    Curvas ELO por jornada con fondo verde claro y etiquetas al final.
-    'equipos' controla qué líneas se dibujan (None o vacío = todas).
+    Curvas ELO por jornada con:
+      - fondo verde MUY claro
+      - etiquetas al final (tamaño más chico) y con leve 'jitter' para evitar solapes
     """
-    BG = "#E8F5E9"     # verde muy claro (contraste)
+    BG   = "#E8F5E9"   # verde muy claro
     GRID = "#9E9E9E"
 
+    if elo_pivot.empty:
+        fig, ax = plt.subplots(figsize=(8,4))
+        ax.text(0.5, 0.5, "Sin datos", ha="center", va="center")
+        return fig
+
+    # Equipos a mostrar
     if not equipos:
         equipos = list(elo_pivot.columns)
 
-    # trayectorias dentro del corte
+    # Trayectorias dentro del corte
     traj: dict[str, list[tuple[int, float]]] = {}
     for eq in equipos:
-        s = pd.to_numeric(elo_pivot[eq], errors="coerce").dropna()
+        if eq not in elo_pivot.columns: 
+            continue
+        s = elo_pivot[eq].dropna()
         s = s[s.index <= max_j]
         if not s.empty:
             traj[eq] = list(zip(s.index.tolist(), s.values.tolist()))
 
-    fig, ax = plt.subplots(figsize=(10.5, 6.6))
+    fig, ax = plt.subplots(figsize=(11.5, 6.4))
     fig.patch.set_facecolor(BG)
     ax.set_facecolor(BG)
 
     palette = plt.cm.tab20(np.linspace(0, 1, max(20, len(traj))))
+
+    # Dibujo líneas
     for i, (eq, pts) in enumerate(traj.items()):
         xs = [x for (x, _) in pts]
         ys = [y for (_, y) in pts]
         if not xs:
             continue
         col = palette[i % len(palette)]
-        ax.plot(xs, ys, lw=2.2, color=col, zorder=2)
-        x_end, y_end = xs[-1], ys[-1]
+        ax.plot(xs, ys, lw=2.0, color=col, zorder=2)
+
+    # Etiquetas al final con leve separación para que no se pisen
+    ends = []
+    for i, (eq, pts) in enumerate(traj.items()):
+        xs = [x for (x, _) in pts]
+        ys = [y for (_, y) in pts]
+        if xs:
+            ends.append((eq, xs[-1], ys[-1], palette[i % len(palette)]))
+
+    # Ordeno por Y y hago 'jitter' mínimo
+    ends.sort(key=lambda t: t[2])
+    min_gap = 7.0     # puntos de ELO mínimos entre etiquetas
+    for k in range(1, len(ends)):
+        prev_y = ends[k-1][2]
+        cur    = list(ends[k])
+        if cur[2] - prev_y < min_gap:
+            cur[2] = prev_y + min_gap
+            ends[k] = tuple(cur)
+
+    for eq, x_end, y_end, col in ends:
         ax.text(
             max_j + 0.1, y_end, eq.upper(),
-            va="center", ha="left", fontsize=10.5, color=col,
-            path_effects=[pe.withStroke(linewidth=3, foreground="white")]
+            va="center", ha="left",
+            fontsize=9.2, color=col,
+            path_effects=[pe.withStroke(linewidth=3, foreground="white")],
+            clip_on=False, zorder=3
         )
 
-    ax.set_xlim(0.5, max_j + 1.4)                 # espacio para etiquetas finales
+    ax.set_xlim(0.5, max_j + 1.3)
     ax.set_xticks(list(range(1, max_j + 1)))
     ax.set_xlabel("Fecha (Jornada)", fontsize=12, color="#1F1F1F")
     ax.set_ylabel("Índice ELO", fontsize=12, color="#1F1F1F")
     ax.tick_params(colors="#1F1F1F")
     ax.grid(True, ls="--", lw=0.8, color=GRID, alpha=0.55)
+
     return fig
+
 
 
 # --------- W/D/L por jornada ----------
@@ -1309,69 +1345,71 @@ def build_wdl_por_jornada(df_res: pd.DataFrame) -> pd.DataFrame:
     return out.sort_values(["Equipo", "Jornada"]).reset_index(drop=True)
 
 
-def plot_wdl_por_jornada(df_res: pd.DataFrame, eq_a: str, eq_b: str | None, max_j: int) -> plt.Figure:
-    """
-    Dos bandas (una por equipo) con W/D/L por JORNADA.
-    - Fondo verde claro.
-    - Ticks 1..max_j.
-    - Puntos completos (márgenes x) + línea conectora.
-    - Colores: verde victoria, amarillo empate, rojo derrota.
-    """
+def plot_wdl_por_jornada(wdl_jornada_df: pd.DataFrame, eq_a: str, eq_b: str|None, max_j: int) -> plt.Figure:
     BG = "#E8F5E9"
     GRID = "#9E9E9E"
-    COL = {"W": "#2E7D32", "D": "#FBC02D", "L": "#C62828"}
+    COL_WIN, COL_DRAW, COL_LOSS = "#2E7D32", "#FBC02D", "#C62828"
     MAP_Y = {"L": 0, "D": 1, "W": 2}
 
-    wdl = build_wdl_por_jornada(df_res)
-
-    def _prep(eq: str) -> pd.DataFrame:
-        d = (wdl[wdl["Equipo"] == eq]
+    def _prep(eq):
+        d = (wdl_jornada_df[wdl_jornada_df["Equipo"] == eq]
              .sort_values("Jornada")
-             .loc[:, ["Jornada", "Res"]]
-             .dropna())
+             .loc[:, ["Jornada", "R"]].dropna())
         d = d[d["Jornada"] <= max_j]
-        d["y"] = d["Res"].map(MAP_Y)
-        d["c"] = d["Res"].map(COL)
+        if d.empty:
+            return d.assign(y=[])
+        d["y"] = d["R"].map(MAP_Y)
         return d
 
     d1 = _prep(eq_a)
     d2 = _prep(eq_b) if (eq_b and eq_b != "(ninguno)") else None
 
-    nrows = 2 if d2 is not None else 1
-    fig, axes = plt.subplots(nrows=nrows, ncols=1,
-                             figsize=(11, 6 if nrows == 2 else 3.8),
-                             sharex=True)
-    if nrows == 1:
-        axes = [axes]
+    fig, axes = plt.subplots(
+        nrows=2 if d2 is not None else 1, ncols=1,
+        figsize=(12, 6 if d2 is not None else 3.8),
+        sharex=True
+    )
+    if not isinstance(axes, np.ndarray):
+        axes = np.array([axes])
 
-    def _draw(ax, dd: pd.DataFrame, titulo: str):
+    for ax_idx, (eq, dd) in enumerate([(eq_a, d1), (eq_b, d2)]):
+        if dd is None:
+            continue
+        ax = axes[ax_idx]
         fig.patch.set_facecolor(BG)
         ax.set_facecolor(BG)
+
         if not dd.empty:
-            ax.plot(dd["Jornada"], dd["y"], color="#455A64", lw=1.6, alpha=0.9, zorder=2)
-            ax.scatter(dd["Jornada"], dd["y"], s=100, c=dd["c"],
-                       edgecolor="black", linewidths=0.6,
+            colors = dd["R"].map({"W": COL_WIN, "D": COL_DRAW, "L": COL_LOSS})
+            ax.scatter(dd["Jornada"], dd["y"], s=110, c=colors,
+                       edgecolor="black", linewidths=0.7,
                        zorder=3, clip_on=False)
-        ax.set_yticks([0, 1, 2], ["Derrota", "Empate", "Victoria"])
+            ax.plot(dd["Jornada"], dd["y"], color="#455A64", lw=1.6, alpha=0.9, zorder=2)
+
+        ax.set_yticks([0, 1, 2])
+        ax.set_yticklabels(["Derrota", "Empate", "Victoria"])
         ax.grid(True, axis="x", ls="--", lw=0.8, color=GRID, alpha=0.55)
-        ax.set_xlim(0.5, max_j + 0.5)   # puntos extremos visibles
+        ax.set_xlim(0.5, max_j + 0.5)   # puntos extremos visibles completos
         ax.set_ylim(-0.45, 2.45)
-        ax.set_title(titulo.upper(), pad=6, fontsize=12, color="#1F1F1F")
+        ax.set_title(eq.upper(), pad=6, fontsize=12, color="#1F1F1F")
         ax.tick_params(colors="#1F1F1F")
-        for s in ax.spines.values():
-            s.set_color("#1F1F1F")
+        for spine in ax.spines.values():
+            spine.set_color("#1F1F1F")
 
-    _draw(axes[0], d1, eq_a)
-    if d2 is not None:
-        _draw(axes[1], d2, eq_b)
-
-    axes[-1].set_xticks(list(range(1, max_j + 1)))
+    axes[-1].set_xticks(list(range(1, max_j + 1)))   # solo números (1..N)
     axes[-1].set_xlabel("Fecha (Jornada)", fontsize=12, color="#1F1F1F")
-
     plt.tight_layout()
     return fig
 
-
+def tabla_a_jornada(df_res: pd.DataFrame, j_corte: int) -> pd.DataFrame:
+    """
+    Reutiliza tu 'tabla_a_fecha' pero cortando por número de jornada (1..N).
+    Asegura PJ parejos hasta la jornada seleccionada.
+    """
+    d_j, _ = _build_jornada_index(df_res)
+    d_cut = d_j[d_j["JornadaN"].le(j_corte)].copy()
+    # Le paso un corte 'enorme' para que adentro no vuelva a filtrar por fecha
+    return tabla_a_fecha(d_cut, pd.Timestamp.max)
 
 # =========================
 # UI — MENÚ
@@ -2968,57 +3006,41 @@ if menu == "🏆 Tabla & Resultados":
             st.dataframe(d, use_container_width=True, height=max(140, 38 * (len(d) + 1)))
 
     # --- TAB 4: TABLA FECHA A FECHA + ELO + W/D/L ---
-    with tab4:
-        if df_res.empty:
-            st.info("Aún no hay partidos finalizados para construir la tabla por fecha.")
-        else:
-            min_d = df_res["Fecha Técnica"].min().date()
-            max_d = df_res["Fecha Técnica"].max().date()
-            corte = st.slider("Corte temporal", min_value=min_d, max_value=max_d, value=max_d)
-            corte_ts = pd.to_datetime(corte)
+    # --- TAB 4: TABLA FECHA A FECHA + ELO + W/D/L ---
+with tab4:
+    if df_res.empty:
+        st.info("Aún no hay partidos finalizados para construir la tabla por fecha.")
+    else:
+        # 1) Slider por JORNADA
+        df_res_j, _ = _build_jornada_index(df_res)
+        max_j = int(df_res_j["JornadaN"].max())
+        j_corte = st.slider("Corte por fecha (Jornada)", min_value=1, max_value=max_j, value=max_j)
 
-            # Tabla a la fecha (con Movimiento y Racha)
-            df_fecha = tabla_a_fecha(df_res, corte_ts)
-            show_full_table(df_fecha)
+        # 2) TABLA a la jornada (PJ parejos) y sin recorte por fecha real
+        df_fecha = tabla_a_jornada(df_res, j_corte)
+        show_full_table(df_fecha)   # tu helper que evita el scroll vertical
 
-            # ======== NUEVO: todo sincronizado con el MISMO corte, por JORNADA =========
-            
-            # 1) JornadaN
-            df_res_j, jid2n = _build_jornada_index(df_res)
-            
-            # 2) Cortar por el slider (misma lógica que la tabla)
-            df_res_cut = df_res_j[df_res_j["Fecha Técnica"] <= corte_ts].copy()
-            if df_res_cut.empty or not df_res_cut["JornadaN"].notna().any():
-                st.info("Sin partidos con Jornada asignada hasta el corte temporal seleccionado.")
-            else:
-                max_j = int(np.nanmax(df_res_cut["JornadaN"]))
-            
-                # -- ELO por JORNADA (robusto si no hay datos) --
-                st.markdown("**Evolución del índice ELO por Jornada**")
-                elo_pivot = _compute_elo_by_jornada(df_res_cut)  # DataFrame (o vacío)
-            
-                if isinstance(elo_pivot, pd.DataFrame) and not elo_pivot.empty:
-                    equipos_all = list(elo_pivot.columns)
-                    default_sel = equipos_all  # todos por defecto
-                    sel_equipos = st.multiselect("Equipos a mostrar en el ELO", equipos_all, default=default_sel)
-                    fig_elo = plot_elo_por_jornada(elo_pivot, sel_equipos, max_j)
-                    st.pyplot(fig_elo, use_container_width=True)
-                else:
-                    st.info("No hay suficiente información para graficar ELO en el rango seleccionado.")
-            
-                # -- W/D/L por JORNADA --
-                equipos_res = sorted(pd.unique(pd.concat([df_res_cut["Equipo Local"], df_res_cut["Equipo Visitante"]])))
-                cA, cB = st.columns(2)
-                with cA:
-                    eq1 = st.selectbox("Equipo A", equipos_res, index=0)
-                with cB:
-                    eq2_raw = st.selectbox("Equipo B (opcional)", ["(ninguno)"] + equipos_res, index=0)
-                    eq2 = None if eq2_raw == "(ninguno)" else eq2_raw
-            
-                fig_wdl = plot_wdl_por_jornada(df_res_cut, eq1, eq2, max_j)
-                st.pyplot(fig_wdl, use_container_width=True)
+        # 3) ELO por jornada (mismo corte), con multiselect
+        elo_pivot = _compute_elo_by_jornada(df_res_j[df_res_j["JornadaN"].le(j_corte)])
+        equipos_all = list(elo_pivot.columns)
+        sel_equipos = st.multiselect("Equipos a mostrar en el ELO", options=equipos_all, default=equipos_all)
+        fig_elo = plot_elo_por_jornada(elo_pivot, sel_equipos, j_corte)
+        st.pyplot(fig_elo, use_container_width=True)
 
+        # 4) W/D/L por jornada (dos bandas)
+        wdl_jornada_df = build_wdl_jornada(df_res_j[df_res_j["JornadaN"].le(j_corte)])
+        eqs = sorted(wdl_jornada_df["Equipo"].unique())
+        c1, c2 = st.columns(2)
+        with c1:
+            eq1 = st.selectbox("Equipo A", eqs, index=0)
+        with c2:
+            eq2 = st.selectbox("Equipo B (opcional)", ["(ninguno)"] + eqs, index=0)
 
-
-
+        fig_wdl = plot_wdl_por_jornada(
+            wdl_jornada_df,
+            eq1,
+            None if eq2 == "(ninguno)" else eq2,
+            j_corte
+        )
+        st.pyplot(fig_wdl, use_container_width=True)
 
