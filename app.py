@@ -53,6 +53,9 @@ LOGO_PX_ELO_DEFAULT = 14      # antes 32 (ELO más chico)
 LOGO_PX_WDL_SINGLE  = 14      # WDL cuando se muestra 1 equipo
 LOGO_PX_WDL_DOUBLE  = 12      # WDL cuando se muestran 2 equipos
 
+RIGHT_MARGIN_ELO    = 0.55   # ELO: margen a la derecha (espacio para logos/etiquetas)
+MIN_GAP_ELO         = 3.0    # ELO: separación vertical mínima entre logos
+
 BANNER_H   = 0.145
 LOGO_W     = 0.118
 TITLE_FS   = 32
@@ -1343,7 +1346,8 @@ def plot_elo_por_jornada(
             ends[k][2] = ends[k-1][2] + min_gap
 
     for eq, _, y_end, col in ends:
-        oi = _logo_image_for(eq, target_px=LOGO_PX_ELO_DEFAULT)  # <-- tamaño
+        min_gap = MIN_GAP_ELO
+        ax.set_xlim(0.5, max_j + RIGHT_MARGIN_ELO)
         x_logo = max_j + 0.15
         if oi is not None:
             ab = AnnotationBbox(oi, (x_logo, y_end),
@@ -1470,8 +1474,6 @@ def plot_wdl_por_jornada(wdl_jornada_df: pd.DataFrame, eq_a: str, eq_b: str|None
     
         # ⬇️ tamaños de escudos para este panel
         target_px = LOGO_PX_WDL_DOUBLE if (d2 is not None) else LOGO_PX_WDL_SINGLE
-    
-        # puntos / logos
         for _, rr in dd.iterrows():
             oi = _logo_image_for(rr["Rival"], target_px=target_px)
             if oi is not None:
@@ -1479,9 +1481,9 @@ def plot_wdl_por_jornada(wdl_jornada_df: pd.DataFrame, eq_a: str, eq_b: str|None
                                     frameon=False, pad=0.0, zorder=4, clip_on=True)
                 ax.add_artist(ab)
             else:
-                # fallback: punto de color
                 col = {"W": "#2E7D32", "D": "#FBC02D", "L": "#C62828"}[rr["R"]]
-                ax.scatter([rr["Jornada"]], [rr["y"]], s=60, c=col, edgecolor="black", linewidths=0.7, zorder=3)
+                ax.scatter([rr["Jornada"]], [rr["y"]], s=90, c=col, edgecolor="black", linewidths=0.7, zorder=3)
+
     
         ax.set_yticks([0, 1, 2]); ax.set_yticklabels(["Derrota", "Empate", "Victoria"])
         ax.grid(True, axis="x", ls="--", lw=0.8, color=GRID, alpha=0.55)
