@@ -41,6 +41,10 @@ BAR_HEIGHT_FACTOR  = 0.36
 LABEL_Y_SHIFT_LOW  = 0.60
 LABEL_Y_SHIFT_HIGH = 0.37
 TRIM_LOGO_BORDERS  = True
+# Tamaños de escudos (ajustables)
+LOGO_PX_ELO_DEFAULT = 26      # antes 32 (ELO más chico)
+LOGO_PX_WDL_SINGLE  = 42      # WDL cuando se muestra 1 equipo
+LOGO_PX_WDL_DOUBLE  = 34      # WDL cuando se muestran 2 equipos
 
 BANNER_H   = 0.145
 LOGO_W     = 0.118
@@ -1285,6 +1289,8 @@ from matplotlib.offsetbox import OffsetImage, AnnotationBbox
 
 def plot_elo_por_jornada(elo_pivot: pd.DataFrame, equipos: list[str], max_j: int) -> plt.Figure:
     BG   = "#E8F5E9"; GRID = "#9E9E9E"
+    # LOGO_PX_ELO = 32  # <- BORRÁ esta si la tenés
+    LOGO_PX_ELO = LOGO_PX_ELO_DEFAULT  # usa el global definido arriba (26 por defecto)
 
     if elo_pivot.empty:
         fig, ax = plt.subplots(figsize=(8,4))
@@ -1331,8 +1337,6 @@ def plot_elo_por_jornada(elo_pivot: pd.DataFrame, equipos: list[str], max_j: int
         if cur[2] - prev_y < min_gap:
             cur[2] = prev_y + min_gap
             ends[k] = tuple(cur)
-
-    LOGO_PX_ELO = 32  # probá 32–38 según tu gusto
     
     # ...
     for eq, x_end, y_end, col in ends:
@@ -1411,7 +1415,7 @@ def _logo_image_for(team: str, target_px: int = 36, min_px: int = 28, max_px: in
     except Exception:
         return None
 
-
+from matplotlib.offsetbox import OffsetImage, AnnotationBbox
 
 def plot_wdl_por_jornada(wdl_jornada_df: pd.DataFrame, eq_a: str, eq_b: str|None, max_j: int) -> plt.Figure:
     BG = "#E8F5E9"; GRID = "#9E9E9E"
@@ -1423,10 +1427,7 @@ def plot_wdl_por_jornada(wdl_jornada_df: pd.DataFrame, eq_a: str, eq_b: str|None
              .sort_values("Jornada")
              .loc[:, ["Jornada","R","Rival"]].dropna(subset=["Jornada","R"]))
         d = d[d["Jornada"] <= max_j]
-        if d.empty: 
-            d = d.assign(y=[])
-        else:
-            d["y"] = d["R"].map(MAP_Y)
+        d["y"] = d["R"].map(MAP_Y) if not d.empty else []
         return d
 
     d1 = _prep(eq_a)
@@ -1443,28 +1444,34 @@ def plot_wdl_por_jornada(wdl_jornada_df: pd.DataFrame, eq_a: str, eq_b: str|None
     for ax_idx, (eq, dd) in enumerate([(eq_a, d1), (eq_b, d2)]):
         if dd is None:
             continue
+
         ax = axes[ax_idx]
-        fig.patch.set_facecolor(BG); ax.set_facecolor(BG)
+        fig.patch.set_facecolor(BG)
+        ax.set_facecolor(BG)
 
-        # línea de unión
+        # --- LÍNEA DE UNIÓN (acá estaba la indentación mala) ---
         if not dd.empty:
-        ax.plot(dd["Jornada"], dd["y"], color="#455A64", lw=1.4, alpha=0.9, zorder=2)
+            ax.plot(dd["Jornada"], dd["y"], color="#455A64", lw=1.4, alpha=0.9, zorder=2)
 
-        target_px = LOGO_PX_WDL_DOUBLE if (d2 is not None) else LOGO_PX_WDL_SINGLE
-        for _, rr in dd.iterrows():
-            oi = _logo_image_for(rr["Rival"], target_px=target_px)
-            if oi is not None:
-                ab = AnnotationBbox(oi, (rr["Jornada"], rr["y"]),
-                                    frameon=False, pad=0.0, zorder=4, clip_on=True)
-                ax.add_artist(ab)
-            else:
-                # fallback: punto de color
-                col = {"W": "#2E7D32", "D": "#FBC02D", "L": "#C62828"}[rr["R"]]
-                ax.scatter([rr["Jornada"]], [rr["y"]], s=110, c=col, edgecolor="black", linewidths=0.7, zorder=3)
+            # Escudo del rival en cada jornada
+            target_px = LOGO_PX_WDL_DOUBLE if (d2 is not None) else LOGO_PX_WDL_SINGLE
+            for _, rr in dd.iterrows():
+                oi = _logo_image_for(rr["Rival"], target_px=target_px)
+                if oi is not None:
+                    ab = AnnotationBbox(oi, (rr["Jornada"], rr["y"]),
+                                        frameon=False, pad=0.0, zorder=4, clip_on=True)
+                    ax.add_artist(ab)
+                else:
+                    col = {"W": COL_WIN, "D": COL_DRAW, "L": COL_LOSS}[rr["R"]]
+                    ax.scatter([rr["Jornada"]], [rr["y"]],
+                               s=110, c=col, edgecolor="black", linewidths=0.7, zorder=3)
 
-        ax.set_yticks([0, 1, 2]); ax.set_yticklabels(["Derrota", "Empate", "Victoria"])
+        # Ejes
+        ax.set_yticks([0, 1, 2])
+        ax.set_yticklabels(["Derrota", "Empate", "Victoria"])
         ax.grid(True, axis="x", ls="--", lw=0.8, color=GRID, alpha=0.55)
-        ax.set_xlim(0.5, max_j + 0.5); ax.set_ylim(-0.45, 2.45)
+        ax.set_xlim(0.5, max_j + 0.5)
+        ax.set_ylim(-0.45, 2.45)
         ax.set_title(eq.upper(), pad=6, fontsize=12, color="#1F1F1F")
         ax.tick_params(colors="#1F1F1F")
         for spine in ax.spines.values():
@@ -1474,7 +1481,6 @@ def plot_wdl_por_jornada(wdl_jornada_df: pd.DataFrame, eq_a: str, eq_b: str|None
     axes[-1].set_xlabel("Fecha (Jornada)", fontsize=12, color="#1F1F1F")
     plt.tight_layout()
     return fig
-
 
 def tabla_a_jornada(df_res: pd.DataFrame, j_corte: int) -> pd.DataFrame:
     """
