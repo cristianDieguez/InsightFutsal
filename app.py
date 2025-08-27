@@ -1780,14 +1780,28 @@ if menu == "📊 Estadísticas de partido":
 
     # Después (para menús que usan XML de jugadores, p.ej. Mapa de tiros)
     match = get_match_by_label(sel)
-    XML_PATH = match["xml_players"] if match else None
-    # (si necesitás Matrix, podés seguir usando match["matrix_path"] si existe)
-    MATRIX_PATH = match["matrix_path"] if match else None
-
-    # 1) Posesión
-    pos_m, pos_r = parse_possession_from_equipo(XML_PATH) if XML_PATH else (0.0, 0.0)
+    # --- Elegir automáticamente el XML para POSESIÓN: primero TotalValues, luego NacSport ---
+    XML_TV, _ = infer_paths_for_label(sel)           # ... - XML TotalValues.xml
+    XML_NS    = match["xml_players"] if match else None  # suele ser ... - XML NacSport.xml
     
-    # 2) Matrix
+    candidatos = [p for p in [XML_TV, XML_NS] if p and os.path.isfile(p)]
+    
+    def _tiene_posesion(xmlp: str) -> bool:
+        pm, pr = parse_possession_from_equipo(xmlp)
+        return (pm + pr) > 0
+    
+    POS_XML = None
+    for p in candidatos:          # intenta en orden: TotalValues -> NacSport
+        if _tiene_posesion(p):
+            POS_XML = p
+            break
+    if POS_XML is None and candidatos:
+        POS_XML = candidatos[0]   # último recurso
+    
+    # 1) Posesión
+    pos_m, pos_r = parse_possession_from_equipo(POS_XML) if POS_XML else (0.0, 0.0)
+    
+    # 2) Matrix (igual que tenías)
     if MATRIX_PATH and os.path.isfile(MATRIX_PATH):
         try:
             mx = compute_from_matrix(MATRIX_PATH)
@@ -1798,14 +1812,14 @@ if menu == "📊 Estadísticas de partido":
     else:
         FERRO, RIVAL = {}, {}
     
-    # 👉 inyectar posesión en los dicts que usa el panel
+    # Inyectar posesión y dibujar
     FERRO["Posesión %"] = pos_m
     RIVAL["Posesión %"] = pos_r
     
-    # 3) Dibujar panel
     ferro_logo = badge_path_for("ferro")
     rival_logo = badge_path_for(rival)
     draw_key_stats_panel("Ferro", rival, FERRO, RIVAL, ferro_logo, rival_logo)
+
 
 
 
