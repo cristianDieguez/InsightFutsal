@@ -41,6 +41,11 @@ BAR_HEIGHT_FACTOR  = 0.36
 LABEL_Y_SHIFT_LOW  = 0.60
 LABEL_Y_SHIFT_HIGH = 0.37
 TRIM_LOGO_BORDERS  = True
+# --- Tamaños/zoom de escudos (ajustables rápido) ---
+LOGO_Z_ELO        = 0.11   # ELO (borde derecho). Probar 0.09–0.14
+LOGO_Z_WDL_SINGLE = 0.18   # WDL cuando se grafica un equipo
+LOGO_Z_WDL_DOUBLE = 0.15   # WDL cuando se grafican dos equipos
+
 # Tamaños de escudos (ajustables)
 LOGO_PX_ELO_DEFAULT = 26      # antes 32 (ELO más chico)
 LOGO_PX_WDL_SINGLE  = 42      # WDL cuando se muestra 1 equipo
@@ -1340,7 +1345,7 @@ def plot_elo_por_jornada(elo_pivot: pd.DataFrame, equipos: list[str], max_j: int
     
     # ...
     for eq, x_end, y_end, col in ends:
-        oi = _logo_image_for(eq, target_px=LOGO_PX_ELO)
+        oi = _logo_image_for(eq, zoom=LOGO_Z_ELO)
         if oi is not None:
             ab = AnnotationBbox(oi, (max_j + 0.25, y_end), frameon=False,
                                 box_alignment=(0, 0.5), pad=0.0, zorder=4)
@@ -1402,22 +1407,35 @@ build_wdl_jornada = build_wdl_por_jornada
 
 from matplotlib.offsetbox import OffsetImage, AnnotationBbox
 
-def _logo_image_for(team: str, target_px: int = 36, min_px: int = 28, max_px: int = 64):
+from matplotlib.offsetbox import OffsetImage
+
+def _logo_image_for(team: str, target_px: int | None = None,
+                    min_px: int = 28, max_px: int = 64,
+                    zoom: float | None = None):
     p = badge_path_for(team)
-    if not p: return None
+    if not p:
+        return None
     try:
         arr = load_any_image(p)
         if TRIM_LOGO_BORDERS:
-            arr = trim_margins(arr, bg_tol=16)  # un poco más severo
-        h = np.clip(arr.shape[0], min_px, max_px)
-        zoom = float(target_px) / float(h)
+            arr = trim_margins(arr, bg_tol=16)
+
+        # Si no me pasan zoom explícito, traduzco target_px -> zoom y lo clampo.
+        if zoom is None:
+            tp = float(target_px if target_px is not None else 36.0)
+            base_den = 240.0  # cuanto más grande, más chico queda
+            zoom = float(np.clip(tp / base_den, 0.06, 0.22))
+
         return OffsetImage(arr, zoom=zoom, interpolation="lanczos")
     except Exception:
         return None
 
+
 from matplotlib.offsetbox import OffsetImage, AnnotationBbox
 
-def plot_wdl_por_jornada(wdl_jornada_df: pd.DataFrame, eq_a: str, eq_b: str|None, max_j: int) -> plt.Figure:
+from matplotlib.offsetbox import AnnotationBbox
+
+def plot_wdl_por_jornada(wdl_jornada_df: pd.DataFrame, eq_a: str, eq_b: str | None, max_j: int) -> plt.Figure:
     BG = "#E8F5E9"; GRID = "#9E9E9E"
     COL_WIN, COL_DRAW, COL_LOSS = "#2E7D32", "#FBC02D", "#C62828"
     MAP_Y = {"L": 0, "D": 1, "W": 2}
@@ -1433,54 +1451,45 @@ def plot_wdl_por_jornada(wdl_jornada_df: pd.DataFrame, eq_a: str, eq_b: str|None
     d1 = _prep(eq_a)
     d2 = _prep(eq_b) if (eq_b and eq_b != "(ninguno)") else None
 
-    fig, axes = plt.subplots(
-        nrows=2 if d2 is not None else 1, ncols=1,
-        figsize=(12, 6 if d2 is not None else 3.8),
-        sharex=True
-    )
+    fig, axes = plt.subplots(nrows=2 if d2 is not None else 1, ncols=1,
+                             figsize=(12, 6 if d2 is not None else 3.8), sharex=True)
     if not isinstance(axes, np.ndarray):
         axes = np.array([axes])
 
     for ax_idx, (eq, dd) in enumerate([(eq_a, d1), (eq_b, d2)]):
         if dd is None:
             continue
-
         ax = axes[ax_idx]
-        fig.patch.set_facecolor(BG)
-        ax.set_facecolor(BG)
+        fig.patch.set_facecolor(BG); ax.set_facecolor(BG)
 
-        # --- LÍNEA DE UNIÓN (acá estaba la indentación mala) ---
         if not dd.empty:
             ax.plot(dd["Jornada"], dd["y"], color="#455A64", lw=1.4, alpha=0.9, zorder=2)
 
-            # Escudo del rival en cada jornada
-            target_px = LOGO_PX_WDL_DOUBLE if (d2 is not None) else LOGO_PX_WDL_SINGLE
+            z = LOGO_Z_WDL_DOUBLE if (d2 is not None) else LOGO_Z_WDL_SINGLE
             for _, rr in dd.iterrows():
-                oi = _logo_image_for(rr["Rival"], target_px=target_px)
+                oi = _logo_image_for(rr["Rival"], zoom=z)
                 if oi is not None:
                     ab = AnnotationBbox(oi, (rr["Jornada"], rr["y"]),
                                         frameon=False, pad=0.0, zorder=4, clip_on=True)
                     ax.add_artist(ab)
                 else:
                     col = {"W": COL_WIN, "D": COL_DRAW, "L": COL_LOSS}[rr["R"]]
-                    ax.scatter([rr["Jornada"]], [rr["y"]],
-                               s=110, c=col, edgecolor="black", linewidths=0.7, zorder=3)
+                    ax.scatter([rr["Jornada"]], [rr["y"]], s=110, c=col,
+                               edgecolor="black", linewidths=0.7, zorder=3)
 
-        # Ejes
-        ax.set_yticks([0, 1, 2])
-        ax.set_yticklabels(["Derrota", "Empate", "Victoria"])
+        ax.set_yticks([0, 1, 2]); ax.set_yticklabels(["Derrota", "Empate", "Victoria"])
         ax.grid(True, axis="x", ls="--", lw=0.8, color=GRID, alpha=0.55)
-        ax.set_xlim(0.5, max_j + 0.5)
-        ax.set_ylim(-0.45, 2.45)
-        ax.set_title(eq.upper(), pad=6, fontsize=12, color="#1F1F1F")
+        ax.set_xlim(0.5, max_j + 0.5); ax.set_ylim(-0.45, 2.45)
+        ax.set_title((eq or "").upper(), pad=6, fontsize=12, color="#1F1F1F")
         ax.tick_params(colors="#1F1F1F")
-        for spine in ax.spines.values():
-            spine.set_color("#1F1F1F")
+        for s in ax.spines.values():
+            s.set_color("#1F1F1F")
 
     axes[-1].set_xticks(list(range(1, max_j + 1)))
     axes[-1].set_xlabel("Fecha (Jornada)", fontsize=12, color="#1F1F1F")
     plt.tight_layout()
     return fig
+
 
 def tabla_a_jornada(df_res: pd.DataFrame, j_corte: int) -> pd.DataFrame:
     """
