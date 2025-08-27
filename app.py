@@ -1294,12 +1294,18 @@ def _compute_elo_by_jornada(df_res_cut: pd.DataFrame, base_elo: float = 1000.0, 
 # --------- Plot: ELO por jornada (con etiquetas al final, sin leyenda lateral) ----------
 from matplotlib.offsetbox import OffsetImage, AnnotationBbox
 
-def plot_elo_por_jornada(elo_pivot: pd.DataFrame, equipos: list[str], max_j: int) -> plt.Figure:
-    BG   = "#E8F5E9"; GRID = "#9E9E9E"
-    # LOGO_PX_ELO = 32  # <- BORRÁ esta si la tenés
-    LOGO_PX_ELO = LOGO_PX_ELO_DEFAULT  # usa el global definido arriba (26 por defecto)
+from matplotlib.offsetbox import OffsetImage, AnnotationBbox
+import numpy as np
+import matplotlib.patheffects as pe
 
-    if elo_pivot.empty:
+def plot_elo_por_jornada(
+    elo_pivot: pd.DataFrame,
+    equipos: list[str],
+    max_j: int
+) -> plt.Figure:
+    BG, GRID = "#E8F5E9", "#9E9E9E"
+
+    if elo_pivot is None or elo_pivot.empty:
         fig, ax = plt.subplots(figsize=(8,4))
         ax.text(0.5, 0.5, "Sin datos", ha="center", va="center")
         return fig
@@ -1309,62 +1315,55 @@ def plot_elo_por_jornada(elo_pivot: pd.DataFrame, equipos: list[str], max_j: int
 
     traj = {}
     for eq in equipos:
-        if eq not in elo_pivot.columns: 
-            continue
-        s = elo_pivot[eq].dropna()
-        s = s[s.index <= max_j]
-        if not s.empty:
-            traj[eq] = list(zip(s.index.tolist(), s.values.tolist()))
+        if eq in elo_pivot.columns:
+            s = elo_pivot[eq].dropna()
+            s = s[s.index <= max_j]
+            if not s.empty:
+                traj[eq] = list(zip(s.index.tolist(), s.values.tolist()))
 
-    fig, ax = plt.subplots(figsize=(11.5, 6.4))
+    fig, ax = plt.subplots(figsize=(11.2, 5.8))
     fig.patch.set_facecolor(BG); ax.set_facecolor(BG)
 
     palette = plt.cm.tab20(np.linspace(0, 1, max(20, len(traj))))
-
-    # Curvas
     for i, (eq, pts) in enumerate(traj.items()):
-        xs = [x for (x, _) in pts]; ys = [y for (_, y) in pts]
-        if not xs: 
-            continue
-        col = palette[i % len(palette)]
-        ax.plot(xs, ys, lw=2.0, color=col, zorder=2)
+        xs = [x for x,_ in pts]; ys = [y for _,y in pts]
+        if xs:
+            ax.plot(xs, ys, lw=2.0, color=palette[i % len(palette)], zorder=2)
 
-    # Etiquetas → logos al final, con leve 'jitter' para evitar solape
     ends = []
     for i, (eq, pts) in enumerate(traj.items()):
-        xs = [x for (x, _) in pts]; ys = [y for (_, y) in pts]
+        xs = [x for x,_ in pts]; ys = [y for _,y in pts]
         if xs:
-            ends.append((eq, xs[-1], ys[-1], palette[i % len(palette)]))
+            ends.append([eq, xs[-1], ys[-1], palette[i % len(palette)]])
 
     ends.sort(key=lambda t: t[2])
-    min_gap = 6.0
+    min_gap = MIN_GAP_ELO
     for k in range(1, len(ends)):
-        prev_y = ends[k-1][2]
-        cur    = list(ends[k])
-        if cur[2] - prev_y < min_gap:
-            cur[2] = prev_y + min_gap
-            ends[k] = tuple(cur)
-    
-    # ...
-    for eq, x_end, y_end, col in ends:
-        oi = _logo_image_for(eq, zoom=LOGO_Z_ELO)
+        if ends[k][2] - ends[k-1][2] < min_gap:
+            ends[k][2] = ends[k-1][2] + min_gap
+
+    for eq, _, y_end, col in ends:
+        oi = _logo_image_for(eq, target_px=LOGO_PX_ELO_DEFAULT)  # <-- tamaño
+        x_logo = max_j + 0.15
         if oi is not None:
-            ab = AnnotationBbox(oi, (max_j + 0.25, y_end), frameon=False,
-                                box_alignment=(0, 0.5), pad=0.0, zorder=4)
+            ab = AnnotationBbox(oi, (x_logo, y_end),
+                                frameon=False, box_alignment=(0,0.5), pad=0.0,
+                                zorder=4, clip_on=False)
             ax.add_artist(ab)
         else:
-            # fallback texto...
-            ax.text(max_j + 0.10, y_end, eq.upper(), va="center", ha="left", fontsize=8.8, color=col,
-                    path_effects=[pe.withStroke(linewidth=3, foreground="white")], clip_on=False, zorder=3)
+            ax.text(x_logo, y_end, eq.upper(),
+                    va="center", ha="left", fontsize=8.6, color="#1F1F1F",
+                    path_effects=[pe.withStroke(linewidth=3, foreground="white")],
+                    zorder=3)
 
-
-    ax.set_xlim(0.5, max_j + 0.6)  # deja margen para logos
+    ax.set_xlim(0.5, max_j + RIGHT_MARGIN_ELO)  # <-- margen para logos
     ax.set_xticks(list(range(1, max_j + 1)))
     ax.set_xlabel("Fecha (Jornada)", fontsize=12, color="#1F1F1F")
-    ax.set_ylabel("Índice ELO",    fontsize=12, color="#1F1F1F")
+    ax.set_ylabel("Índice ELO", fontsize=12, color="#1F1F1F")
     ax.tick_params(colors="#1F1F1F")
     ax.grid(True, ls="--", lw=0.8, color=GRID, alpha=0.55)
     return fig
+
 
 
 # --------- W/D/L por jornada (usando JornadaN=1..N) + Rival ----------
