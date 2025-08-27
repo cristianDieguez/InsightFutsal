@@ -393,86 +393,169 @@ def sum_cols(df, who_mask, header_map, col_regex):
 
 def compute_from_matrix(path: str) -> Dict[str, Dict[str, float]]:
     df, player_col, header_map = load_matrix(path)
-    who_raw = df[player_col]
-    is_valid = who_raw.notna() & (who_raw.astype(str).str.strip() != "")
-    who = who_raw.fillna("").astype(str).map(nlower)
 
-    is_rival = is_valid & (who == "categoria - equipo rival")
-    is_mine  = is_valid & ~is_rival
+    # --- filas (quién) -------------------------------------------------------
+    who = df[player_col].fillna("").astype(str).map(nlower)
 
-    pases_tot_re = r"^pase.*frontal|^pase.*lateral"
-    pases_ok_re  = r"^pase.*completado"
-    tiros_re     = r"\btiro hecho\b"
-    taro_re      = r"\btiro atajado\b"
-    recup_re     = r"^recuperacion\b"
-    duelo_g_re   = r"\brecuperacion x duelo\b"
-    duelo_p_re   = r"\bperdida x duelo\b"
-    corners_re   = r"\bcorner en corto\b|\bcorner al area\b|\bcorner 2do palo\b"
-    faltas_re    = r"\bfaltas recibidas\b"
-    goles_re     = r"^gol\b"
-    asis_re      = r"\basistencia\b"
-    pclave_re    = r"\bpase clave\b"
+    EXCL_PREFIXES = (
+        "tiempo posecion ferro", "tiempo posesion ferro",
+        "tiempo posecion rival", "tiempo posesion rival",
+        "tiempo no jugado",
+    )
 
-    def pct(a,b): return round(100*a/b,1) if b else 0.0
+    is_real = who.ne("")
+    is_total_row = who.str.match(r"^totales?$")
+    is_excluded = is_total_row | who.str.startswith(EXCL_PREFIXES)
 
-    # FERRO
-    pases_tot_m = sum_cols(df, is_mine,  header_map, pases_tot_re)
-    pases_ok_m  = sum_cols(df, is_mine,  header_map, pases_ok_re)
-    tiros_m     = sum_cols(df, is_mine,  header_map, tiros_re)
-    taro_m      = sum_cols(df, is_mine,  header_map, taro_re)
-    recup_m     = sum_cols(df, is_mine,  header_map, recup_re)
-    duelo_g_m   = sum_cols(df, is_mine,  header_map, duelo_g_re)
-    duelo_p_m   = sum_cols(df, is_mine,  header_map, duelo_p_re)
-    corners_m   = sum_cols(df, is_mine,  header_map, corners_re)
-    faltas_m    = sum_cols(df, is_mine,  header_map, faltas_re)
-    goles_m     = sum_cols(df, is_mine,  header_map, goles_re)
-    asis_m      = sum_cols(df, is_mine,  header_map, asis_re)
-    pclave_m    = sum_cols(df, is_mine,  header_map, pclave_re)
+    is_rival = is_real & who.eq("categoria - equipo rival")
+    is_mine  = is_real & ~is_rival & ~is_excluded
 
-    # RIVAL
-    pases_tot_r = sum_cols(df, is_rival, header_map, pases_tot_re)
-    pases_ok_r  = sum_cols(df, is_rival, header_map, pases_ok_re)
-    tiros_r     = sum_cols(df, is_rival, header_map, tiros_re)
-    taro_r      = sum_cols(df, is_rival, header_map, taro_re)
-    recup_r     = sum_cols(df, is_rival, header_map, recup_re)
-    duelo_g_r   = sum_cols(df, is_rival, header_map, duelo_g_re)
-    duelo_p_r   = sum_cols(df, is_rival, header_map, duelo_p_re)
-    corners_r   = sum_cols(df, is_rival, header_map, corners_re)
-    faltas_r    = sum_cols(df, is_rival, header_map, faltas_re)
-    goles_r     = sum_cols(df, is_rival, header_map, goles_re)
-    asis_r      = sum_cols(df, is_rival, header_map, asis_re)
-    pclave_r    = sum_cols(df, is_rival, header_map, pclave_re)
+    # --- helper: sumar columnas por nombres normalizados ---------------------
+    # header_map: {col_original -> nombre_normalizado}
+    from collections import defaultdict
+    norm2cols = defaultdict(list)
+    for c in df.columns[1:]:
+        norm2cols[header_map[c]].append(c)
 
+    def _expand_variants(name: str) -> set[str]:
+        """tolerar 'progesivo' además de 'progresivo'"""
+        n = nlower(name)
+        out = {n}
+        if "progresivo" in n:
+            out.add(n.replace("progresivo", "progesivo"))
+        if "progresiva" in n:
+            out.add(n.replace("progresiva", "progesiva"))
+        return out
+
+    def sum_by_names(mask, names: list[str]) -> int:
+        targets = set()
+        for nm in names:
+            targets |= _expand_variants(nm)
+        cols = []
+        for t in targets:
+            cols += norm2cols.get(t, [])
+        if not cols:
+            return 0
+        vals = pd.to_numeric(df.loc[mask, cols], errors="coerce").fillna(0)
+        return int(vals.sum(numeric_only=True).sum())
+
+    # --- listas exactas (según tu definición) --------------------------------
+    PASSES_BASE = [
+        "Pase Progresivo Frontal",
+        "Pase Progresivo Lateral",
+        "Pase Corto Frontal",
+        "Pase Corto Lateral",
+        "Pase Progresivo Frontal cPie",
+        "Pase Progresivo Lateral cPie",
+        "Salida de arco progresivo cMano",
+        "Pase Corto Frontal cPie",
+        "Pase Corto Lateral cPie",
+        "Salida de arco corto cMano",
+    ]
+    PASSES_OK = [
+        "Pase Progresivo Frontal Completado",
+        "Pase Progresivo Lateral Completado",
+        "Pase Corto Frontal Completado",
+        "Pase Corto Lateral Completado",
+        "Pase Progresivo Frontal Completado cPie",
+        "Pase Progresivo Lateral Completado cPie",
+        "Salida de arco progresivo Completado cMano",
+        "Pase Corto Frontal Completado cPie",
+        "Pase Corto Lateral Completado cPie",
+        "Salida de arco corto Completado cMano",
+    ]
+
+    RECUP_LIST = [
+        "Recuperacion x Duelo",
+        "Recuperación x Interceptacion",
+        "Recuperacion x Robo",
+        "Recuperacion x Mal Pase Rival",
+        "Recuperacion x Mal Control",
+    ]
+    CORNERS_LIST = ["Corner En corto", "Corner Al Area", "Corner 2do Palo"]
+
+    # algunas columnas pueden venir en singular/plural
+    TIRO_HECHO   = ["Tiro Hecho"]
+    TIRO_ARCO    = ["Tiro al arco", "Tiros al arco"]  # tolerancia
+
+    UNO_VS_UNO_G = ["1v1 Ganado"]
+
+    # --- FERRO ---------------------------------------------------------------
+    pases_base_m = sum_by_names(is_mine, PASSES_BASE)
+    pases_ok_m   = sum_by_names(is_mine, PASSES_OK)
+    tiros_m      = sum_by_names(is_mine, TIRO_HECHO)
+    tiros_arco_m = sum_by_names(is_mine, TIRO_ARCO)
+
+    recup_m      = sum_by_names(is_mine, RECUP_LIST)
+    rec_duelo_m  = sum_by_names(is_mine, ["Recuperacion x Duelo"])
+    uno_v_uno_m  = sum_by_names(is_mine, UNO_VS_UNO_G)
+    duelos_g_m   = rec_duelo_m + uno_v_uno_m
+
+    corners_m    = sum_by_names(is_mine, CORNERS_LIST)
+    faltas_m     = sum_by_names(is_mine, ["Faltas Recibidas"])
+    goles_m      = sum_by_names(is_mine, ["Gol"])
+    asis_m       = sum_by_names(is_mine, ["Asistencia"])
+    pclave_m     = sum_by_names(is_mine, ["Pase Clave"])
+
+    # --- RIVAL ---------------------------------------------------------------
+    pases_base_r = sum_by_names(is_rival, PASSES_BASE)
+    pases_ok_r   = sum_by_names(is_rival, PASSES_OK)
+    tiros_r      = sum_by_names(is_rival, TIRO_HECHO)
+    tiros_arco_r = sum_by_names(is_rival, TIRO_ARCO)
+
+    recup_r      = sum_by_names(is_rival, RECUP_LIST)
+    rec_duelo_r  = sum_by_names(is_rival, ["Recuperacion x Duelo"])
+    uno_v_uno_r  = sum_by_names(is_rival, UNO_VS_UNO_G)
+    duelos_g_r   = rec_duelo_r + uno_v_uno_r
+
+    corners_r    = sum_by_names(is_rival, CORNERS_LIST)
+    faltas_r     = sum_by_names(is_rival, ["Faltas Recibidas"])
+    goles_r      = sum_by_names(is_rival, ["Gol"])
+    asis_r       = sum_by_names(is_rival, ["Asistencia"])
+    pclave_r     = sum_by_names(is_rival, ["Pase Clave"])
+
+    # --- %s ------------------------------------------------------------------
+    def pct(a, b):
+        return round(100.0 * a / b, 1) if b else 0.0
+
+    pases_ok_pct_m = pct(pases_ok_m, pases_base_m)
+    pases_ok_pct_r = pct(pases_ok_r, pases_base_r)
+
+    duelos_pct_m   = pct(duelos_g_m, duelos_g_m + duelos_g_r)
+    duelos_pct_r   = pct(duelos_g_r, duelos_g_m + duelos_g_r)
+
+    # --- salida con las CLAVES DEL PANEL (ROW_ORDER) ------------------------
     return {
         "FERRO": {
-            "Pases totales": pases_tot_m,
-            "Pases OK %": pct(pases_ok_m, pases_tot_m),
-            "Tiros": tiros_m,
-            "Tiros al arco": taro_m,
+            "Pases totales": pases_base_m,
+            "Pases OK %":    pases_ok_pct_m,
+            "Tiros":         tiros_m,
+            "Tiros al arco": tiros_arco_m,
             "Recuperaciones": recup_m,
-            "Duelos Ganados": duelo_g_m,
-            "% Duelos Ganados": pct(duelo_g_m, duelo_g_m + duelo_p_m),
-            "Corners": corners_m,
-            "Faltas": faltas_m,
-            "Goles": goles_m,
-            "Asistencias": asis_m,
-            "Pases Clave": pclave_m,
+            "Duelos ganados": duelos_g_m,
+            "% Duelos ganados": duelos_pct_m,
+            "Corners":       corners_m,
+            "Faltas":        faltas_m,
+            "Goles":         goles_m,
+            "Asistencias":   asis_m,
+            "Pases clave":   pclave_m,
         },
         "RIVAL": {
-            "Pases totales": pases_tot_r,
-            "Pases OK %": pct(pases_ok_r, pases_tot_r),
-            "Tiros": tiros_r,
-            "Tiros al arco": taro_r,
+            "Pases totales": pases_base_r,
+            "Pases OK %":    pases_ok_pct_r,
+            "Tiros":         tiros_r,
+            "Tiros al arco": tiros_arco_r,
             "Recuperaciones": recup_r,
-            "Duelos Ganados": duelo_g_r,
-            "% Duelos Ganados": pct(duelo_g_r, duelo_g_r + duelo_p_r),
-            "Corners": corners_r,
-            "Faltas": faltas_r,
-            "Goles": goles_r,
-            "Asistencias": asis_r,
-            "Pases Clave": pclave_r,
+            "Duelos ganados": duelos_g_r,
+            "% Duelos ganados": duelos_pct_r,
+            "Corners":       corners_r,
+            "Faltas":        faltas_r,
+            "Goles":         goles_r,
+            "Asistencias":   asis_r,
+            "Pases clave":   pclave_r,
         }
     }
+
 
 # =========================
 # TIMELINE
