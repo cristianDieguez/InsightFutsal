@@ -1778,30 +1778,31 @@ if menu == "📊 Estadísticas de partido":
     sel = st.selectbox("Elegí partido", matches, index=0)
     rival = rival_from_label(sel)
 
-    # Después (para menús que usan XML de jugadores, p.ej. Mapa de tiros)
+    # Objeto del partido (tiene paths preferidos)
     match = get_match_by_label(sel)
-    # --- Elegir automáticamente el XML para POSESIÓN: primero TotalValues, luego NacSport ---
-    XML_TV, _ = infer_paths_for_label(sel)           # ... - XML TotalValues.xml
-    XML_NS    = match["xml_players"] if match else None  # suele ser ... - XML NacSport.xml
-    
-    candidatos = [p for p in [XML_TV, XML_NS] if p and os.path.isfile(p)]
-    
+
+    # --- XML para POSESIÓN: intenta TotalValues primero, luego NacSport ---
+    XML_TV, _ = infer_paths_for_label(sel)                      # ... - XML TotalValues.xml
+    XML_NS    = match["xml_players"] if match else None         # ... - XML NacSport.xml (si existe)
+    candidatos = [p for p in (XML_TV, XML_NS) if p and os.path.isfile(p)]
+
     def _tiene_posesion(xmlp: str) -> bool:
         pm, pr = parse_possession_from_equipo(xmlp)
         return (pm + pr) > 0
-    
+
     POS_XML = None
-    for p in candidatos:          # intenta en orden: TotalValues -> NacSport
+    for p in candidatos:               # orden: TotalValues -> NacSport
         if _tiene_posesion(p):
             POS_XML = p
             break
-    if POS_XML is None and candidatos:
-        POS_XML = candidatos[0]   # último recurso
-    
+    if POS_XML is None and candidatos: # último recurso
+        POS_XML = candidatos[0]
+
     # 1) Posesión
     pos_m, pos_r = parse_possession_from_equipo(POS_XML) if POS_XML else (0.0, 0.0)
-    
-    # 2) Matrix (igual que tenías)
+
+    # 2) Matrix (¡ahora sí definida!)
+    MATRIX_PATH = match["matrix_path"] if match else None
     if MATRIX_PATH and os.path.isfile(MATRIX_PATH):
         try:
             mx = compute_from_matrix(MATRIX_PATH)
@@ -1811,17 +1812,15 @@ if menu == "📊 Estadísticas de partido":
             FERRO, RIVAL = {}, {}
     else:
         FERRO, RIVAL = {}, {}
-    
-    # Inyectar posesión y dibujar
+
+    # Inyectar posesión en los dicts del panel
     FERRO["Posesión %"] = pos_m
     RIVAL["Posesión %"] = pos_r
-    
+
+    # 3) Dibujar panel
     ferro_logo = badge_path_for("ferro")
     rival_logo = badge_path_for(rival)
     draw_key_stats_panel("Ferro", rival, FERRO, RIVAL, ferro_logo, rival_logo)
-
-
-
 
 # =========================
 # ⏱️ TIMELINE
