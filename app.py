@@ -3005,42 +3005,42 @@ if menu == "🏆 Tabla & Resultados":
 
     # --- TAB 4: TABLA FECHA A FECHA + ELO + W/D/L ---
     # --- TAB 4: TABLA FECHA A FECHA + ELO + W/D/L ---
-with tab4:
-    if df_res.empty:
-        st.info("Aún no hay partidos finalizados para construir la tabla por fecha.")
-    else:
-        # 1) Slider por JORNADA
-        df_res_j, _ = _build_jornada_index(df_res)
-        max_j = int(df_res_j["JornadaN"].max())
-        j_corte = st.slider("Corte por fecha (Jornada)", min_value=1, max_value=max_j, value=max_j)
-
-        # 2) TABLA a la jornada (PJ parejos) y sin recorte por fecha real
-        df_fecha = tabla_a_jornada(df_res, j_corte)
-        show_full_table(df_fecha)   # tu helper que evita el scroll vertical
-
-        # 3) ELO por jornada (mismo corte), con multiselect
-        elo_pivot = _compute_elo_by_jornada(df_res_j[df_res_j["JornadaN"].le(j_corte)])
-        equipos_all = list(elo_pivot.columns)
-        sel_equipos = st.multiselect("Equipos a mostrar en el ELO", options=equipos_all, default=equipos_all)
-        fig_elo = plot_elo_por_jornada(elo_pivot, sel_equipos, j_corte)
-        st.pyplot(fig_elo, use_container_width=True)
-
-        # 4) W/D/L por jornada (dos bandas)
-        wdl_jornada_df = build_wdl_por_jornada(df_res_j[df_res_j["JornadaN"].le(j_corte)])
-        
-        eqs = sorted(wdl_jornada_df["Equipo"].unique())
-        c1, c2 = st.columns(2)
-        with c1:
-            eq1 = st.selectbox("Equipo A", eqs, index=0)
-        with c2:
-            eq2 = st.selectbox("Equipo B (opcional)", ["(ninguno)"] + eqs, index=0)
-        
-        fig_wdl = plot_wdl_por_jornada(
-            wdl_jornada_df,
-            eq1,
-            None if eq2 == "(ninguno)" else eq2,
-            j_corte
-        )
-        st.pyplot(fig_wdl, use_container_width=True)
+    with tab4:
+        if df_res.empty:
+            st.info("Aún no hay partidos finalizados para construir la tabla por fecha.")
+        else:
+            # 1) Slider por JORNADA
+            df_res_j, _ = _build_jornada_index(df_res)
+            max_j = int(df_res_j["JornadaN"].max())
+            j_corte = st.slider("Corte por fecha (Jornada)", min_value=1, max_value=max_j, value=max_j)
+    
+            # 2) TABLA a la jornada (PJ parejos) y sin recorte por fecha real
+            df_fecha = tabla_a_jornada(df_res, j_corte)
+            show_full_table(df_fecha)   # tu helper que evita el scroll vertical
+    
+            # 3) ELO por jornada (mismo corte), con multiselect
+            elo_pivot = _compute_elo_by_jornada(df_res_j[df_res_j["JornadaN"].le(j_corte)])
+            equipos_all = list(elo_pivot.columns)
+            sel_equipos = st.multiselect("Equipos a mostrar en el ELO", options=equipos_all, default=equipos_all)
+            fig_elo = plot_elo_por_jornada(elo_pivot, sel_equipos, j_corte)
+            st.pyplot(fig_elo, use_container_width=True)
+    
+            # 4) W/D/L por jornada (dos bandas)
+            wdl_jornada_df = build_wdl_por_jornada(df_res_j[df_res_j["JornadaN"].le(j_corte)])
+            
+            eqs = sorted(wdl_jornada_df["Equipo"].unique())
+            c1, c2 = st.columns(2)
+            with c1:
+                eq1 = st.selectbox("Equipo A", eqs, index=0)
+            with c2:
+                eq2 = st.selectbox("Equipo B (opcional)", ["(ninguno)"] + eqs, index=0)
+            
+            fig_wdl = plot_wdl_por_jornada(
+                wdl_jornada_df,
+                eq1,
+                None if eq2 == "(ninguno)" else eq2,
+                j_corte
+            )
+            st.pyplot(fig_wdl, use_container_width=True)
 
 
