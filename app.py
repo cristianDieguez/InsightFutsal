@@ -49,12 +49,14 @@ LOGO_Z_WDL_DOUBLE = 0.06
 WDL_MAX_LOGOS     = 18   # si hay más puntos que esto, usamos puntos en vez de logos
 
 # Tamaños de escudos (ajustables)
-LOGO_PX_ELO_DEFAULT = 1      # antes 32 (ELO más chico)
-LOGO_PX_WDL_SINGLE  = 1      # WDL cuando se muestra 1 equipo
-LOGO_PX_WDL_DOUBLE  = 1      # WDL cuando se muestran 2 equipos
+LOGO_PX_ELO_DEFAULT = 12      # antes 32 (ELO más chico)
+# --- Ajustes de tamaño/espaciado de logos (¡todos iguales y chicos!) ---
+LOGO_PX_ELO         = 12   # tamaño en píxeles del logo en el gráfico ELO
+LOGO_PX_WDL_SINGLE  = 12   # tamaño en píxeles (W/D/L con 1 panel)
+LOGO_PX_WDL_DOUBLE  = 10   # tamaño en píxeles (W/D/L con 2 paneles)
+RIGHT_MARGIN_ELO    = 0.40 # margen a la derecha para encajar logos en ELO (0.30–0.55)
+MIN_GAP_ELO         = 2.0  # separación mínima vertical entre logos en ELO
 
-RIGHT_MARGIN_ELO    = 0.05   # ELO: margen a la derecha (espacio para logos/etiquetas)
-MIN_GAP_ELO         = 2.5    # ELO: separación vertical mínima entre logos
 
 BANNER_H   = 0.145
 LOGO_W     = 0.118
@@ -1301,111 +1303,74 @@ from matplotlib.offsetbox import OffsetImage, AnnotationBbox
 import numpy as np
 import matplotlib.patheffects as pe
 
-def plot_elo_por_jornada(
-    elo_pivot: pd.DataFrame,
-    equipos: list[str],
-    max_j: int
-) -> plt.Figure:
-    """
-    Traza ELO por jornada y etiqueta cada curva con el escudo al final.
-    Usa (si existen) las constantes globales:
-      - LOGO_PX_ELO_DEFAULT (int, px del alto destino)      -> default 14
-      - RIGHT_MARGIN_ELO     (float, margen X para logos)   -> default 0.55
-      - MIN_GAP_ELO          (float, separación vertical)   -> default 3.0
-    Requiere helper _logo_image_for(team, target_px=int).
-    """
+def plot_elo_por_jornada(elo_pivot: pd.DataFrame, equipos: list[str], max_j: int) -> plt.Figure:
     BG, GRID = "#E8F5E9", "#9E9E9E"
+    right_margin = globals().get("RIGHT_MARGIN_ELO", 0.40)
+    min_gap      = globals().get("MIN_GAP_ELO", 2.0)
+    logo_px      = globals().get("LOGO_PX_ELO", 12)
 
-    # Defaults seguros si faltan las constantes globales
-    logo_px     = globals().get("LOGO_PX_ELO_DEFAULT", 14)
-    right_margin= globals().get("RIGHT_MARGIN_ELO", 0.55)
-    min_gap     = globals().get("MIN_GAP_ELO", 3.0)
-
-    # Validación de entrada
-    if elo_pivot is None or elo_pivot.empty or max_j is None or max_j <= 0:
-        fig, ax = plt.subplots(figsize=(8, 4))
+    if elo_pivot is None or elo_pivot.empty:
+        fig, ax = plt.subplots(figsize=(8,4))
         ax.text(0.5, 0.5, "Sin datos", ha="center", va="center")
-        ax.axis("off")
         return fig
 
     if not equipos:
         equipos = list(elo_pivot.columns)
 
     # Trayectorias por equipo
-    traj: dict[str, list[tuple[int, float]]] = {}
+    traj = {}
     for eq in equipos:
-        if eq not in elo_pivot.columns:
-            continue
-        s = elo_pivot[eq].dropna()
-        s = s[s.index.astype(int) <= int(max_j)]
-        if not s.empty:
-            traj[eq] = list(zip(s.index.astype(int).tolist(), s.values.astype(float).tolist()))
+        if eq in elo_pivot.columns:
+            s = elo_pivot[eq].dropna()
+            s = s[s.index <= max_j]
+            if not s.empty:
+                traj[eq] = list(zip(s.index.tolist(), s.values.tolist()))
 
-    if not traj:
-        fig, ax = plt.subplots(figsize=(8, 4))
-        ax.text(0.5, 0.5, "Sin datos para los equipos elegidos", ha="center", va="center")
-        ax.axis("off")
-        return fig
-
-    # Figure
     fig, ax = plt.subplots(figsize=(11.2, 5.8))
     fig.patch.set_facecolor(BG); ax.set_facecolor(BG)
 
-    # Curvas
     palette = plt.cm.tab20(np.linspace(0, 1, max(20, len(traj))))
     for i, (eq, pts) in enumerate(traj.items()):
-        xs = [x for x, _ in pts]
-        ys = [y for _, y in pts]
+        xs = [x for x,_ in pts]; ys = [y for _,y in pts]
         if xs:
             ax.plot(xs, ys, lw=2.0, color=palette[i % len(palette)], zorder=2)
 
-    # Puntas para etiquetar (eq, x_end, y_end, color)
-    ends: list[tuple[str, int, float, tuple]] = []
+    # Puntos finales (para ubicar logo)
+    ends = []
     for i, (eq, pts) in enumerate(traj.items()):
-        xs = [x for x, _ in pts]
-        ys = [y for _, y in pts]
+        xs = [x for x,_ in pts]; ys = [y for _,y in pts]
         if xs:
-            ends.append((eq, xs[-1], ys[-1], palette[i % len(palette)]))
+            ends.append([eq, xs[-1], ys[-1], palette[i % len(palette)]])
 
-    # Ordenar por Y y espaciar verticalmente
+    # Separación vertical mínima entre logos
     ends.sort(key=lambda t: t[2])
-    spaced = [list(ends[0])]
     for k in range(1, len(ends)):
-        prev_y = spaced[-1][2]
-        cur = list(ends[k])
-        if cur[2] - prev_y < min_gap:
-            cur[2] = prev_y + min_gap
-        spaced.append(cur)
+        if ends[k][2] - ends[k-1][2] < min_gap:
+            ends[k][2] = ends[k-1][2] + min_gap
 
-    # Límites y posición de logos
+    # Margen y ubicación de logos
     ax.set_xlim(0.5, max_j + right_margin)
-    x_logo = max_j + right_margin - 0.20  # un poco dentro del margen
+    x_logo = max_j + right_margin - 0.06  # un pelito adentro del xlim
 
-    # Logos/texto al final
-    for eq, _x_end, y_end, col in spaced:
-        oi = _logo_image_for(eq, target_px=int(logo_px))
+    # Logos (todos a LOGO_PX_ELO)
+    for eq, _, y_end, col in ends:
+        oi = _logo_image_for(eq, target_px=logo_px)
         if oi is not None:
-            ab = AnnotationBbox(
-                oi, (x_logo, y_end),
-                frameon=False, box_alignment=(0, 0.5), pad=0.0,
-                zorder=4, clip_on=False
-            )
+            ab = AnnotationBbox(oi, (x_logo, y_end),
+                                frameon=False, box_alignment=(0,0.5), pad=0.0,
+                                zorder=4, clip_on=False)
             ax.add_artist(ab)
         else:
-            ax.text(
-                x_logo, y_end, eq.upper(),
-                va="center", ha="left", fontsize=8.6, color="#1F1F1F",
-                path_effects=[pe.withStroke(linewidth=3, foreground="white")],
-                zorder=3
-            )
+            ax.text(x_logo, y_end, eq.upper(),
+                    va="center", ha="left", fontsize=8.6, color="#1F1F1F",
+                    path_effects=[pe.withStroke(linewidth=3, foreground="white")],
+                    zorder=3)
 
-    # Ejes
     ax.set_xticks(list(range(1, max_j + 1)))
     ax.set_xlabel("Fecha (Jornada)", fontsize=12, color="#1F1F1F")
     ax.set_ylabel("Índice ELO",     fontsize=12, color="#1F1F1F")
     ax.tick_params(colors="#1F1F1F")
     ax.grid(True, ls="--", lw=0.8, color=GRID, alpha=0.55)
-
     return fig
 
 # --------- W/D/L por jornada (usando JornadaN=1..N) + Rival ----------
@@ -1450,8 +1415,6 @@ build_wdl_jornada = build_wdl_por_jornada
 
 from matplotlib.offsetbox import OffsetImage, AnnotationBbox
 
-from matplotlib.offsetbox import OffsetImage
-
 @lru_cache(maxsize=256)
 def _badge_arr_cached(path: str, trim: bool=True, bg_tol: int=16):
     arr = load_any_image(path)
@@ -1459,31 +1422,43 @@ def _badge_arr_cached(path: str, trim: bool=True, bg_tol: int=16):
         arr = trim_margins(arr, bg_tol=bg_tol)
     return arr
 
-def _logo_image_for(team: str, target_px: int = 14, min_px: int = 10, max_px: int = 32):
+def _logo_image_for(team: str, target_px: int = 12):
     p = badge_path_for(team)
-    if not p: return None
+    if not p:
+        return None
     try:
         arr = load_any_image(p)
         if TRIM_LOGO_BORDERS:
-            arr = trim_margins(arr, bg_tol=16)
-        h = np.clip(arr.shape[0], min_px, max_px)
-        zoom = float(target_px) / float(h)
+            arr = trim_margins(arr, bg_tol=16)   # recorta bordes blancos si hay
+        h = max(1, int(arr.shape[0]))           # alto real del png
+        zoom = float(target_px) / float(h)       # hace TODOS = target_px
         return OffsetImage(arr, zoom=zoom, interpolation="lanczos")
     except Exception:
         return None
 
-
 from matplotlib.offsetbox import AnnotationBbox
 
-def plot_wdl_por_jornada(wdl_jornada_df: pd.DataFrame, eq_a: str, eq_b: str|None, max_j: int) -> plt.Figure:
+def plot_wdl_por_jornada(
+    wdl_jornada_df: pd.DataFrame,
+    eq_a: str,
+    eq_b: str | None,
+    max_j: int
+) -> plt.Figure:
     BG = "#E8F5E9"; GRID = "#9E9E9E"
     COL_WIN, COL_DRAW, COL_LOSS = "#2E7D32", "#FBC02D", "#C62828"
     MAP_Y = {"L": 0, "D": 1, "W": 2}
 
-    def _prep(eq):
+    # tamaños de logo (con fallback si no definiste las globals)
+    logo_px_single = int(globals().get("LOGO_PX_WDL_SINGLE", 12))
+    logo_px_double = int(globals().get("LOGO_PX_WDL_DOUBLE", 10))
+
+    def _prep(eq: str) -> pd.DataFrame:
+        if not eq:
+            return pd.DataFrame(columns=["Jornada","R","Rival","y"])
         d = (wdl_jornada_df[wdl_jornada_df["Equipo"] == eq]
              .sort_values("Jornada")
-             .loc[:, ["Jornada","R","Rival"]].dropna(subset=["Jornada","R"]))
+             .loc[:, ["Jornada","R","Rival"]]
+             .dropna(subset=["Jornada","R"]))
         d = d[d["Jornada"] <= max_j]
         if d.empty:
             d = d.assign(y=[])
@@ -1494,9 +1469,12 @@ def plot_wdl_por_jornada(wdl_jornada_df: pd.DataFrame, eq_a: str, eq_b: str|None
     d1 = _prep(eq_a)
     d2 = _prep(eq_b) if (eq_b and eq_b != "(ninguno)") else None
 
-    fig, axes = plt.subplots(nrows=2 if d2 is not None else 1, ncols=1,
-                             figsize=(12, 6 if d2 is not None else 3.8),
-                             sharex=True)
+    fig, axes = plt.subplots(
+        nrows=2 if d2 is not None else 1,
+        ncols=1,
+        figsize=(12, 6 if d2 is not None else 3.8),
+        sharex=True
+    )
     if not isinstance(axes, np.ndarray):
         axes = np.array([axes])
 
@@ -1505,39 +1483,46 @@ def plot_wdl_por_jornada(wdl_jornada_df: pd.DataFrame, eq_a: str, eq_b: str|None
             continue
         ax = axes[ax_idx]
         fig.patch.set_facecolor(BG); ax.set_facecolor(BG)
-    
-        # línea de unión
+
+        # =========================
+        # FIX AL INDENTATION ERROR:
+        # la línea de plot DEBE estar identada dentro del if
+        # =========================
         if not dd.empty:
             ax.plot(dd["Jornada"], dd["y"], color="#455A64", lw=1.4, alpha=0.9, zorder=2)
-    
-        # ⬇️ tamaños de escudos para este panel
-        target_px = LOGO_PX_WDL_DOUBLE if (d2 is not None) else LOGO_PX_WDL_SINGLE
-        for _, rr in dd.iterrows():
-            oi = _logo_image_for(rr["Rival"], target_px=target_px)
-            if oi is not None:
-                ab = AnnotationBbox(oi, (rr["Jornada"], rr["y"]),
-                                    frameon=False, pad=0.0, zorder=4, clip_on=True)
-                ax.add_artist(ab)
-            else:
-                col = {"W": "#2E7D32", "D": "#FBC02D", "L": "#C62828"}[rr["R"]]
-                ax.scatter([rr["Jornada"]], [rr["y"]], s=90, c=col, edgecolor="black", linewidths=0.7, zorder=3)
 
-    
-        ax.set_yticks([0, 1, 2]); ax.set_yticklabels(["Derrota", "Empate", "Victoria"])
+            # logos chicos y uniformes
+            target_px = logo_px_double if (d2 is not None) else logo_px_single
+            for _, rr in dd.iterrows():
+                oi = _logo_image_for(rr["Rival"], target_px=target_px)
+                if oi is not None:
+                    ab = AnnotationBbox(
+                        oi, (rr["Jornada"], rr["y"]),
+                        frameon=False, pad=0.0, zorder=4, clip_on=True
+                    )
+                    ax.add_artist(ab)
+                else:
+                    # fallback: punto coloreado
+                    col = {"W": COL_WIN, "D": COL_DRAW, "L": COL_LOSS}[rr["R"]]
+                    ax.scatter(
+                        [rr["Jornada"]], [rr["y"]],
+                        s=90, c=col, edgecolor="black", linewidths=0.7, zorder=3
+                    )
+
+        ax.set_yticks([0, 1, 2])
+        ax.set_yticklabels(["Derrota", "Empate", "Victoria"])
         ax.grid(True, axis="x", ls="--", lw=0.8, color=GRID, alpha=0.55)
-        ax.set_xlim(0.5, max_j + 0.5); ax.set_ylim(-0.45, 2.45)
-        ax.set_title(eq.upper(), pad=6, fontsize=12, color="#1F1F1F")
+        ax.set_xlim(0.5, max_j + 0.5)
+        ax.set_ylim(-0.45, 2.45)
+        ax.set_title(str(eq).upper(), pad=6, fontsize=12, color="#1F1F1F")
         ax.tick_params(colors="#1F1F1F")
         for spine in ax.spines.values():
             spine.set_color("#1F1F1F")
-
 
     axes[-1].set_xticks(list(range(1, max_j + 1)))
     axes[-1].set_xlabel("Fecha (Jornada)", fontsize=12, color="#1F1F1F")
     plt.tight_layout()
     return fig
-
-
 
 def tabla_a_jornada(df_res: pd.DataFrame, j_corte: int) -> pd.DataFrame:
     """
