@@ -1222,18 +1222,16 @@ def draw_key_stats_panel(home_name: str, away_name: str,
 
 # --------- UI: mostrar tablas completas (sin scroll vertical) ----------
 def show_full_table(df: pd.DataFrame, max_px: int = 1000):
-    """
-    Muestra el DataFrame completo ajustando la altura para evitar scroll vertical.
-    """
+    """Muestra el DataFrame completo sin scroll + oculta índice."""
     import streamlit as st
     if df is None:
         return
+    df = df.reset_index(drop=True)  # <- oculta índice duro-dura
     n = int(len(df))
-    row_h = 35   # alto aproximado por fila
+    row_h = 35
     hdr_h = 38
     height = max(140, min(max_px, hdr_h + n * row_h))
     st.dataframe(df, use_container_width=True, height=height, hide_index=True)
-
 
 # --------- Jornada: índice 1..N a partir de "Jornada ID" ----------
 def _build_jornada_index(df_res: pd.DataFrame) -> tuple[pd.DataFrame, dict[int, int]]:
@@ -1526,13 +1524,35 @@ def plot_wdl_por_jornada(
 
 def tabla_a_jornada(df_res: pd.DataFrame, j_corte: int) -> pd.DataFrame:
     """
-    Reutiliza tu 'tabla_a_fecha' pero cortando por número de jornada (1..N).
-    Asegura PJ parejos hasta la jornada seleccionada.
+    Tabla 'pareja' a la jornada: para cada equipo toma sus primeros j_corte
+    partidos (ordenados por JornadaN y fecha), y luego calcula la tabla.
     """
+    # Indexar jornadas
     d_j, _ = _build_jornada_index(df_res)
-    d_cut = d_j[d_j["JornadaN"].le(j_corte)].copy()
-    # Le paso un corte 'enorme' para que adentro no vuelva a filtrar por fecha
-    return tabla_a_fecha(d_cut, pd.Timestamp.max)
+    d = d_j.dropna(subset=["JornadaN", "Goles Local", "Goles Visitante"]).copy()
+
+    if d.empty:
+        return pd.DataFrame(columns=["Pos","Equipo","Pts","PJ","PG","PE","PP","GF","GC","DG","Racha"])
+
+    # Lista de equipos
+    equipos = pd.unique(pd.concat([d["Equipo Local"], d["Equipo Visitante"]], ignore_index=True))
+
+    # Para cada equipo, me quedo con sus primeros j_corte partidos (por JornadaN, luego por Fecha)
+    partes = []
+    for eq in equipos:
+        m = (d["Equipo Local"].eq(eq)) | (d["Equipo Visitante"].eq(eq))
+        g = d.loc[m].sort_values(["JornadaN", "Fecha Técnica"])
+        partes.append(g.head(int(j_corte)))
+
+    d_cut = (pd.concat(partes, ignore_index=True)
+               .drop_duplicates(subset=["JornadaN","Equipo Local","Equipo Visitante","Goles Local","Goles Visitante"]))
+
+    # Calcula tabla con tu función existente (sin recorte por timestamp)
+    df_tab = tabla_a_fecha(d_cut, pd.Timestamp.max)
+
+    # Si existiera 'Movimiento', la vamos a sacar en el paso 3 (display)
+    return df_tab
+
 
 # =========================
 # UI — MENÚ
@@ -3146,12 +3166,12 @@ if menu == "🏆 Tabla & Resultados":
             j_corte = st.slider("Corte por fecha (Jornada)", min_value=1, max_value=J_MAX, value=J_MAX, step=1)
             st.caption(f"Mostrando hasta la jornada {j_corte}.")
 
-            
             # 2) TABLA a la jornada (PJ parejos) y sin recorte por fecha real
             df_fecha = tabla_a_jornada(df_res, j_corte)
+            # Ocultar columna 'Movimiento' si está
+            df_fecha = df_fecha.drop(columns=["Movimiento"], errors="ignore")
             show_full_table(df_fecha)
 
-    
             # 3) ELO por jornada (mismo corte), con multiselect
             elo_pivot = _compute_elo_by_jornada(df_res_j[df_res_j["JornadaN"].le(j_corte)])
             equipos_all = list(elo_pivot.columns)
