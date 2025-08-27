@@ -19,6 +19,23 @@ from PIL import Image
 import seaborn as sns
 from collections import Counter, defaultdict
 
+import streamlit as st
+
+with st.sidebar.expander("⚙️ Debug"):
+    if st.button("♻️ Forzar recarga (clear cache)"):
+        try:
+            st.cache_data.clear()
+        except Exception:
+            pass
+        try:
+            st.cache_resource.clear()
+        except Exception:
+            pass
+        try:
+            st.rerun()
+        except Exception:
+            st.experimental_rerun()
+
 # =========================
 # CONFIG / ESTILO
 # =========================
@@ -1342,6 +1359,10 @@ def build_wdl_por_jornada(df_res: pd.DataFrame) -> pd.DataFrame:
 
     out = pd.DataFrame(rows)
     return out.sort_values(["Equipo", "Jornada"]).reset_index(drop=True)
+
+# --- alias de compatibilidad por si queda alguna llamada vieja ---
+def build_wdl_jornada(df_res: pd.DataFrame) -> pd.DataFrame:
+    return build_wdl_por_jornada(df_res)
 
 def plot_wdl_por_jornada(wdl_jornada_df: pd.DataFrame, eq_a: str, eq_b: str|None, max_j: int) -> plt.Figure:
     BG = "#E8F5E9"
