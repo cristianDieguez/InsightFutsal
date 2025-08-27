@@ -1153,39 +1153,49 @@ def _build_jornada_index(df_res: pd.DataFrame) -> tuple[pd.DataFrame, dict[int,i
     d["JornadaN"] = d["Jornada ID"].map(jid2n).astype("Int64")
     return d, jid2n
 
-def _compute_elo_by_jornada(df_matches: pd.DataFrame, K: float = 20.0) -> dict[str, list[tuple[int, float]]]:
+def _compute_elo_by_jornada(df_res_cut, base_elo=1000.0, K=24.0):
     """
-    Devuelve trayectoria por equipo: {equipo: [(jornadaN, rating), ...]}.
-    Si un equipo no juega en una jornada, se arrastra su rating (constante).
+    Calcula ELO por jornada (1..max) y devuelve un DataFrame pivot:
+    index = JornadaN ; columns = Equipo ; values = ELO.
+    Si no hay datos, devuelve DataFrame vacío (no None).
     """
-    # equipos
-    teams = sorted(set(df_matches["Equipo Local"]).union(set(df_matches["Equipo Visitante"])))
-    if not teams:
-        return {}
+    d = df_res_cut.copy()
+    # nos quedamos sólo con filas válidas
+    d = d.dropna(subset=["JornadaN", "Goles Local", "Goles Visitante"])
+    if d.empty or not np.isfinite(d["JornadaN"]).any():
+        return pd.DataFrame(index=pd.Index([], name="JornadaN"))
 
-    # jornadas
-    j_list = sorted(df_matches["JornadaN"].dropna().unique().tolist())
-    ratings = {t: 1000.0 for t in teams}
-    traj = {t: [] for t in teams}
+    teams = sorted(pd.unique(pd.concat([d["Equipo Local"], d["Equipo Visitante"]])))
+    elo = {t: float(base_elo) for t in teams}
+    rows = []
 
-    for j in j_list:
-        g = df_matches[df_matches["JornadaN"] == j].sort_values("Fecha Técnica")
-        for _, r in g.iterrows():
+    max_j = int(np.nanmax(d["JornadaN"]))
+    for j in range(1, max_j + 1):
+        jj = d[d["JornadaN"] == j].sort_values("Fecha Técnica")
+        if jj.empty:
+            # aun si no hubo partidos esa jornada, registramos snapshot sin cambios
+            rows.append({"JornadaN": j, **elo})
+            continue
+
+        for _, r in jj.iterrows():
             h, a = r["Equipo Local"], r["Equipo Visitante"]
             gl, gv = int(r["Goles Local"]), int(r["Goles Visitante"])
+            Ra, Rb = elo[h], elo[a]
+            Ea = 1.0 / (1.0 + 10.0 ** ((Rb - Ra) / 400.0))
+            if gl > gv:
+                Sa, Sb = 1.0, 0.0
+            elif gl < gv:
+                Sa, Sb = 0.0, 1.0
+            else:
+                Sa, Sb = 0.5, 0.5
+            elo[h] = Ra + K * (Sa - Ea)
+            elo[a] = Rb + K * ((1.0 - Sa) - (1.0 - Ea))
+        rows.append({"JornadaN": j, **elo})
 
-            Rh, Ra = ratings[h], ratings[a]
-            Eh = 1.0 / (1.0 + 10 ** ((Ra - Rh) / 400.0))
-            Sh = 1.0 if gl > gv else (0.5 if gl == gv else 0.0)
-            Sa = 1.0 - Sh
-            ratings[h] = Rh + K * (Sh - Eh)
-            ratings[a] = Ra + K * (Sa - (1.0 - Eh))
-
-        # al final de la jornada, “fotografiamos” todos los ratings (jueguen o no)
-        for t in teams:
-            traj[t].append((int(j), float(ratings[t])))
-
-    return traj
+    out = pd.DataFrame(rows).set_index("JornadaN")
+    # suavizado ligero (rolling)
+    out = out.rolling(window=2, min_periods=1).mean()
+    return out
 
 def _smooth_series(y: list[float], passes: int = 2) -> list[float]:
     """Suavizado muy leve con medias móviles centradas (no requiere scipy)."""
@@ -2912,32 +2922,36 @@ if menu == "🏆 Tabla & Resultados":
             
             # 2) Cortar por el slider (misma lógica que la tabla)
             df_res_cut = df_res_j[df_res_j["Fecha Técnica"] <= corte_ts].copy()
-            if df_res_cut.empty:
-                st.info("Sin partidos hasta el corte temporal seleccionado.")
+            if df_res_cut.empty or not df_res_cut["JornadaN"].notna().any():
+                st.info("Sin partidos con Jornada asignada hasta el corte temporal seleccionado.")
             else:
-                max_j = int(df_res_cut["JornadaN"].max())
+                max_j = int(np.nanmax(df_res_cut["JornadaN"]))
             
-                # -- ELO por JORNADA (sin leyenda; etiquetas al final de cada línea) --
+                # -- ELO por JORNADA (robusto si no hay datos) --
                 st.markdown("**Evolución del índice ELO por Jornada**")
-                elo_pivot = _compute_elo_by_jornada(df_res_cut)     # pivote jornadas × equipos
-                equipos_all = list(elo_pivot.columns)
-                sel_equipos = st.multiselect("Equipos a mostrar en el ELO", equipos_all, default=equipos_all)
-                fig_elo = plot_elo_por_jornada(elo_pivot, sel_equipos, max_j)
-                st.pyplot(fig_elo, use_container_width=True)
+                elo_pivot = _compute_elo_by_jornada(df_res_cut)  # DataFrame (o vacío)
             
-                # -- W/D/L por JORNADA en 3 “escalones”, con comparación opcional --
-                st.markdown("**Resultados por fecha (Jornada)**")
+                if isinstance(elo_pivot, pd.DataFrame) and not elo_pivot.empty:
+                    equipos_all = list(elo_pivot.columns)
+                    default_sel = equipos_all  # todos por defecto
+                    sel_equipos = st.multiselect("Equipos a mostrar en el ELO", equipos_all, default=default_sel)
+                    fig_elo = plot_elo_por_jornada(elo_pivot, sel_equipos, max_j)
+                    st.pyplot(fig_elo, use_container_width=True)
+                else:
+                    st.info("No hay suficiente información para graficar ELO en el rango seleccionado.")
+            
+                # -- W/D/L por JORNADA --
                 equipos_res = sorted(pd.unique(pd.concat([df_res_cut["Equipo Local"], df_res_cut["Equipo Visitante"]])))
                 cA, cB = st.columns(2)
                 with cA:
                     eq1 = st.selectbox("Equipo A", equipos_res, index=0)
                 with cB:
-                    eq2_raw = st.selectbox("Equipo B (opcional)", ["(ninguno)"]+equipos_res, index=0)
+                    eq2_raw = st.selectbox("Equipo B (opcional)", ["(ninguno)"] + equipos_res, index=0)
                     eq2 = None if eq2_raw == "(ninguno)" else eq2_raw
             
                 fig_wdl = plot_wdl_por_jornada(df_res_cut, eq1, eq2, max_j)
                 st.pyplot(fig_wdl, use_container_width=True)
-            # ============================================================================
+
 
 
 
