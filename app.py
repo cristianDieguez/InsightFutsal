@@ -1144,43 +1144,67 @@ def draw_key_stats_panel(home_name: str, away_name: str,
     st.pyplot(fig, use_container_width=True)
     plt.close(fig)
 
-# ------------ Helpers ELO & gráficos por JORNADA ------------
+# =========================
+# Helpers (Tablas & Gráficos)
+# =========================
 
-def _build_jornada_index(df_res: pd.DataFrame) -> tuple[pd.DataFrame, dict[int,int]]:
-    """Añade columna JornadaN (1..N) a df_res usando el orden natural de Jornada ID."""
-    jid_order = sorted(df_res["Jornada ID"].dropna().unique())
-    jid2n = {jid: i+1 for i, jid in enumerate(jid_order)}
+# --------- UI: mostrar tablas completas (sin scroll vertical) ----------
+def show_full_table(df: pd.DataFrame, max_px: int = 1000):
+    """
+    Muestra el DataFrame completo ajustando la altura para evitar scroll vertical.
+    """
+    import streamlit as st
+    if df is None:
+        return
+    n = int(len(df))
+    row_h = 35   # alto aproximado por fila
+    hdr_h = 38
+    height = max(140, min(max_px, hdr_h + n * row_h))
+    st.dataframe(df, use_container_width=True, height=height, hide_index=True)
+
+
+# --------- Jornada: índice 1..N a partir de "Jornada ID" ----------
+def _build_jornada_index(df_res: pd.DataFrame) -> tuple[pd.DataFrame, dict[int, int]]:
+    """
+    Añade columna JornadaN (1..N) a df_res usando el orden natural de Jornada ID.
+    Devuelve (df_con_jornadaN, mapa_jid->N)
+    """
+    jid_order = sorted(pd.to_numeric(df_res["Jornada ID"], errors="coerce").dropna().unique())
+    jid2n = {int(jid): i + 1 for i, jid in enumerate(jid_order)}
+
     d = df_res.copy()
-    d["JornadaN"] = d["Jornada ID"].map(jid2n).astype("Int64")
+    jid_num = pd.to_numeric(d["Jornada ID"], errors="coerce")
+    d["JornadaN"] = jid_num.map(lambda x: jid2n.get(int(x)) if pd.notna(x) else np.nan).astype("Int64")
     return d, jid2n
 
-def _compute_elo_by_jornada(df_res_cut, base_elo=1000.0, K=24.0):
+
+# --------- ELO por jornada (snapshot tras cada fecha) ----------
+def _compute_elo_by_jornada(df_res_cut: pd.DataFrame, base_elo: float = 1000.0, K: float = 24.0) -> pd.DataFrame:
     """
     Calcula ELO por jornada (1..max) y devuelve un DataFrame pivot:
-    index = JornadaN ; columns = Equipo ; values = ELO.
-    Si no hay datos, devuelve DataFrame vacío (no None).
+      index = JornadaN ; columns = Equipo ; values = ELO.
+    Si no hay datos, devuelve DataFrame vacío.
     """
     d = df_res_cut.copy()
-    # nos quedamos sólo con filas válidas
     d = d.dropna(subset=["JornadaN", "Goles Local", "Goles Visitante"])
-    if d.empty or not np.isfinite(d["JornadaN"]).any():
+    if d.empty or not np.isfinite(pd.to_numeric(d["JornadaN"], errors="coerce")).any():
         return pd.DataFrame(index=pd.Index([], name="JornadaN"))
 
-    teams = sorted(pd.unique(pd.concat([d["Equipo Local"], d["Equipo Visitante"]])))
+    teams = sorted(pd.unique(pd.concat([d["Equipo Local"], d["Equipo Visitante"]], ignore_index=True)))
     elo = {t: float(base_elo) for t in teams}
     rows = []
 
-    max_j = int(np.nanmax(d["JornadaN"]))
+    max_j = int(np.nanmax(pd.to_numeric(d["JornadaN"], errors="coerce")))
     for j in range(1, max_j + 1):
         jj = d[d["JornadaN"] == j].sort_values("Fecha Técnica")
         if jj.empty:
-            # aun si no hubo partidos esa jornada, registramos snapshot sin cambios
             rows.append({"JornadaN": j, **elo})
             continue
 
         for _, r in jj.iterrows():
             h, a = r["Equipo Local"], r["Equipo Visitante"]
             gl, gv = int(r["Goles Local"]), int(r["Goles Visitante"])
+
             Ra, Rb = elo[h], elo[a]
             Ea = 1.0 / (1.0 + 10.0 ** ((Rb - Ra) / 400.0))
             if gl > gv:
@@ -1191,179 +1215,162 @@ def _compute_elo_by_jornada(df_res_cut, base_elo=1000.0, K=24.0):
                 Sa, Sb = 0.5, 0.5
             elo[h] = Ra + K * (Sa - Ea)
             elo[a] = Rb + K * ((1.0 - Sa) - (1.0 - Ea))
+
         rows.append({"JornadaN": j, **elo})
 
     out = pd.DataFrame(rows).set_index("JornadaN")
-    # suavizado ligero (rolling)
+    # suavizado ligero para evitar quiebres muy “rectos”
     out = out.rolling(window=2, min_periods=1).mean()
     return out
 
-def _smooth_series(y: list[float], passes: int = 2) -> list[float]:
-    """Suavizado muy leve con medias móviles centradas (no requiere scipy)."""
-    import numpy as np
-    s = pd.Series(y, dtype="float64")
-    for _ in range(passes):
-        s = s.rolling(3, center=True, min_periods=1).mean()
-    return s.tolist()
 
-def plot_elo_por_jornada(elo_pivot: pd.DataFrame, equipos: list[str], max_j: int) -> plt.Figure:
+# --------- Plot: ELO por jornada (con etiquetas al final, sin leyenda lateral) ----------
+def plot_elo_por_jornada(elo_pivot: pd.DataFrame, equipos: list[str] | None, max_j: int) -> plt.Figure:
     """
     Curvas ELO por jornada con fondo verde claro y etiquetas al final.
-    'equipos' controla qué líneas se dibujan (vacío = todas).
+    'equipos' controla qué líneas se dibujan (None o vacío = todas).
     """
-    # fondo verde MUY claro para que destaquen las líneas
-    BG = "#E8F5E9"     # Material Green 50
+    BG = "#E8F5E9"     # verde muy claro (contraste)
     GRID = "#9E9E9E"
 
     if not equipos:
         equipos = list(elo_pivot.columns)
 
-    # datos a tramos (para poder anotar el último punto válido)
+    # trayectorias dentro del corte
     traj: dict[str, list[tuple[int, float]]] = {}
     for eq in equipos:
-        s = elo_pivot[eq].dropna()
-        if s.empty:
-            continue
-        # nos quedamos dentro del corte
+        s = pd.to_numeric(elo_pivot[eq], errors="coerce").dropna()
         s = s[s.index <= max_j]
-        traj[eq] = list(zip(s.index.tolist(), s.values.tolist()))
+        if not s.empty:
+            traj[eq] = list(zip(s.index.tolist(), s.values.tolist()))
 
     fig, ax = plt.subplots(figsize=(10.5, 6.6))
     fig.patch.set_facecolor(BG)
     ax.set_facecolor(BG)
 
-    # paleta
     palette = plt.cm.tab20(np.linspace(0, 1, max(20, len(traj))))
-
     for i, (eq, pts) in enumerate(traj.items()):
         xs = [x for (x, _) in pts]
         ys = [y for (_, y) in pts]
         if not xs:
             continue
         col = palette[i % len(palette)]
-        # línea suave (simplemente conectamos puntos de jornada a jornada)
         ax.plot(xs, ys, lw=2.2, color=col, zorder=2)
-
-        # etiqueta al final, con contorno blanco para legibilidad
         x_end, y_end = xs[-1], ys[-1]
         ax.text(
             max_j + 0.1, y_end, eq.upper(),
-            va="center", ha="left",
-            fontsize=10.5, color=col,
+            va="center", ha="left", fontsize=10.5, color=col,
             path_effects=[pe.withStroke(linewidth=3, foreground="white")]
         )
 
-    # ejes y grilla
-    ax.set_xlim(0.5, max_j + 1.4)        # deja espacio para etiquetas del final + puntos de los extremos
+    ax.set_xlim(0.5, max_j + 1.4)                 # espacio para etiquetas finales
     ax.set_xticks(list(range(1, max_j + 1)))
     ax.set_xlabel("Fecha (Jornada)", fontsize=12, color="#1F1F1F")
     ax.set_ylabel("Índice ELO", fontsize=12, color="#1F1F1F")
     ax.tick_params(colors="#1F1F1F")
     ax.grid(True, ls="--", lw=0.8, color=GRID, alpha=0.55)
-
-    # nada de leyenda a la derecha
     return fig
 
 
-    # Trajectorias como listas de puntos (x = jornada, y = elo)
-    def _traj(col_name: str):
-        s = pd.to_numeric(df[col_name], errors="coerce").dropna()
-        xs = s.index.astype(float).to_list()
-        ys = s.values.astype(float).tolist()
-        return xs, ys
+# --------- W/D/L por jornada ----------
+def build_wdl_por_jornada(df_res: pd.DataFrame) -> pd.DataFrame:
+    """
+    Devuelve filas (Equipo, Jornada, Res) para cada partido finalizado de df_res.
+    Res ∈ {'W','D','L'}. Jornada sale de 'Jornada ID'.
+    """
+    if df_res is None or df_res.empty:
+        return pd.DataFrame(columns=["Equipo", "Jornada", "Res"])
 
-    for k in equipos:
-        xs, ys = _traj(k)
-        if len(xs) == 0:
+    rows = []
+    for _, r in df_res.iterrows():
+        j = r.get("Jornada ID")
+        if pd.isna(j):
             continue
+        j = int(j)
 
-        # Suavizado lineal: densifico el eje X y hago np.interp
-        if len(xs) >= 2:
-            x_min, x_max = float(min(xs)), float(max(xs))
-            # 20 puntos por jornada para que se vea fluido
-            n_points = max(50, int((x_max - x_min) * 20) + 1)
-            xnew = np.linspace(x_min, x_max, n_points)
-            ynew = np.interp(xnew, xs, ys)
-            ln, = ax.plot(xnew, ynew, lw=2.2, label=k)
-            col = ln.get_color()
-            ax.text(xnew[-1] + 0.1, ynew[-1], k, fontsize=9, color=col,
-                    ha="left", va="center")
+        gl = int(r["Goles Local"])
+        gv = int(r["Goles Visitante"])
+        loc = r["Equipo Local"]
+        vis = r["Equipo Visitante"]
+
+        if gl > gv:
+            res_loc, res_vis = "W", "L"
+        elif gl < gv:
+            res_loc, res_vis = "L", "W"
         else:
-            ln, = ax.plot(xs, ys, lw=2.2, label=k)
-            col = ln.get_color()
-            ax.text(xs[-1] + 0.1, ys[-1], k, fontsize=9, color=col,
-                    ha="left", va="center")
+            res_loc = res_vis = "D"
 
-    ax.set_xlim(1, float(max_j) if pd.notna(max_j) else max(1.0, float(df.index.max())))
-    ax.set_xlabel("Fecha (Jornada)", fontsize=11)
-    ax.set_ylabel("Índice ELO", fontsize=11)
-    ax.grid(True, ls="--", alpha=0.28)
-    # sin leyenda (etiquetamos al final de cada línea)
-    return fig
+        rows.append({"Equipo": loc, "Jornada": j, "Res": res_loc})
+        rows.append({"Equipo": vis, "Jornada": j, "Res": res_vis})
 
-def plot_wdl_por_jornada(wdl_jornada_df: pd.DataFrame, eq_a: str, eq_b: str|None, max_j: int) -> plt.Figure:
+    out = pd.DataFrame(rows)
+    if out.empty:
+        return out
+    return out.sort_values(["Equipo", "Jornada"]).reset_index(drop=True)
+
+
+def plot_wdl_por_jornada(df_res: pd.DataFrame, eq_a: str, eq_b: str | None, max_j: int) -> plt.Figure:
     """
     Dos bandas (una por equipo) con W/D/L por JORNADA.
     - Fondo verde claro.
-    - Ticks numéricos (1..max_j).
-    - Puntos completos (márgenes x).
-    - Línea conectando puntos.
+    - Ticks 1..max_j.
+    - Puntos completos (márgenes x) + línea conectora.
     - Colores: verde victoria, amarillo empate, rojo derrota.
     """
     BG = "#E8F5E9"
     GRID = "#9E9E9E"
-    COL_WIN, COL_DRAW, COL_LOSS = "#2E7D32", "#FBC02D", "#C62828"
+    COL = {"W": "#2E7D32", "D": "#FBC02D", "L": "#C62828"}
     MAP_Y = {"L": 0, "D": 1, "W": 2}
 
-    def _prep(eq):
-        d = (wdl_jornada_df[wdl_jornada_df["Equipo"] == eq]
+    wdl = build_wdl_por_jornada(df_res)
+
+    def _prep(eq: str) -> pd.DataFrame:
+        d = (wdl[wdl["Equipo"] == eq]
              .sort_values("Jornada")
-             .loc[:, ["Jornada", "R"]].dropna())
+             .loc[:, ["Jornada", "Res"]]
+             .dropna())
         d = d[d["Jornada"] <= max_j]
-        d["y"] = d["R"].map(MAP_Y)
+        d["y"] = d["Res"].map(MAP_Y)
+        d["c"] = d["Res"].map(COL)
         return d
 
     d1 = _prep(eq_a)
     d2 = _prep(eq_b) if (eq_b and eq_b != "(ninguno)") else None
 
-    fig, axes = plt.subplots(nrows=2 if d2 is not None else 1, ncols=1,
-                             figsize=(11, 6 if d2 is not None else 3.8), sharex=True)
-    if not isinstance(axes, np.ndarray):
-        axes = np.array([axes])
+    nrows = 2 if d2 is not None else 1
+    fig, axes = plt.subplots(nrows=nrows, ncols=1,
+                             figsize=(11, 6 if nrows == 2 else 3.8),
+                             sharex=True)
+    if nrows == 1:
+        axes = [axes]
 
-    for ax_idx, (eq, dd) in enumerate([(eq_a, d1), (eq_b, d2)]):
-        if dd is None: 
-            continue
-        ax = axes[ax_idx]
+    def _draw(ax, dd: pd.DataFrame, titulo: str):
         fig.patch.set_facecolor(BG)
         ax.set_facecolor(BG)
-
-        # puntos por resultado
-        colors = dd["R"].map({"W": COL_WIN, "D": COL_DRAW, "L": COL_LOSS})
-        ax.scatter(dd["Jornada"], dd["y"], s=90, c=colors, edgecolor="black",
-                   linewidths=0.6, zorder=3, clip_on=False)
-
-        # línea que conecta las jornadas (en color neutro para no “pisar” los puntos)
-        ax.plot(dd["Jornada"], dd["y"], color="#455A64", lw=1.6, alpha=0.9, zorder=2)
-
-        # eje y con tres escalones
-        ax.set_yticks([0, 1, 2])
-        ax.set_yticklabels(["Derrota", "Empate", "Victoria"])
+        if not dd.empty:
+            ax.plot(dd["Jornada"], dd["y"], color="#455A64", lw=1.6, alpha=0.9, zorder=2)
+            ax.scatter(dd["Jornada"], dd["y"], s=100, c=dd["c"],
+                       edgecolor="black", linewidths=0.6,
+                       zorder=3, clip_on=False)
+        ax.set_yticks([0, 1, 2], ["Derrota", "Empate", "Victoria"])
         ax.grid(True, axis="x", ls="--", lw=0.8, color=GRID, alpha=0.55)
-        ax.set_xlim(0.5, max_j + 0.5)                  # asegura que los puntos extremos se vean completos
+        ax.set_xlim(0.5, max_j + 0.5)   # puntos extremos visibles
         ax.set_ylim(-0.45, 2.45)
-        ax.set_title(eq.upper(), pad=6, fontsize=12, color="#1F1F1F")
-
-        # estética ticks/labels
+        ax.set_title(titulo.upper(), pad=6, fontsize=12, color="#1F1F1F")
         ax.tick_params(colors="#1F1F1F")
-        for spine in ax.spines.values():
-            spine.set_color("#1F1F1F")
+        for s in ax.spines.values():
+            s.set_color("#1F1F1F")
 
-    axes[-1].set_xticks(list(range(1, max_j + 1)))     # solo números (sin “Fecha ”)
+    _draw(axes[0], d1, eq_a)
+    if d2 is not None:
+        _draw(axes[1], d2, eq_b)
+
+    axes[-1].set_xticks(list(range(1, max_j + 1)))
     axes[-1].set_xlabel("Fecha (Jornada)", fontsize=12, color="#1F1F1F")
 
     plt.tight_layout()
     return fig
+
 
 
 # =========================
