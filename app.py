@@ -719,37 +719,45 @@ def draw_timeline_panel(rival_name: str, tl: dict,
     ax  = fig.add_axes([0,0,1,1]); ax.set_xlim(0,1); ax.set_ylim(0,1); ax.axis("off")
     ax.add_patch(Rectangle((0,0), 1, 1, facecolor=bg_green, edgecolor="none"))
 
-    # Banner sup
-    BANNER_H_loc = 0.14; BANNER_Y0 = 1 - BANNER_H_loc
-    ax.add_patch(Rectangle((0, BANNER_Y0), 1, BANNER_H_loc, facecolor=white, edgecolor="none"))
-    if ferro_logo_path: draw_logo(ax, ferro_logo_path, 0.075, BANNER_Y0+0.07, 0.12)
-    if rival_logo_path: draw_logo(ax, rival_logo_path, 0.925, BANNER_Y0+0.07, 0.12)
-    ax.text(0.5, BANNER_Y0+0.085, f"FERRO vs {rival_name.upper()}", ha="center", va="center",
-            color=bg_green, fontsize=30, weight="bold")
-    ax.text(0.5, BANNER_Y0+0.040, "TIMELINE", ha="center", va="center",
-            color=bg_green, fontsize=16, weight="bold")
+    # ---------- Banner superior (idéntico a Estadísticas) ----------
+    BANNER_Y0 = 1.0 - (BANNER_H + 0.02)
+    ax.add_patch(Rectangle((0, BANNER_Y0), 1, BANNER_H, facecolor="white", edgecolor="none", zorder=5))
 
-    # Banner inferior
-    FOOT_H, FOOT_Y0 = 0.12, 0.00
-    ax.add_patch(Rectangle((0, FOOT_Y0), 1, FOOT_H, facecolor=white, edgecolor="none"))
-    if os.path.isfile(FOOTER_LEFT_LOGO):  draw_logo(ax, FOOTER_LEFT_LOGO,  0.09, FOOT_Y0+FOOT_H*0.52, 0.14)
-    if os.path.isfile(FOOTER_RIGHT_LOGO): draw_logo(ax, FOOTER_RIGHT_LOGO, 0.91, FOOT_Y0+FOOT_H*0.52, 0.12)
-    ax.text(0.50, FOOT_Y0+FOOT_H*0.62, "TRABAJO FIN DE MÁSTER", ha="center", va="center",
-            color=bg_green, fontsize=18, weight="bold")
-    ax.text(0.50, FOOT_Y0+FOOT_H*0.32, "Cristian Dieguez", ha="center", va="center",
-            color=bg_green, fontsize=13, weight="bold")
+    if ferro_logo_path: draw_logo(ax, ferro_logo_path, 0.09, BANNER_Y0 + BANNER_H*0.52, LOGO_W)
+    if rival_logo_path: draw_logo(ax, rival_logo_path, 0.91, BANNER_Y0 + BANNER_H*0.52, LOGO_W)
 
-    # Panel central
-    panel_y0, panel_y1 = FOOT_Y0+FOOT_H+0.05, BANNER_Y0-0.05
-    panel_h = panel_y1 - panel_y0
+    ax.text(0.5, BANNER_Y0 + BANNER_H*0.63, f"FERRO vs {rival_name.upper()}",
+            ha="center", va="center", fontsize=TITLE_FS, weight="bold", color=bg_green, zorder=7)
+    ax.text(0.5, BANNER_Y0 + BANNER_H*0.29, "TIMELINE",
+            ha="center", va="center", fontsize=SUB_FS,   weight="bold", color=bg_green, zorder=7)
+
+    # ---------- Banner inferior (idéntico a Estadísticas) ----------
+    FOOTER_Y0 = 0.02
+    ax.add_patch(Rectangle((0, FOOTER_Y0), 1, FOOTER_H, facecolor="white", edgecolor="none", zorder=5))
+
+    if os.path.isfile(FOOTER_LEFT_LOGO):
+        draw_logo(ax, FOOTER_LEFT_LOGO,  0.09, FOOTER_Y0 + FOOTER_H*0.52, FOOTER_LOGO_W)
+    if os.path.isfile(FOOTER_RIGHT_LOGO):
+        draw_logo(ax, FOOTER_RIGHT_LOGO, 0.91, FOOTER_Y0 + FOOTER_H*0.52, FOOTER_LOGO_W)
+
+    ax.text(0.5, FOOTER_Y0 + FOOTER_H*0.63, "Trabajo Fin de Máster",
+            ha="center", va="center", fontsize=FOOTER_TITLE_FS, weight="bold", color=bg_green, zorder=7)
+    ax.text(0.5, FOOTER_Y0 + FOOTER_H*0.28, "Cristian Dieguez",
+            ha="center", va="center", fontsize=FOOTER_SUB_FS,   weight="bold", color=bg_green, zorder=7)
+
+    # ---------- Cuerpo del timeline (misma lógica, solo ajusta márgenes) ----------
+    EXTRA_GAP_BELOW_BANNER = 0.075
+    panel_y0 = FOOTER_Y0 + FOOTER_H + 0.012
+    panel_y1 = BANNER_Y0 - EXTRA_GAP_BELOW_BANNER
+    panel_h  = panel_y1 - panel_y0
 
     x_center_gap_L, x_center_gap_R = 0.47, 0.53
-    x_bar_M_max, x_bar_R_max = 0.22, 0.78
-    x_shot_M, x_last_M = 0.05, 0.16
-    x_shot_R, x_last_R = 0.95, 0.84
-    x_goal_M, x_goal_R = x_shot_M - 0.025, x_shot_R + 0.025
+    x_bar_M_max, x_bar_R_max       = 0.22, 0.78
+    x_shot_M, x_last_M             = 0.05, 0.16
+    x_shot_R, x_last_R             = 0.95, 0.84
+    x_goal_M, x_goal_R             = x_shot_M - 0.025, x_shot_R + 0.025
 
-    # Títulos
+    # Títulos de columnas
     ty = panel_y1 + 0.012
     ax.text(x_last_M,  ty, "Últ. tercio", ha="center", va="bottom", fontsize=10, weight="bold")
     ax.text((x_bar_M_max+x_center_gap_L)/2, ty, "Pases/min", ha="center", va="bottom", fontsize=10, weight="bold")
@@ -757,12 +765,11 @@ def draw_timeline_panel(rival_name: str, tl: dict,
     ax.text((x_center_gap_L+x_center_gap_R)/2, ty, "Min.", ha="center", va="bottom", fontsize=10, weight="bold")
     ax.text((x_center_gap_R+x_bar_R_max)/2, ty, "Pases/min", ha="center", va="bottom", fontsize=10, weight="bold")
     ax.text(x_shot_R,  ty, "Tiros / Goles", ha="center", va="bottom", fontsize=10, weight="bold")
-    ax.text(x_last_R,  ty, "Últ. tercio", ha="center", va="bottom", fontsize=10, weight="bold")
+    ax.text(x_last_R,  ty, "Últ. tercio",   ha="center", va="bottom", fontsize=10, weight="bold")
 
-    # Minutos 0..40
+    # Minutos y separadores
     M = 40
     def y_of_index(i): return panel_y1 - panel_h * (i + 0.5) / M
-
     ax.add_line(plt.Line2D([x_center_gap_L, x_center_gap_L], [panel_y0, panel_y1], color=white, alpha=0.28, lw=1.2))
     ax.add_line(plt.Line2D([x_center_gap_R, x_center_gap_R], [panel_y0, panel_y1], color=white, alpha=0.28, lw=1.2))
     for m in range(0, 41, 5):
@@ -772,11 +779,8 @@ def draw_timeline_panel(rival_name: str, tl: dict,
     max_bar = max(int(tl["passes_M"].max() if tl["passes_M"].size else 1),
                   int(tl["passes_R"].max() if tl["passes_R"].size else 1), 1)
 
-    def bar_width_left(cnt):
-        return (x_center_gap_L - x_bar_M_max) * (cnt / max_bar if max_bar else 0)
-
-    def bar_width_right(cnt):
-        return (x_bar_R_max - x_center_gap_R) * (cnt / max_bar if max_bar else 0)
+    def bar_width_left(cnt):  return (x_center_gap_L - x_bar_M_max) * (cnt / max_bar if max_bar else 0)
+    def bar_width_right(cnt): return (x_bar_R_max - x_center_gap_R) * (cnt / max_bar if max_bar else 0)
 
     bar_h = panel_h / M * 0.55
 
