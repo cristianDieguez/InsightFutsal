@@ -49,12 +49,12 @@ LOGO_Z_WDL_DOUBLE = 0.06
 WDL_MAX_LOGOS     = 18   # si hay más puntos que esto, usamos puntos en vez de logos
 
 # Tamaños de escudos (ajustables)
-LOGO_PX_ELO_DEFAULT = 14      # antes 32 (ELO más chico)
+LOGO_PX_ELO_DEFAULT = 12      # antes 32 (ELO más chico)
 LOGO_PX_WDL_SINGLE  = 14      # WDL cuando se muestra 1 equipo
 LOGO_PX_WDL_DOUBLE  = 12      # WDL cuando se muestran 2 equipos
 
-RIGHT_MARGIN_ELO    = 0.55   # ELO: margen a la derecha (espacio para logos/etiquetas)
-MIN_GAP_ELO         = 3.0    # ELO: separación vertical mínima entre logos
+RIGHT_MARGIN_ELO    = 0.45   # ELO: margen a la derecha (espacio para logos/etiquetas)
+MIN_GAP_ELO         = 2.5    # ELO: separación vertical mínima entre logos
 
 BANNER_H   = 0.145
 LOGO_W     = 0.118
@@ -1306,69 +1306,107 @@ def plot_elo_por_jornada(
     equipos: list[str],
     max_j: int
 ) -> plt.Figure:
+    """
+    Traza ELO por jornada y etiqueta cada curva con el escudo al final.
+    Usa (si existen) las constantes globales:
+      - LOGO_PX_ELO_DEFAULT (int, px del alto destino)      -> default 14
+      - RIGHT_MARGIN_ELO     (float, margen X para logos)   -> default 0.55
+      - MIN_GAP_ELO          (float, separación vertical)   -> default 3.0
+    Requiere helper _logo_image_for(team, target_px=int).
+    """
     BG, GRID = "#E8F5E9", "#9E9E9E"
 
-    if elo_pivot is None or elo_pivot.empty:
-        fig, ax = plt.subplots(figsize=(8,4))
+    # Defaults seguros si faltan las constantes globales
+    logo_px     = globals().get("LOGO_PX_ELO_DEFAULT", 14)
+    right_margin= globals().get("RIGHT_MARGIN_ELO", 0.55)
+    min_gap     = globals().get("MIN_GAP_ELO", 3.0)
+
+    # Validación de entrada
+    if elo_pivot is None or elo_pivot.empty or max_j is None or max_j <= 0:
+        fig, ax = plt.subplots(figsize=(8, 4))
         ax.text(0.5, 0.5, "Sin datos", ha="center", va="center")
+        ax.axis("off")
         return fig
 
     if not equipos:
         equipos = list(elo_pivot.columns)
 
-    traj = {}
+    # Trayectorias por equipo
+    traj: dict[str, list[tuple[int, float]]] = {}
     for eq in equipos:
-        if eq in elo_pivot.columns:
-            s = elo_pivot[eq].dropna()
-            s = s[s.index <= max_j]
-            if not s.empty:
-                traj[eq] = list(zip(s.index.tolist(), s.values.tolist()))
+        if eq not in elo_pivot.columns:
+            continue
+        s = elo_pivot[eq].dropna()
+        s = s[s.index.astype(int) <= int(max_j)]
+        if not s.empty:
+            traj[eq] = list(zip(s.index.astype(int).tolist(), s.values.astype(float).tolist()))
 
+    if not traj:
+        fig, ax = plt.subplots(figsize=(8, 4))
+        ax.text(0.5, 0.5, "Sin datos para los equipos elegidos", ha="center", va="center")
+        ax.axis("off")
+        return fig
+
+    # Figure
     fig, ax = plt.subplots(figsize=(11.2, 5.8))
     fig.patch.set_facecolor(BG); ax.set_facecolor(BG)
 
+    # Curvas
     palette = plt.cm.tab20(np.linspace(0, 1, max(20, len(traj))))
     for i, (eq, pts) in enumerate(traj.items()):
-        xs = [x for x,_ in pts]; ys = [y for _,y in pts]
+        xs = [x for x, _ in pts]
+        ys = [y for _, y in pts]
         if xs:
             ax.plot(xs, ys, lw=2.0, color=palette[i % len(palette)], zorder=2)
 
-    ends = []
+    # Puntas para etiquetar (eq, x_end, y_end, color)
+    ends: list[tuple[str, int, float, tuple]] = []
     for i, (eq, pts) in enumerate(traj.items()):
-        xs = [x for x,_ in pts]; ys = [y for _,y in pts]
+        xs = [x for x, _ in pts]
+        ys = [y for _, y in pts]
         if xs:
-            ends.append([eq, xs[-1], ys[-1], palette[i % len(palette)]])
+            ends.append((eq, xs[-1], ys[-1], palette[i % len(palette)]))
 
+    # Ordenar por Y y espaciar verticalmente
     ends.sort(key=lambda t: t[2])
-    min_gap = MIN_GAP_ELO
+    spaced = [list(ends[0])]
     for k in range(1, len(ends)):
-        if ends[k][2] - ends[k-1][2] < min_gap:
-            ends[k][2] = ends[k-1][2] + min_gap
+        prev_y = spaced[-1][2]
+        cur = list(ends[k])
+        if cur[2] - prev_y < min_gap:
+            cur[2] = prev_y + min_gap
+        spaced.append(cur)
 
-    for eq, _, y_end, col in ends:
-        min_gap = MIN_GAP_ELO
-        ax.set_xlim(0.5, max_j + RIGHT_MARGIN_ELO)
-        x_logo = max_j + 0.15
+    # Límites y posición de logos
+    ax.set_xlim(0.5, max_j + right_margin)
+    x_logo = max_j + right_margin - 0.20  # un poco dentro del margen
+
+    # Logos/texto al final
+    for eq, _x_end, y_end, col in spaced:
+        oi = _logo_image_for(eq, target_px=int(logo_px))
         if oi is not None:
-            ab = AnnotationBbox(oi, (x_logo, y_end),
-                                frameon=False, box_alignment=(0,0.5), pad=0.0,
-                                zorder=4, clip_on=False)
+            ab = AnnotationBbox(
+                oi, (x_logo, y_end),
+                frameon=False, box_alignment=(0, 0.5), pad=0.0,
+                zorder=4, clip_on=False
+            )
             ax.add_artist(ab)
         else:
-            ax.text(x_logo, y_end, eq.upper(),
-                    va="center", ha="left", fontsize=8.6, color="#1F1F1F",
-                    path_effects=[pe.withStroke(linewidth=3, foreground="white")],
-                    zorder=3)
+            ax.text(
+                x_logo, y_end, eq.upper(),
+                va="center", ha="left", fontsize=8.6, color="#1F1F1F",
+                path_effects=[pe.withStroke(linewidth=3, foreground="white")],
+                zorder=3
+            )
 
-    ax.set_xlim(0.5, max_j + RIGHT_MARGIN_ELO)  # <-- margen para logos
+    # Ejes
     ax.set_xticks(list(range(1, max_j + 1)))
     ax.set_xlabel("Fecha (Jornada)", fontsize=12, color="#1F1F1F")
-    ax.set_ylabel("Índice ELO", fontsize=12, color="#1F1F1F")
+    ax.set_ylabel("Índice ELO",     fontsize=12, color="#1F1F1F")
     ax.tick_params(colors="#1F1F1F")
     ax.grid(True, ls="--", lw=0.8, color=GRID, alpha=0.55)
+
     return fig
-
-
 
 # --------- W/D/L por jornada (usando JornadaN=1..N) + Rival ----------
 def build_wdl_por_jornada(df_res: pd.DataFrame) -> pd.DataFrame:
