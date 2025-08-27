@@ -29,7 +29,7 @@ except Exception:
 st.sidebar.markdown(f"🧪 **Build:** {APP_BUILD} — mtime: {_mt}")
 
 with st.sidebar.expander("⚙️ Debug"):
-    if st.button("♻️ Forzar recarga (clear cache)"):
+    if st.button("♻️ Clear cache"):
         try:
             st.cache_data.clear()
         except Exception:
