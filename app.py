@@ -12,6 +12,7 @@ import streamlit as st
 import xml.etree.ElementTree as ET
 import matplotlib as mpl
 import matplotlib.pyplot as plt
+import matplotlib.patheffects as pe
 from matplotlib.patches import Rectangle, Arc, Circle as MplCircle
 from matplotlib.colors import LinearSegmentedColormap
 from PIL import Image
@@ -1249,7 +1250,7 @@ def plot_elo_por_jornada(elo_pivot: pd.DataFrame, equipos: list[str], max_j: int
             max_j + 0.1, y_end, eq.upper(),
             va="center", ha="left",
             fontsize=10.5, color=col,
-            path_effects=[mpl.patheffects.withStroke(linewidth=3, foreground="white")]
+            path_effects=[pe.withStroke(linewidth=3, foreground="white")]
         )
 
     # ejes y grilla
