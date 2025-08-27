@@ -18,6 +18,7 @@ from matplotlib.colors import LinearSegmentedColormap
 from PIL import Image
 import seaborn as sns
 from collections import Counter, defaultdict
+from functools import lru_cache
 
 # =========================
 # CONFIG / ESTILO
@@ -42,9 +43,10 @@ LABEL_Y_SHIFT_LOW  = 0.60
 LABEL_Y_SHIFT_HIGH = 0.37
 TRIM_LOGO_BORDERS  = True
 # --- Tamaños/zoom de escudos (ajustables rápido) ---
-LOGO_Z_ELO        = 0.11   # ELO (borde derecho). Probar 0.09–0.14
-LOGO_Z_WDL_SINGLE = 0.18   # WDL cuando se grafica un equipo
-LOGO_Z_WDL_DOUBLE = 0.15   # WDL cuando se grafican dos equipos
+LOGO_Z_ELO        = 0.08
+LOGO_Z_WDL_SINGLE = 0.07
+LOGO_Z_WDL_DOUBLE = 0.06
+WDL_MAX_LOGOS     = 18   # si hay más puntos que esto, usamos puntos en vez de logos
 
 # Tamaños de escudos (ajustables)
 LOGO_PX_ELO_DEFAULT = 26      # antes 32 (ELO más chico)
@@ -1409,6 +1411,13 @@ from matplotlib.offsetbox import OffsetImage, AnnotationBbox
 
 from matplotlib.offsetbox import OffsetImage
 
+@lru_cache(maxsize=256)
+def _badge_arr_cached(path: str, trim: bool=True, bg_tol: int=16):
+    arr = load_any_image(path)
+    if trim:
+        arr = trim_margins(arr, bg_tol=bg_tol)
+    return arr
+
 def _logo_image_for(team: str, target_px: int | None = None,
                     min_px: int = 28, max_px: int = 64,
                     zoom: float | None = None):
@@ -1416,26 +1425,17 @@ def _logo_image_for(team: str, target_px: int | None = None,
     if not p:
         return None
     try:
-        arr = load_any_image(p)
-        if TRIM_LOGO_BORDERS:
-            arr = trim_margins(arr, bg_tol=16)
-
-        # Si no me pasan zoom explícito, traduzco target_px -> zoom y lo clampo.
+        arr = _badge_arr_cached(p, TRIM_LOGO_BORDERS, 16)
+        # si no dan un zoom explícito, usamos uno chico y uniforme
         if zoom is None:
-            tp = float(target_px if target_px is not None else 36.0)
-            base_den = 240.0  # cuanto más grande, más chico queda
-            zoom = float(np.clip(tp / base_den, 0.06, 0.22))
-
+            zoom = 0.07
         return OffsetImage(arr, zoom=zoom, interpolation="lanczos")
     except Exception:
         return None
 
-
-from matplotlib.offsetbox import OffsetImage, AnnotationBbox
-
 from matplotlib.offsetbox import AnnotationBbox
 
-def plot_wdl_por_jornada(wdl_jornada_df: pd.DataFrame, eq_a: str, eq_b: str | None, max_j: int) -> plt.Figure:
+def plot_wdl_por_jornada(wdl_jornada_df: pd.DataFrame, eq_a: str, eq_b: str|None, max_j: int) -> plt.Figure:
     BG = "#E8F5E9"; GRID = "#9E9E9E"
     COL_WIN, COL_DRAW, COL_LOSS = "#2E7D32", "#FBC02D", "#C62828"
     MAP_Y = {"L": 0, "D": 1, "W": 2}
@@ -1445,50 +1445,63 @@ def plot_wdl_por_jornada(wdl_jornada_df: pd.DataFrame, eq_a: str, eq_b: str | No
              .sort_values("Jornada")
              .loc[:, ["Jornada","R","Rival"]].dropna(subset=["Jornada","R"]))
         d = d[d["Jornada"] <= max_j]
-        d["y"] = d["R"].map(MAP_Y) if not d.empty else []
+        if d.empty:
+            d = d.assign(y=[])
+        else:
+            d["y"] = d["R"].map(MAP_Y)
         return d
 
     d1 = _prep(eq_a)
     d2 = _prep(eq_b) if (eq_b and eq_b != "(ninguno)") else None
 
     fig, axes = plt.subplots(nrows=2 if d2 is not None else 1, ncols=1,
-                             figsize=(12, 6 if d2 is not None else 3.8), sharex=True)
+                             figsize=(12, 6 if d2 is not None else 3.8),
+                             sharex=True)
     if not isinstance(axes, np.ndarray):
         axes = np.array([axes])
 
     for ax_idx, (eq, dd) in enumerate([(eq_a, d1), (eq_b, d2)]):
         if dd is None:
             continue
+
         ax = axes[ax_idx]
         fig.patch.set_facecolor(BG); ax.set_facecolor(BG)
 
+        # línea
         if not dd.empty:
             ax.plot(dd["Jornada"], dd["y"], color="#455A64", lw=1.4, alpha=0.9, zorder=2)
 
-            z = LOGO_Z_WDL_DOUBLE if (d2 is not None) else LOGO_Z_WDL_SINGLE
-            for _, rr in dd.iterrows():
-                oi = _logo_image_for(rr["Rival"], zoom=z)
-                if oi is not None:
-                    ab = AnnotationBbox(oi, (rr["Jornada"], rr["y"]),
-                                        frameon=False, pad=0.0, zorder=4, clip_on=True)
-                    ax.add_artist(ab)
-                else:
-                    col = {"W": COL_WIN, "D": COL_DRAW, "L": COL_LOSS}[rr["R"]]
-                    ax.scatter([rr["Jornada"]], [rr["y"]], s=110, c=col,
-                               edgecolor="black", linewidths=0.7, zorder=3)
+        # ¿usamos logos o puntos?
+        use_dots = (len(dd) > WDL_MAX_LOGOS)
+
+        # cache local de OffsetImage por rival (reuso, no reabrimos archivos)
+        z = LOGO_Z_WDL_DOUBLE if (d2 is not None) else LOGO_Z_WDL_SINGLE
+        rivals = sorted(dd["Rival"].dropna().unique())
+        oi_cache = {rv: _logo_image_for(rv, zoom=z) for rv in rivals}
+
+        for _, rr in dd.iterrows():
+            if use_dots or (oi_cache.get(rr["Rival"]) is None):
+                col = {"W": COL_WIN, "D": COL_DRAW, "L": COL_LOSS}[rr["R"]]
+                ax.scatter([rr["Jornada"]], [rr["y"]], s=85, c=col,
+                           edgecolor="black", linewidths=0.7, zorder=3, rasterized=True)
+            else:
+                ab = AnnotationBbox(oi_cache[rr["Rival"]], (rr["Jornada"], rr["y"]),
+                                    frameon=False, pad=0.0, zorder=4, clip_on=True)
+                ax.add_artist(ab)
 
         ax.set_yticks([0, 1, 2]); ax.set_yticklabels(["Derrota", "Empate", "Victoria"])
         ax.grid(True, axis="x", ls="--", lw=0.8, color=GRID, alpha=0.55)
         ax.set_xlim(0.5, max_j + 0.5); ax.set_ylim(-0.45, 2.45)
-        ax.set_title((eq or "").upper(), pad=6, fontsize=12, color="#1F1F1F")
+        ax.set_title(eq.upper(), pad=6, fontsize=12, color="#1F1F1F")
         ax.tick_params(colors="#1F1F1F")
-        for s in ax.spines.values():
-            s.set_color("#1F1F1F")
+        for spine in ax.spines.values():
+            spine.set_color("#1F1F1F")
 
     axes[-1].set_xticks(list(range(1, max_j + 1)))
     axes[-1].set_xlabel("Fecha (Jornada)", fontsize=12, color="#1F1F1F")
     plt.tight_layout()
     return fig
+
 
 
 def tabla_a_jornada(df_res: pd.DataFrame, j_corte: int) -> pd.DataFrame:
