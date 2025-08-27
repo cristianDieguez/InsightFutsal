@@ -1768,7 +1768,7 @@ menu = st.sidebar.radio(
 # =========================
 # 📊 ESTADÍSTICAS DE PARTIDO
 # =========================
-if menu == "📊 Estadísticas de partido":
+elif menu == "📊 Estadísticas de partido":
     matches_obj = discover_matches()
     matches = [m["label"] for m in matches_obj]
     if not matches:
@@ -1801,7 +1801,7 @@ if menu == "📊 Estadísticas de partido":
     # 1) Posesión
     pos_m, pos_r = parse_possession_from_equipo(POS_XML) if POS_XML else (0.0, 0.0)
 
-    # 2) Matrix (¡ahora sí definida!)
+    # 2) Matrix
     MATRIX_PATH = match["matrix_path"] if match else None
     if MATRIX_PATH and os.path.isfile(MATRIX_PATH):
         try:
@@ -1813,9 +1813,26 @@ if menu == "📊 Estadísticas de partido":
     else:
         FERRO, RIVAL = {}, {}
 
-    # Inyectar posesión en los dicts del panel
-    FERRO["Posesión %"] = pos_m
-    RIVAL["Posesión %"] = pos_r
+    # 2.5) Pases en el último tercio + Pases al área (reusando lógica del Timeline)
+    XML_PASS = (match.get("xml_players") if match else None)
+    if not (XML_PASS and os.path.isfile(XML_PASS)):
+        XML_PASS = POS_XML if (POS_XML and os.path.isfile(POS_XML)) else None
+
+    last_m = last_r = area_m = area_r = 0
+    if XML_PASS:
+        try:
+            jug = parse_instances_jugadores(XML_PASS)                 # ← misma función del Timeline
+            last_m, last_r, area_m, area_r = passes_last_third_and_area(jug)  # ← misma función del Timeline
+        except Exception as e:
+            st.info(f"No pude calcular 'último tercio' / 'al área' desde {os.path.basename(XML_PASS)}: {e}")
+
+    # Inyectar al panel
+    FERRO["Posesión %"]          = pos_m
+    RIVAL["Posesión %"]          = pos_r
+    FERRO["Pases último tercio"] = int(last_m)
+    RIVAL["Pases último tercio"] = int(last_r)
+    FERRO["Pases al área"]       = int(area_m)
+    RIVAL["Pases al área"]       = int(area_r)
 
     # 3) Dibujar panel
     ferro_logo = badge_path_for("ferro")
