@@ -55,7 +55,7 @@ LOGO_PX_ELO         = 12   # tamaño en píxeles del logo en el gráfico ELO
 LOGO_PX_WDL_SINGLE  = 14   # tamaño en píxeles (W/D/L con 1 panel)
 LOGO_PX_WDL_DOUBLE  = 12   # tamaño en píxeles (W/D/L con 2 paneles)
 RIGHT_MARGIN_ELO    = 0.40 # margen a la derecha para encajar logos en ELO (0.30–0.55)
-MIN_GAP_ELO         = 2.0  # separación mínima vertical entre logos en ELO
+MIN_GAP_ELO         = 10.0  # separación mínima vertical entre logos en ELO
 
 
 BANNER_H   = 0.145
