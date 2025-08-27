@@ -1768,7 +1768,7 @@ menu = st.sidebar.radio(
 # =========================
 # 📊 ESTADÍSTICAS DE PARTIDO
 # =========================
-elif menu == "📊 Estadísticas de partido":
+if menu == "📊 Estadísticas de partido":
     matches_obj = discover_matches()
     matches = [m["label"] for m in matches_obj]
     if not matches:
