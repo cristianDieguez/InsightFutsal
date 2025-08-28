@@ -2620,6 +2620,7 @@ elif menu == "🛡️ Pérdidas y Recuperaciones":
     # Carga cruda (sin filtrar)
     df_raw  = pr_cargar_datos(match["xml_players"]) if match else pd.DataFrame()
     df_pres = pr_cargar_presencias_equipo(match["xml_players"]) if match else pd.DataFrame()
+    # df_pres DEBE conservar columnas: nombre, rol, start_s, end_s  (no renombrar)
 
     # ====== NUEVO: nivel de análisis ======
     st.markdown("##### Nivel de análisis")
@@ -2634,21 +2635,17 @@ elif menu == "🛡️ Pérdidas y Recuperaciones":
             label_visibility="collapsed"
         )
 
-    # Derivados de nombres/roles (solo si hay datos)
+    # Derivados de nombres/roles solo en df_raw (NO tocar df_pres)
     if not df_raw.empty:
-        # extraigo nombre y rol a partir del code "Nombre (Rol)"
         nr = df_raw["jugador"].apply(pr_split_name_role)
         df_raw = df_raw.assign(
             _nombre = nr.apply(lambda t: t[0] if t else None),
             _rol    = nr.apply(lambda t: t[1] if t else None),
         )
-    if not df_pres.empty:
-        # df_pres ya tiene nombre/rol por cómo la cargas
-        df_pres = df_pres.rename(columns={"nombre":"_nombre","rol":"_rol"})
 
-    # Selectores y Filtros
     selected_players, selected_roles = [], []
 
+    # Selectores y filtros
     if nivel_analisis in {"Jugador", "Jugador (rol)"} and not df_raw.empty:
         jugadores = (df_raw["_nombre"].dropna().astype(str).sort_values().unique().tolist())
         with col_jug:
@@ -2660,9 +2657,11 @@ elif menu == "🛡️ Pérdidas y Recuperaciones":
                 help="Aplica los cálculos sólo a estos jugadores."
             )
         if selected_players:
-            df_raw  = df_raw[df_raw["_nombre"].astype(str).isin(selected_players)]
-            if not df_pres.empty:
-                df_pres = df_pres[df_pres["_nombre"].astype(str).isin(selected_players)]
+            # filtro en df_raw por _nombre
+            df_raw = df_raw[df_raw["_nombre"].astype(str).isin(selected_players)]
+            # filtro en df_pres por nombre (columnas originales)
+            if not df_pres.empty and "nombre" in df_pres.columns:
+                df_pres = df_pres[df_pres["nombre"].astype(str).isin(selected_players)]
 
     if nivel_analisis == "Jugador (rol)" and not df_raw.empty:
         roles_disp = (df_raw["_rol"].dropna().astype(str).sort_values().unique().tolist())
@@ -2670,29 +2669,29 @@ elif menu == "🛡️ Pérdidas y Recuperaciones":
             selected_roles = st.multiselect(
                 "Rol(es)",
                 options=roles_disp,
-                default=roles_disp,  # por defecto, todos
+                default=roles_disp,
                 help="Podés limitar a uno o varios roles."
             )
         if selected_roles:
-            df_raw  = df_raw[df_raw["_rol"].astype(str).isin(selected_roles)]
-            if not df_pres.empty:
-                df_pres = df_pres[df_pres["_rol"].astype(str).isin(selected_roles)]
+            # filtro en df_raw por _rol
+            df_raw = df_raw[df_raw["_rol"].astype(str).isin(selected_roles)]
+            # filtro en df_pres por rol (columnas originales)
+            if not df_pres.empty and "rol" in df_pres.columns:
+                df_pres = df_pres[df_pres["rol"].astype(str).isin(selected_roles)]
 
-    # Contexto (solo texto, no altera cálculos)
+    # Contexto informativo
     contexto_txt = "Equipo"
     if selected_players:
         contexto_txt = "Jugador/es: " + ", ".join(selected_players)
         if selected_roles:
             contexto_txt += " | Rol/es: " + ", ".join(selected_roles)
-
     st.caption(f"Contexto: {contexto_txt}")
 
-    # IMPORTANTE: pr_procesar ya contempla chequeo de minutos en cancha.
-    # Como ya filtramos df_raw/df_pres por jugador/rol, pasamos jugador_filter=None.
+    # Lógica intacta — pasamos df_raw/df_pres filtrados; SIN jugador_filter (ya filtramos arriba)
     total_acc, perdidas, recupera, porc_perd, porc_recu, df_reg = pr_procesar(
-        df_raw.copy(), 
-        df_pres.copy(), 
-        None  # sin filtro adicional, ya lo hicimos arriba
+        df_raw.copy(),
+        df_pres.copy(),
+        None
     )
     df_resumen = pr_resumen_df(total_acc, perdidas, recupera, porc_perd, porc_recu)
 
@@ -2710,6 +2709,7 @@ elif menu == "🛡️ Pérdidas y Recuperaciones":
 
     st.subheader("📊 Ranking de zonas con más recuperaciones")
     st.pyplot(pr_bars(df_resumen, "%_recuperaciones_sobre_total", "Zonas con más recuperaciones"), use_container_width=True)
+
 
 
 # =========================
