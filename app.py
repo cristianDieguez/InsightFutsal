@@ -3563,7 +3563,7 @@ if menu == "🏆 Tabla & Resultados":
             eqs = sorted(wdl_jornada_df["Equipo"].unique())
             c1, c2 = st.columns(2)
             with c1:
-                eq1 = st.selectbox("Equipo A", eqs, index=10)
+                eq1 = st.selectbox("Equipo A", eqs, index=4)
             with c2:
                 eq2 = st.selectbox("Equipo B (opcional)", ["(ninguno)"] + eqs, index=0)
             
