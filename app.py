@@ -893,14 +893,12 @@ def _merge_intervals(intervals):
 
 def cargar_minutos_desde_xml_totalvalues(xml_path: str) -> pd.DataFrame:
     """
-    Lee SOLO XML TotalValues y devuelve filas de presencias válidas:
-    - code = 'Jugador (Rol)' (mi equipo, no rival/posesión)
-    - labels vacías (sin descriptor) o con alguno de:
-      'Valla invicta en cancha',
-      'Goles a favor en cancha',
-      'Participa en Gol Hecho',
-      'Gol Rival en cancha',
-      'Involucrado en gol recibido'
+    Lee SOLO instancias de Jugador (Rol) del XML TotalValues cuya lista de labels:
+      - esté vacía (o solo tenga 'Total'),  O
+      - contenga al menos uno de estos descriptores:
+        'Valla invicta en cancha', 'Goles a favor en cancha',
+        'Participa en Gol Hecho', 'Gol Rival en cancha', 'Involucrado en gol recibido'
+    Devuelve filas crudas de tramos: code, nombre, rol, start_s, end_s, dur_s
     """
     cols = ["code","nombre","rol","start_s","end_s","dur_s"]
     if not xml_path or not os.path.isfile(xml_path):
@@ -911,18 +909,14 @@ def cargar_minutos_desde_xml_totalvalues(xml_path: str) -> pd.DataFrame:
     except Exception:
         return pd.DataFrame(columns=cols)
 
-    # Normalizador
-    def _norm_label(s: str) -> str:
-        return re.sub(r"\s+", " ", _strip_accents(s or "").lower().strip())
-
-    # Set de descriptores permitidos (normalizados, sin tildes)
-    allowed = {
-        _norm_label("Valla invicta en cancha"),
-        _norm_label("Goles a favor en cancha"),
-        _norm_label("Participa en Gol Hecho"),
-        _norm_label("Gol Rival en cancha"),
-        _norm_label("Involucrado en gol recibido"),
+    ALLOWED = {
+        nlower("Valla invicta en cancha"),
+        nlower("Goles a favor en cancha"),
+        nlower("Participa en Gol Hecho"),
+        nlower("Gol Rival en cancha"),
+        nlower("Involucrado en gol recibido"),
     }
+    IGNORABLE = {nlower("Total")}
 
     rows = []
     for inst in root.findall(".//instance"):
@@ -930,39 +924,34 @@ def cargar_minutos_desde_xml_totalvalues(xml_path: str) -> pd.DataFrame:
         if not is_player_code(code):
             continue
 
-        # labels del instance
-        lab_nodes = inst.findall("./label")
-        labs = [_norm_label(ln.findtext("text") or "") for ln in lab_nodes]
+        # labels normalizados
+        labels = [ (lab.findtext("text") or "").strip() for lab in inst.findall("./label") ]
+        labels_low = [nlower(l) for l in labels if l]
+        decision = [l for l in labels_low if l not in IGNORABLE]
 
-        # descision labels = sin 'total' ni vacíos
-        decision = [l for l in labs if l and l != "total"]
-
-        # criterio: vacío O subconjunto de los 5 permitidos
-        if not decision:
-            ok = True
-        else:
-            ok = all(l in allowed for l in decision)
-
-        if not ok:
+        # criterio de inclusión
+        keep = (len(decision) == 0) or any(l in ALLOWED for l in decision)
+        if not keep:
             continue
 
         # tiempos
+        stt, enn = inst.findtext("start"), inst.findtext("end")
         try:
-            s = float(inst.findtext("start") or "nan")
-            e = float(inst.findtext("end") or "nan")
+            s = float(stt) if stt is not None else None
+            e = float(enn) if enn is not None else None
         except Exception:
-            continue
-        if not np.isfinite(s) or not np.isfinite(e) or e <= s:
+            s, e = None, None
+        if s is None or e is None or e <= s:
             continue
 
         m = _NAME_ROLE_RE.match(code)
         if not m:
             continue
-        nombre = m.group(1).strip()
-        rol    = m.group(2).strip()
-
-        rows.append({"code": code, "nombre": nombre, "rol": rol,
-                     "start_s": s, "end_s": e, "dur_s": e - s})
+        nombre, rol = m.group(1).strip(), m.group(2).strip()
+        rows.append({
+            "code": code, "nombre": nombre, "rol": rol,
+            "start_s": s, "end_s": e, "dur_s": e - s
+        })
 
     return pd.DataFrame(rows, columns=cols)
 
@@ -972,37 +961,61 @@ def _format_mmss(seconds: float | int) -> str:
     return f"{mm:02d}:{ss:02d}"
 
 def minutos_por_presencia(df_pres: pd.DataFrame):
-    if df_pres.empty:
-        empt1 = pd.DataFrame(columns=["nombre","rol","segundos","mmss","minutos","n_tramos"])
-        empt2 = pd.DataFrame(columns=["nombre","segundos","mmss","minutos","n_tramos"])
-        return (empt1, empt2)
+    cols_rol = ["nombre","rol","segundos","mmss","minutos","n_tramos"]
+    cols_jug = ["nombre","segundos","minutos","n_tramos","mmss"]
+
+    if df_pres is None or df_pres.empty:
+        return (pd.DataFrame(columns=cols_rol), pd.DataFrame(columns=cols_jug))
+
     out = []
     for (nombre, rol), g in df_pres.groupby(["nombre","rol"], dropna=False):
         intervals = list(zip(g["start_s"], g["end_s"]))
         merged = _merge_intervals(intervals)
         secs = sum(e - s for s, e in merged)
-        out.append({"nombre": nombre,"rol": rol,"segundos": int(round(secs)),
-                    "mmss": _format_mmss(secs),"minutos": secs/60.0,"n_tramos": len(merged)})
-    df_por_rol = (pd.DataFrame(out).sort_values(["segundos","nombre"], ascending=[False, True]).reset_index(drop=True))
-    df_por_rol["minutos"] = df_por_rol["minutos"].round(2)
-    df_por_jugador = (df_por_rol.groupby("nombre", as_index=False)
-                      .agg(segundos=("segundos","sum"), minutos=("minutos","sum"), n_tramos=("n_tramos","sum"))
-                      .assign(mmss=lambda d: d["segundos"].apply(_format_mmss))
-                      .sort_values(["segundos","nombre"], ascending=[False, True]).reset_index(drop=True))
-    df_por_jugador["minutos"] = df_por_jugador["minutos"].round(2)
+        out.append({
+            "nombre": nombre, "rol": rol,
+            "segundos": int(round(secs)),
+            "mmss": _format_mmss(secs),
+            "minutos": secs / 60.0,
+            "n_tramos": len(merged)
+        })
+
+    df_por_rol = pd.DataFrame(out, columns=cols_rol)
+    if not df_por_rol.empty:
+        df_por_rol["minutos"] = df_por_rol["minutos"].round(2)
+        df_por_rol = df_por_rol.sort_values(["segundos","nombre"], ascending=[False, True]).reset_index(drop=True)
+
+        df_por_jugador = (df_por_rol.groupby("nombre", as_index=False)
+                          .agg(segundos=("segundos","sum"),
+                               minutos=("minutos","sum"),
+                               n_tramos=("n_tramos","sum"))
+                          .assign(mmss=lambda d: d["segundos"].apply(_format_mmss))
+                          .sort_values(["segundos","nombre"], ascending=[False, True])
+                          .reset_index(drop=True))
+        df_por_jugador["minutos"] = df_por_jugador["minutos"].round(2)
+    else:
+        df_por_jugador = pd.DataFrame(columns=cols_jug)
+
     return df_por_rol, df_por_jugador
 
 def _inside_bar_label(ax, bars, values_sec):
-    xlim = ax.get_xlim()[1] if ax.get_xlim()[1] > 0 else max(1, (np.array(values_sec)/60).max() if len(values_sec) else 1)
+    # usamos el ancho real en minutos para decidir tamaño/posición
+    xmax = ax.get_xlim()[1] if ax.get_xlim()[1] > 0 else 1.0
     for b, secs in zip(bars, values_sec):
         mmss = _format_mmss(secs)
-        x = b.get_width(); y = b.get_y() + b.get_height()/2
-        txt_x = x * 0.98
-        if x < 0.9:
-            txt_x = min(x + 0.1, xlim * 0.98); ha = "left"; color = "black"; fw="bold"
+        w = b.get_width()  # minutos
+        y = b.get_y() + b.get_height()/2
+
+        if w < 0.60:
+            # barra muy corta → texto afuera, chico y oscuro
+            x = min(w + 0.12, xmax * 0.98)
+            ax.text(x, y, mmss, va="center", ha="left", fontsize=8, color="black", fontweight="bold")
+        elif w < 1.40:
+            # adentro pero con tipografía más chica
+            ax.text(w * 0.98, y, mmss, va="center", ha="right", fontsize=8.5, color="white", fontweight="bold")
         else:
-            ha = "right"; color = "white"; fw="bold"
-        ax.text(txt_x, y, mmss, va="center", ha=ha, fontsize=9, color=color, fontweight=fw)
+            # adentro normal
+            ax.text(w * 0.98, y, mmss, va="center", ha="right", fontsize=9.5, color="white", fontweight="bold")
 
 def fig_barh_minutos(labels, vals_sec, title, xlabel="Minutos"):
     vals_min = (np.array(vals_sec) / 60.0)
@@ -1992,133 +2005,44 @@ elif menu == "🔥 Mapas de calor":
 # 🕓 DISTRIBUCIÓN DE MINUTOS
 # =========================
 elif menu == "🕓 Distribución de minutos":
-    # --- helper local: etiquetas prolijas (MM:SS | nT:X) con tamaño adaptativo ---
-    def _fig_barh_minutos_tramos(labels, vals_sec, n_tramos, title, xlabel="Minutos"):
-        import numpy as np
-        fig, ax = plt.subplots(figsize=(10, max(3.8, 0.48*len(labels))))
-        vals_min = (np.array(vals_sec, dtype=float) / 60.0)
-        bars = ax.barh(labels, vals_min, alpha=0.9)
-        ax.invert_yaxis()
-        ax.grid(axis="x", linestyle=":", alpha=0.35)
-
-        vmax = float(vals_min.max()) if len(vals_min) else 1.0
-        ax.set_xlim(0, vmax * 1.12 + 0.4)
-        axis_max = ax.get_xlim()[1]
-
-        for b, secs, tr in zip(bars, vals_sec, n_tramos):
-            mmss = _format_mmss(secs)
-            txt  = f"{mmss}  |  nT: {int(tr)}"
-            x    = b.get_width()
-            y    = b.get_y() + b.get_height()/2
-            ratio = (x / axis_max) if axis_max else 0.0
-
-            if ratio < 0.12:        # muy corta → afuera, más chico
-                fs, ha, color = 7, "left",  "black"
-                x_txt = min(x + axis_max*0.012, axis_max*0.985)
-            elif ratio < 0.22:      # corta → afuera, chico
-                fs, ha, color = 8, "left",  "black"
-                x_txt = min(x + axis_max*0.012, axis_max*0.985)
-            elif ratio < 0.38:      # media → adentro
-                fs, ha, color = 8, "right", "white"
-                x_txt = x * 0.985
-            else:                   # larga → adentro
-                fs, ha, color = 9, "right", "white"
-                x_txt = x * 0.985
-
-            ax.text(x_txt, y, txt, va="center", ha=ha, fontsize=fs, color=color,
-                    fontweight="bold", clip_on=False)
-
-        ax.set_xlabel(xlabel)
-        ax.set_title(title)
-        plt.tight_layout()
-        return fig
-
-    # --- partido ---
     matches = discover_matches()
     if not matches:
         st.warning("No encontré partidos en data/minutos.")
         st.stop()
 
     sel = st.selectbox("Elegí partido", [m["label"] for m in matches], index=0)
-
-    # IMPORTANT: usar SIEMPRE el XML TotalValues del partido
-    XML_TV, _mx = infer_paths_for_label(sel)
+    # Forzar XML TotalValues (no NacSport)
+    XML_TV, _ = infer_paths_for_label(sel)
     if not XML_TV or not os.path.isfile(XML_TV):
-        st.error("No encontré el XML 'TotalValues' para este partido. Asegurate de que exista '... - XML TotalValues.xml'.")
+        st.error("No encontré el XML TotalValues para este partido.")
         st.stop()
 
-    # presencias válidas (solo sin descriptor o con los 5 permitidos)
+    # 1) Presencias desde TotalValues con el filtro de descriptores correcto
     df_pres = cargar_minutos_desde_xml_totalvalues(XML_TV)
+
+    # 2) Agregados
     df_por_rol, df_por_jugador = minutos_por_presencia(df_pres)
 
-    # --- Resumen: minutos totales por jugador (equipo) ---
-    st.subheader("⏱️ Minutos totales por jugador (equipo)")
-    if df_por_jugador.empty:
-        st.info("Sin presencias en este partido.")
-        st.stop()
+    # 3) Tablas — como pediste: sin 'segundos', renombrar 'mmss' a 'minutos' y quitar 'minutos' (numérico)
+    st.subheader("⏱️ Minutos por jugador (rol)")
+    df_rol_view = df_por_rol.loc[:, ["nombre","rol","mmss","n_tramos"]].rename(columns={"mmss":"minutos", "n_tramos":"nT"})
+    show_full_table(df_rol_view)
 
-    # tabla limpia: renombrar 'mmss' → 'minutos' y quitar 'segundos'/'minutos' (float)
-    df_show_tot = (df_por_jugador[["nombre","mmss","n_tramos"]]
-                   .rename(columns={"mmss":"minutos"})
-                   .sort_values(["segundos","nombre"], ascending=[False, True])
-                  )
-    st.dataframe(df_show_tot, use_container_width=True)
+    # Gráfico por jugador (rol)
+    if not df_por_rol.empty:
+        fig1 = fig_barh_minutos(df_por_rol["nombre"] + " (" + df_por_rol["rol"] + ")",
+                                df_por_rol["segundos"], "Minutos por jugador (rol)")
+        st.pyplot(fig1, use_container_width=True)
 
-    fig_tot = _fig_barh_minutos_tramos(
-        labels   = df_por_jugador["nombre"].tolist(),
-        vals_sec = df_por_jugador["segundos"].tolist(),
-        n_tramos = df_por_jugador["n_tramos"].tolist(),
-        title    = f"Minutos totales por jugador — {sel}"
-    )
-    st.pyplot(fig_tot, use_container_width=True)
+    st.subheader("⏱️ Minutos totales por jugador")
+    df_j_view = df_por_jugador.loc[:, ["nombre","mmss","n_tramos"]].rename(columns={"mmss":"minutos", "n_tramos":"nT"})
+    show_full_table(df_j_view)
 
-    st.markdown("---")
+    # Gráfico por jugador (total)
+    if not df_por_jugador.empty:
+        fig2 = fig_barh_minutos(df_por_jugador["nombre"], df_por_jugador["segundos"], "Minutos totales por jugador")
+        st.pyplot(fig2, use_container_width=True)
 
-    # --- Vista 1: Jugador → sus roles ---
-    st.subheader("🎭 Minutos por rol — jugador seleccionado")
-    jugadores = sorted(df_por_jugador["nombre"].unique().tolist())
-    if jugadores:
-        sel_jug = st.selectbox("Jugador", jugadores, index=0, key="min_jugador")
-        d_jr = df_por_rol[df_por_rol["nombre"] == sel_jug].copy()
-        if d_jr.empty:
-            st.info("Ese jugador no tiene tramos en este partido.")
-        else:
-            d_jr_show = (d_jr[["rol","mmss","n_tramos"]]
-                         .rename(columns={"mmss":"minutos"})
-                         .sort_values(["segundos","rol"], ascending=[False, True]))
-            st.dataframe(d_jr_show, use_container_width=True)
-
-            fig_jr = _fig_barh_minutos_tramos(
-                labels   = d_jr["rol"].tolist(),
-                vals_sec = d_jr["segundos"].tolist(),
-                n_tramos = d_jr["n_tramos"].tolist(),
-                title    = f"{sel_jug} — minutos y tramos por rol — {sel}"
-            )
-            st.pyplot(fig_jr, use_container_width=True)
-
-    st.markdown("---")
-
-    # --- Vista 2: Rol → jugadores que lo cumplieron ---
-    st.subheader("🧩 Minutos por jugador — rol seleccionado")
-    roles = sorted(df_por_rol["rol"].dropna().unique().tolist())
-    if roles:
-        sel_rol = st.selectbox("Rol", roles, index=0, key="min_rol")
-        d_r = (df_por_rol[df_por_rol["rol"] == sel_rol]
-               .sort_values(["segundos","nombre"], ascending=[False, True]))
-        if d_r.empty:
-            st.info(f"No hubo presencias con el rol '{sel_rol}'.")
-        else:
-            d_r_show = (d_r[["nombre","mmss","n_tramos"]]
-                        .rename(columns={"mmss":"minutos"}))
-            st.dataframe(d_r_show, use_container_width=True)
-
-            fig_r = _fig_barh_minutos_tramos(
-                labels   = d_r["nombre"].tolist(),
-                vals_sec = d_r["segundos"].tolist(),
-                n_tramos = d_r["n_tramos"].tolist(),
-                title    = f"Rol: {sel_rol} — minutos por jugador — {sel}"
-            )
-            st.pyplot(fig_r, use_container_width=True)
 
 # =========================
 # 🔗 RED DE PASES
