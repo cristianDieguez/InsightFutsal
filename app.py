@@ -2171,7 +2171,7 @@ elif menu == "🕓 Distribución de minutos":
         return fig
 
     # === NUEVO: Scatter Impacto (+ vs −) con NETO en el círculo ===
-      def _fig_scatter_impact(df: pd.DataFrame, title: str, include_role: bool=False):
+    def _fig_scatter_impact(df: pd.DataFrame, title: str, include_role: bool=False):
         """Scatter Impacto + (x) vs Impacto − (y) con color por Impacto neto."""
         import matplotlib.pyplot as plt
         from matplotlib import cm, colors
@@ -2239,7 +2239,6 @@ elif menu == "🕓 Distribución de minutos":
     
         plt.tight_layout()
         return fig
-
 
     # ---------- Lectura TotalValues ----------
     def _tv_load_presencias(xml_path: str, partido_label: str) -> pd.DataFrame:
