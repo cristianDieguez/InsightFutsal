@@ -2098,8 +2098,8 @@ elif menu == "🕓 Distribución de minutos":
             if c in d.columns:
                 d = d.drop(columns=[c])
         # renombres amables
-        if "mmss" in d.columns:   d = d.rename(columns={"mmss": "minutos"})
-        if "n_tramos" in d.columns: d = d.rename(columns={"n_tramos": "nT"})
+        if "mmss" in d.columns:      d = d.rename(columns={"mmss": "minutos"})
+        if "n_tramos" in d.columns:  d = d.rename(columns={"n_tramos": "nT"})
         keep = [c for c in base_cols if c in d.columns]
         d = d.loc[:, keep]
         d = d.loc[:, ~d.columns.duplicated(keep="first")]
@@ -2110,7 +2110,7 @@ elif menu == "🕓 Distribución de minutos":
         """
         Tabla 'Impacto':
           - columnas base de minutos (MM:SS) + nT + 5 descriptores
-          - Impacto +, Impacto −, Impacto neto
+          - Impacto +, Impacto −, Impacto neto (escala seg/2400)
           - % minutos (sobre total alcance)
           - % CS/nT, % PF/GF_on, % IA/GA_on
         """
@@ -2122,11 +2122,9 @@ elif menu == "🕓 Distribución de minutos":
             return pd.DataFrame(columns=cols)
 
         d = df.copy()
-        # base "bonita"
         base = _prep_minutes_table(d, include_role=include_role)
 
-        # ratios relativos
-        # (aseguramos columnas necesarias)
+        # asegurar columnas necesarias
         for c in ["segundos","n_tramos","Valla Invicta en cancha",
                   "Goles a favor en cancha","Participa en Gol Hecho",
                   "Gol Rival en cancha","Involucrado en gol recibido"]:
@@ -2152,14 +2150,14 @@ elif menu == "🕓 Distribución de minutos":
         pct_ia_ga = np.where(ga.to_numpy()>0, ia.to_numpy()/ga.to_numpy()*100.0, 0.0)
 
         view = base.copy()
-        view["Impacto +"]  = d["Impacto +"].round(3)
-        view["Impacto −"]  = d["Impacto −"].round(3)
-        view["Impacto neto"] = d["Impacto neto"].round(3)
-        view["% minutos"]  = np.round(pct_mins, 1)
-        view["% CS/nT"]    = np.round(pct_cs_nt, 1)
-        view["% PF/GF_on"] = np.round(pct_pf_gf, 1)
-        view["% IA/GA_on"] = np.round(pct_ia_ga, 1)
-        # orden deseado
+        view["Impacto +"]     = d["Impacto +"].round(3)
+        view["Impacto −"]     = d["Impacto −"].round(3)
+        view["Impacto neto"]  = d["Impacto neto"].round(3)
+        view["% minutos"]     = np.round(pct_mins, 1)
+        view["% CS/nT"]       = np.round(pct_cs_nt, 1)
+        view["% PF/GF_on"]    = np.round(pct_pf_gf, 1)
+        view["% IA/GA_on"]    = np.round(pct_ia_ga, 1)
+
         cols_front = (["nombre","rol"] if include_role else ["nombre"]) + [
             "minutos","nT","Impacto +","Impacto −","Impacto neto",
             "% minutos","% CS/nT","% PF/GF_on","% IA/GA_on"
@@ -2171,16 +2169,13 @@ elif menu == "🕓 Distribución de minutos":
                          sort_desc=True, label_place="inside"):
         """
         Barras de minutos ordenadas (desc por defecto) y etiquetas consistentes.
-        label_place: "inside" o "outside" (todas iguales).
+        label_place: "inside" o "outside" (todas iguales, blancas).
         """
-        # ---- ordenar por minutos (desc) ----
+        # ordenar por minutos (desc)
         rows = list(zip(labels, secs_list, ntramos_list))
         rows.sort(key=lambda t: t[1], reverse=bool(sort_desc))
-        if rows:
-            labels, secs_list, ntramos_list = map(list, zip(*rows))
-        else:
-            labels, secs_list, ntramos_list = [], [], []
-    
+        labels, secs_list, ntramos_list = (list(x) for x in zip(*rows)) if rows else ([], [], [])
+
         mins = np.array(secs_list, dtype=float) / 60.0
         H = max(3.8, 0.48*len(labels))
         fig, ax = plt.subplots(figsize=(10, H))
@@ -2191,24 +2186,28 @@ elif menu == "🕓 Distribución de minutos":
         ax.grid(axis="x", linestyle=":", alpha=0.35)
         vmax = float(mins.max() if len(mins) else 1.0)
         ax.set_xlim(0, vmax*1.12 + 0.4)
-    
-        # ---- etiquetas consistentes (todas iguales) ----
+
+        # etiquetas consistentes
+        try:
+            import matplotlib.patheffects as pe
+            pe_stroke = [pe.withStroke(linewidth=2.2, foreground=bg_green)]
+        except Exception:
+            pe_stroke = None
+
         for b, secs, nt in zip(bars, secs_list, ntramos_list):
             txt = f"{_format_mmss(secs)} ({nt})"
             x = b.get_width()
             y = b.get_y() + b.get_height()/2
-    
             if label_place == "inside":
                 ax.text(x - 0.08, y, txt, va="center", ha="right",
                         fontsize=10, color="white", fontweight="normal")
             else:  # outside
-                ax.text(x + 0.10, y, txt, va="center", ha="left",
-                        fontsize=10, color="white", fontweight="normal",
-                        path_effects=[pe.withStroke(linewidth=2.2, foreground=bg_green)])
-    
+                kwargs = dict(fontsize=10, color="white", fontweight="normal")
+                if pe_stroke: kwargs["path_effects"] = pe_stroke
+                ax.text(x + 0.10, y, txt, va="center", ha="left", **kwargs)
+
         plt.tight_layout()
         return fig
-
 
     def _tv_load_presencias(xml_path: str, partido_label: str) -> pd.DataFrame:
         """
@@ -2334,20 +2333,21 @@ elif menu == "🕓 Distribución de minutos":
                          .agg(segundos=("segundos","sum"), n_tramos=("n_tramos","sum")))
         out["mmss"]    = out["segundos"].apply(_format_mmss)
         out["minutos"] = (out["segundos"] / 60.0).round(2)
-        # orden estable
-        out = out.sort_values(final_keys + ["segundos"], ascending=[True]*len(final_keys) + [False])
+        out = out.sort_values(final_keys + ["segundos"],
+                              ascending=[True]*len(final_keys) + [False])
         return out
 
     def _total_scope_seconds(df_pres: pd.DataFrame) -> int:
         """Total de segundos del alcance usando los intervalos del/los 'Arq' por partido."""
         if df_pres is None or df_pres.empty:
             return 0
-        is_gk = df_pres["rol"].str.lower().isin({"arq","arquero","gk"})
+        roles_lc = df_pres["rol"].astype(str).str.lower()
+        is_gk = roles_lc.isin({"arq","arquero","gk"})
         if not is_gk.any():
-            # fallback: máximo fin de cada partido
+            # fallback: duración aprox por partido
             sec = 0.0
-            for _, g in df_pres.groupby("partido"):
-                sec += float(max((g["end_s"] or 0)))
+            for _, g in df_pres.groupby("partido", dropna=False):
+                sec += float(g["end_s"].max())
             return int(round(sec))
         tot = 0.0
         for _, g in df_pres[is_gk].groupby("partido", dropna=False):
@@ -2367,13 +2367,12 @@ elif menu == "🕓 Distribución de minutos":
             return d
 
         out = d.copy()
-        # aseguramos columnas
         for c in ["Valla Invicta en cancha","Goles a favor en cancha","Participa en Gol Hecho",
                   "Gol Rival en cancha","Involucrado en gol recibido","n_tramos","segundos"]:
             if c not in out.columns: out[c] = 0
 
         out["noCS"]   = np.maximum(0, out["n_tramos"] - out["Valla Invicta en cancha"])
-        out["scale"]  = out["segundos"] / 2400.0  # << escala pedida
+        out["scale"]  = out["segundos"] / 2400.0  # escala pedida
 
         def _is_gk_row(row) -> bool:
             if mode == "jug_rol":
@@ -2384,18 +2383,16 @@ elif menu == "🕓 Distribución de minutos":
         for _, r in out.iterrows():
             gk = _is_gk_row(r)
             if gk:
-                # ARQUERO
                 P_raw = 0.80*r["Valla Invicta en cancha"] + 0.10*r["Goles a favor en cancha"] + 0.10*r["Participa en Gol Hecho"]
                 N_raw = 0.80*r["noCS"] + 0.10*r["Gol Rival en cancha"] + 0.10*r["Involucrado en gol recibido"]
             else:
-                # CAMPO
                 P_raw = 0.60*r["Participa en Gol Hecho"] + 0.30*r["Goles a favor en cancha"] + 0.10*r["Valla Invicta en cancha"]
                 N_raw = 0.60*r["Involucrado en gol recibido"] + 0.30*r["Gol Rival en cancha"] + 0.10*r["noCS"]
             P_vals.append(P_raw * r["scale"])
             N_vals.append(N_raw * r["scale"])
 
-        out["Impacto +"]   = np.round(P_vals, 3)
-        out["Impacto −"]   = np.round(N_vals, 3)
+        out["Impacto +"]    = np.round(P_vals, 3)
+        out["Impacto −"]    = np.round(N_vals, 3)
         out["Impacto neto"] = np.round(out["Impacto +"] - out["Impacto −"], 3)
         return out
 
@@ -2436,7 +2433,7 @@ elif menu == "🕓 Distribución de minutos":
     dr_merged[DESC_CANON] = dr_merged[DESC_CANON].fillna(0).astype(int)
 
     # ---- Set de arqueros (para pesos en jugador total)
-    gk_names = set(df_pres.loc[df_pres["rol"].str.lower().isin({"arq","arquero","gk"}), "nombre"].unique().tolist())
+    gk_names = set(df_pres.loc[df_pres["rol"].astype(str).str.lower().isin({"arq","arquero","gk"}), "nombre"].unique().tolist())
 
     # ---- Total de segundos del alcance (para % minutos)
     total_secs_scope = _total_scope_seconds(df_pres)
@@ -2446,6 +2443,8 @@ elif menu == "🕓 Distribución de minutos":
     # =========================
     if panel == "Minutos":
         scope = st.radio("Ver:", ["Jugador total", "Por rol"], horizontal=True)
+        etiqueta_pos = st.radio("Etiquetas en barras", ["Dentro", "Fuera"], index=0, horizontal=True)
+        label_place = "inside" if etiqueta_pos == "Dentro" else "outside"
 
         if scope == "Jugador total":
             st.subheader("⏱️ Minutos totales por jugador (con descriptores)")
@@ -2460,7 +2459,7 @@ elif menu == "🕓 Distribución de minutos":
                     title=("Minutos totales por jugador" if data_scope=="Todos los partidos"
                            else "Minutos totales por jugador (partido seleccionado)"),
                     sort_desc=True,
-                    label_place="inside"   # <- cambiá a "outside" si preferís
+                    label_place=label_place
                 )
                 st.pyplot(fig, use_container_width=True)
             else:
@@ -2487,7 +2486,7 @@ elif menu == "🕓 Distribución de minutos":
                     title=(f"Minutos en rol {sel_rol} — acumulado" if data_scope=="Todos los partidos"
                            else f"Minutos en rol {sel_rol} — partido seleccionado"),
                     sort_desc=True,
-                    label_place="inside"   # <- cambiá a "outside" si preferís
+                    label_place=label_place
                 )
                 st.pyplot(fig, use_container_width=True)
             else:
