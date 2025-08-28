@@ -2064,6 +2064,9 @@ elif menu == "🔥 Mapas de calor":
 # =========================
 # 🕓 DISTRIBUCIÓN DE MINUTOS
 # =========================
+# =========================
+# 🕓 DISTRIBUCIÓN DE MINUTOS
+# =========================
 
 elif menu == "🕓 Distribución de minutos":
     # =========================
@@ -2164,6 +2167,59 @@ elif menu == "🕓 Distribución de minutos":
             x = b.get_width(); y = b.get_y() + b.get_height()/2
             ax.text(max(x - 0.08, 0.05), y, txt, va="center", ha="right",
                     fontsize=10, color="white", fontweight="normal")
+        plt.tight_layout()
+        return fig
+
+    # === NUEVO: Scatter Impacto (+ vs −) con NETO en el círculo ===
+    def _fig_scatter_impact(view_df: pd.DataFrame, title: str):
+        """
+        X = Impacto + ; Y = Impacto − ; círculo muestra Impacto neto y etiqueta el nombre.
+        Traza líneas guía en los promedios de X e Y.
+        """
+        if view_df is None or view_df.empty:
+            return None
+
+        df = view_df.copy()
+        needed = ["Impacto +", "Impacto −", "Impacto neto"]
+        for c in needed:
+            df[c] = pd.to_numeric(df.get(c, 0), errors="coerce")
+        df = df.dropna(subset=needed)
+        if df.empty:
+            return None
+
+        # etiqueta: "Nombre (Rol)" si existe rol, si no solo nombre
+        if "rol" in df.columns:
+            labels = (df["nombre"].astype(str) + " (" + df["rol"].astype(str) + ")").tolist()
+        else:
+            labels = df["nombre"].astype(str).tolist()
+
+        x   = df["Impacto +"].to_numpy(float)
+        y   = df["Impacto −"].to_numpy(float)
+        net = df["Impacto neto"].to_numpy(float)
+
+        mx = float(np.mean(x)); my = float(np.mean(y))
+
+        fig, ax = plt.subplots(figsize=(9.5, 6))
+        ax.scatter(x, y, s=320, c="#4FC3F7", edgecolors="black", linewidths=0.6, alpha=0.95)
+
+        # valor NETO dentro del círculo (blanco)
+        for xi, yi, ni in zip(x, y, net):
+            ax.text(xi, yi, f"{ni:.2f}", ha="center", va="center",
+                    fontsize=9, fontweight="bold", color="white")
+
+        # nombre del jugador cerca del punto
+        for xi, yi, name in zip(x, y, labels):
+            ax.annotate(name, (xi, yi), xytext=(6, 6), textcoords="offset points",
+                        fontsize=9, color="white")
+
+        # líneas guía por promedios
+        ax.axvline(mx, linestyle="--", color="gray", alpha=0.7)
+        ax.axhline(my, linestyle="--", color="gray", alpha=0.7)
+
+        ax.set_xlabel("Impacto +")
+        ax.set_ylabel("Impacto −")
+        ax.set_title(title)
+        ax.grid(True, linestyle=":", alpha=0.35)
         plt.tight_layout()
         return fig
 
@@ -2484,6 +2540,11 @@ elif menu == "🕓 Distribución de minutos":
             with tabN:  show_full_table(view.sort_values("Impacto −", ascending=False).reset_index(drop=True))
             with tabNet:show_full_table(view.sort_values("Impacto neto", ascending=False).reset_index(drop=True))
 
+            # === NUEVO: Scatter Impacto — Jugador total ===
+            fig_sc = _fig_scatter_impact(view, "Impacto (+/−) — Jugador total")
+            if fig_sc is not None:
+                st.pyplot(fig_sc, use_container_width=True)
+
         else:
             roles_presentes = sorted([r for r in dr_merged["rol"].dropna().unique().tolist()])
             if not roles_presentes:
@@ -2502,6 +2563,12 @@ elif menu == "🕓 Distribución de minutos":
             with tabP:  show_full_table(view.sort_values("Impacto +", ascending=False).reset_index(drop=True))
             with tabN:  show_full_table(view.sort_values("Impacto −", ascending=False).reset_index(drop=True))
             with tabNet:show_full_table(view.sort_values("Impacto neto", ascending=False).reset_index(drop=True))
+
+            # === NUEVO: Scatter Impacto — Por rol ===
+            fig_sc = _fig_scatter_impact(view, f"Impacto (+/−) — Rol {sel_rol}")
+            if fig_sc is not None:
+                st.pyplot(fig_sc, use_container_width=True)
+
 # =========================
 # 🔗 RED DE PASES
 # =========================
