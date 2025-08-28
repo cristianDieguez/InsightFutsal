@@ -2067,7 +2067,7 @@ elif menu == "🔥 Mapas de calor":
 
 elif menu == "🕓 Distribución de minutos":
     # =========================
-    # Config y helpers LOCALES (solo para este menú)
+    # Config / helpers LOCALES (solo afectan a este menú)
     # =========================
     DESC_CANON = [
         "Valla Invicta en cancha",
@@ -2080,38 +2080,43 @@ elif menu == "🕓 Distribución de minutos":
 
     def _prep_minutes_table(df: pd.DataFrame, include_role: bool=False) -> pd.DataFrame:
         """
-        Tabla de salida limpia:
-         - 'minutos' (texto MM:SS) a partir de 'mmss'
-         - 'nT' (antes n_tramos)
-         - sin 'segundos' ni 'minutos' numérico
-         - 5 columnas de descriptores (si no existen, van en 0)
+        Salida limpia para la tabla:
+          - 'minutos' (texto MM:SS)
+          - 'nT' (número de tramos)
+          - quita 'segundos' y la col. 'minutos' numérica
+          - incluye las 5 columnas de descriptores (0 si faltan)
         """
         if df is None or df.empty:
             base_cols = (["nombre","rol"] if include_role else ["nombre"]) + ["minutos","nT"] + DESC_CANON
             return pd.DataFrame(columns=base_cols)
 
         d = df.copy()
-        # Asegurar las 5 columnas de descriptor
+
+        # asegurar 5 descriptores
         for c in DESC_CANON:
             if c not in d.columns:
                 d[c] = 0
 
-        # Quitar columnas numéricas que no mostramos en tabla
+        # quitar numéricas que no mostramos
         drop_cols = [c for c in ["segundos","minutos"] if c in d.columns]
         if drop_cols:
             d = d.drop(columns=drop_cols)
 
-        # Renombres
+        # renombrar mmss -> minutos, n_tramos -> nT
         if "mmss" in d.columns:
             d = d.rename(columns={"mmss": "minutos"})
         if "n_tramos" in d.columns:
             d = d.rename(columns={"n_tramos": "nT"})
 
+        # ordenar columnas y evitar duplicados
         keep = (["nombre","rol"] if include_role else ["nombre"]) + ["minutos","nT"] + DESC_CANON
         keep = [c for c in keep if c in d.columns]
         d = d.loc[:, keep]
-        # Evitar duplicados defensivo
         d = d.loc[:, ~d.columns.duplicated(keep="first")]
+
+        # NaN -> 0 en descriptores
+        d[DESC_CANON] = d[DESC_CANON].fillna(0).astype(int)
+
         return d
 
     def _fig_bar_minutos(labels, secs_list, ntramos_list, title):
@@ -2127,38 +2132,33 @@ elif menu == "🕓 Distribución de minutos":
         vmax = float(mins.max() if len(mins) else 1.0)
         ax.set_xlim(0, vmax*1.12 + 0.4)
 
-        # Etiquetas MM:SS (nT)
+        # Etiquetas
         for b, secs, nt in zip(bars, secs_list, ntramos_list):
             mmss = _format_mmss(secs)
             x = b.get_width()
             y = b.get_y() + b.get_height()/2
-            # Heurística de tamaño/ubicación
-            if x < 1.2:        # barras muy chicas → texto afuera, más chico
-                fs = 8
-                ha = "left"; color = "black"
-                txt_x = x + 0.10
-            elif x < 3.0:      # chicas → afuera
-                fs = 9
-                ha = "left"; color = "black"
-                txt_x = x + 0.08
-            else:              # suficientes → adentro
-                fs = 10
-                ha = "right"; color = "white"
-                txt_x = x - 0.08
+            # Heurística de tamaño y posición
+            if x < 1.2:        # barras muy chicas → fuera, letra chica
+                fs = 8;  ha = "left";  color = "black"; txt_x = x + 0.10
+            elif x < 3.0:      # chicas → fuera, letra media
+                fs = 9;  ha = "left";  color = "black"; txt_x = x + 0.08
+            else:              # suficientes → dentro, blanco
+                fs = 10; ha = "right"; color = "white"; txt_x = x - 0.08
             ax.text(txt_x, y, f"{mmss} ({nt})", va="center", ha=ha, fontsize=fs, color=color, fontweight="bold")
 
         plt.tight_layout()
         return fig
 
-    def _tv_load_presencias(xml_path: str) -> pd.DataFrame:
+    def _tv_load_presencias(xml_path: str, partido_label: str) -> pd.DataFrame:
         """
-        Lee SOLO XML TotalValues y devuelve instancias válidas para minutos:
-         - Jugador (Rol) válido (is_player_code)
-         - labels vacíos  O  al menos 1 label ∈ DESC_CANON
-        Salida por instancia: nombre, rol, start_s, end_s, dur_s, labels_lc(list)
+        Lee SOLO XML TotalValues (no NacSport) y devuelve las instancias válidas para minutos:
+          - Jugador (Rol) válido (is_player_code)
+          - labels vacíos  O  al menos 1 label ∈ DESC_CANON
+        Salida por instancia: nombre, rol, start_s, end_s, dur_s, labels_lc(list), partido
         """
+        cols = ["nombre","rol","start_s","end_s","dur_s","labels_lc","partido"]
         if not xml_path or not os.path.isfile(xml_path):
-            return pd.DataFrame(columns=["nombre","rol","start_s","end_s","dur_s","labels_lc"])
+            return pd.DataFrame(columns=cols)
 
         root = ET.parse(xml_path).getroot()
         rows = []
@@ -2167,18 +2167,15 @@ elif menu == "🕓 Distribución de minutos":
             if not is_player_code(code):
                 continue
 
-            # Labels (texto plano)
             labels_txt = [(lbl.findtext("text") or "").strip() for lbl in inst.findall("label")]
             labels_lc  = [nlower(t) for t in labels_txt if t.strip()!=""]
 
-            # Aceptar si NO hay labels o si alguna está en la lista canónica
             aceptar = False
             if len(labels_lc) == 0:
                 aceptar = True
             else:
                 if any(lc in DESC_CANON_LC for lc in labels_lc):
                     aceptar = True
-
             if not aceptar:
                 continue
 
@@ -2201,38 +2198,49 @@ elif menu == "🕓 Distribución de minutos":
             rows.append({
                 "nombre": nombre, "rol": rol,
                 "start_s": s, "end_s": e, "dur_s": e - s,
-                "labels_lc": labels_lc
+                "labels_lc": labels_lc,
+                "partido": partido_label,
             })
 
-        return pd.DataFrame(rows)
+        return pd.DataFrame(rows, columns=cols)
+
+    def _load_all_tv_presencias() -> pd.DataFrame:
+        """Carga y concatena TODAS las presencias de todos los partidos (solo TotalValues)."""
+        matches_obj = discover_matches()
+        all_rows = []
+        for m in matches_obj:
+            label = m["label"]
+            xml_tv, _mx = infer_paths_for_label(label)  # fuerza TotalValues
+            if xml_tv and os.path.isfile(xml_tv):
+                dfm = _tv_load_presencias(xml_tv, partido_label=label)
+                if not dfm.empty:
+                    all_rows.append(dfm)
+        if not all_rows:
+            return pd.DataFrame(columns=["nombre","rol","start_s","end_s","dur_s","labels_lc","partido"])
+        return pd.concat(all_rows, ignore_index=True)
 
     def _descriptor_counts(df_pres: pd.DataFrame):
         """
         Devuelve:
           - por_rol:  (nombre, rol) + 5 cols de contadores
           - por_jug:  (nombre)      + 5 cols de contadores
-        Cuenta 1 por instancia si el descriptor aparece entre sus labels (las instancias SIN label no suman).
+        Cuenta 1 por instancia etiquetada; las instancias SIN label no suman en estas 5.
         """
         if df_pres is None or df_pres.empty:
-            cols = ["nombre","rol"] + DESC_CANON
-            por_rol = pd.DataFrame(columns=cols)
+            por_rol = pd.DataFrame(columns=["nombre","rol"] + DESC_CANON)
             por_jug = pd.DataFrame(columns=["nombre"] + DESC_CANON)
             return por_rol, por_jug
 
-        # Explode labels, filtrar solo los 5
-        tmp = df_pres.copy()
-        tmp = tmp.explode("labels_lc", ignore_index=True)
+        tmp = df_pres.explode("labels_lc", ignore_index=True)
         tmp = tmp.dropna(subset=["labels_lc"])
         tmp = tmp[tmp["labels_lc"].isin(DESC_CANON_LC)].copy()
         if tmp.empty:
-            # Nadie tuvo labels de la lista canónica → todos 0
             por_rol = df_pres[["nombre","rol"]].drop_duplicates().copy()
             for c in DESC_CANON: por_rol[c] = 0
             por_jug = df_pres[["nombre"]].drop_duplicates().copy()
             for c in DESC_CANON: por_jug[c] = 0
             return por_rol, por_jug
 
-        # Normalizar nombre de la columna descriptor a la forma canónica (no-lc)
         def _canon_of(lc: str) -> str:
             for c, cl in zip(DESC_CANON, DESC_CANON_LC):
                 if lc == cl: return c
@@ -2240,113 +2248,160 @@ elif menu == "🕓 Distribución de minutos":
 
         tmp["desc_canon"] = tmp["labels_lc"].map(_canon_of)
 
-        # Conteo por (nombre, rol, desc)
         por_rol = (tmp.groupby(["nombre","rol","desc_canon"])
                       .size().unstack("desc_canon", fill_value=0).reset_index())
-        # Asegurar columnas
         for c in DESC_CANON:
             if c not in por_rol.columns:
                 por_rol[c] = 0
         por_rol = por_rol[["nombre","rol"] + DESC_CANON]
 
-        # Conteo por jugador total
         por_jug = (tmp.groupby(["nombre","desc_canon"])
                       .size().unstack("desc_canon", fill_value=0).reset_index())
         for c in DESC_CANON:
             if c not in por_jug.columns:
                 por_jug[c] = 0
         por_jug = por_jug[["nombre"] + DESC_CANON]
-
         return por_rol, por_jug
 
+    def _agg_minutes(df_pres: pd.DataFrame, mode: str) -> pd.DataFrame:
+        """
+        Calcula minutos y nº de tramos con merge de intervalos por partido y luego suma.
+        mode ∈ {"jug_total","jug_rol"}.
+        - jug_total: merge por (nombre, partido), luego agrupa por nombre
+        - jug_rol:   merge por (nombre, rol, partido), luego agrupa por (nombre, rol)
+        Devuelve columnas: (nombre[,rol]), segundos, mmss, minutos(float), n_tramos
+        """
+        if df_pres is None or df_pres.empty:
+            if mode == "jug_rol":
+                return pd.DataFrame(columns=["nombre","rol","segundos","mmss","minutos","n_tramos"])
+            else:
+                return pd.DataFrame(columns=["nombre","segundos","mmss","minutos","n_tramos"])
+
+        if mode == "jug_rol":
+            base_keys  = ["nombre","rol","partido"]
+            final_keys = ["nombre","rol"]
+        else:
+            base_keys  = ["nombre","partido"]
+            final_keys = ["nombre"]
+
+        rows = []
+        for keys, g in df_pres.groupby(base_keys, dropna=False):
+            intervals = list(zip(g["start_s"], g["end_s"]))
+            merged = _merge_intervals(intervals)
+            secs = int(round(sum((e - s) for s, e in merged)))
+            rows.append({**{k:v for k,v in zip(base_keys, keys)}, "segundos": secs, "n_tramos": len(merged)})
+
+        base_df = pd.DataFrame(rows)
+        if base_df.empty:
+            if mode == "jug_rol":
+                return pd.DataFrame(columns=["nombre","rol","segundos","mmss","minutos","n_tramos"])
+            else:
+                return pd.DataFrame(columns=["nombre","segundos","mmss","minutos","n_tramos"])
+
+        out = (base_df.groupby(final_keys, as_index=False)
+                         .agg(segundos=("segundos","sum"), n_tramos=("n_tramos","sum")))
+        out["mmss"]    = out["segundos"].apply(_format_mmss)
+        out["minutos"] = (out["segundos"] / 60.0).round(2)
+        # ordenar
+        out = out.sort_values(final_keys + ["segundos"], ascending=[True]*len(final_keys) + [False])
+        return out
+
     # =========================
-    # UI: Partido
+    # UI — Alcance de datos
     # =========================
-    matches = discover_matches()
-    if not matches:
-        st.warning("No encontré partidos en data/minutos.")
-        st.stop()
+    data_scope = st.radio("Alcance", ["Partido", "Todos los partidos"], horizontal=True)
 
-    sel = st.selectbox("Elegí partido", [m["label"] for m in matches], index=0)
+    if data_scope == "Partido":
+        matches = discover_matches()
+        if not matches:
+            st.warning("No encontré partidos en data/minutos.")
+            st.stop()
+        sel = st.selectbox("Elegí partido", [m["label"] for m in matches], index=0)
 
-    # Forzar XML TotalValues (no NacSport) para este módulo
-    XML_TV, _mx = infer_paths_for_label(sel)
-    if not XML_TV or not os.path.isfile(XML_TV):
-        st.error("Para 'Distribución de minutos' necesito el XML TotalValues del partido.")
-        st.stop()
+        XML_TV, _mx = infer_paths_for_label(sel)  # fuerza TotalValues
+        if not XML_TV or not os.path.isfile(XML_TV):
+            st.error("Para este módulo necesito el XML TotalValues del partido.")
+            st.stop()
+
+        df_pres = _tv_load_presencias(XML_TV, partido_label=sel)
+
+    else:  # Todos los partidos
+        df_pres = _load_all_tv_presencias()
+        if df_pres.empty:
+            st.warning("No encontré XML TotalValues válidos para acumular.")
+            st.stop()
 
     # =========================
-    # Carga + cálculos
+    # Cálculos (minutos/tramos + descriptores)
     # =========================
-    df_pres = _tv_load_presencias(XML_TV)
+    # Minutos/tramos
+    dj_total = _agg_minutes(df_pres, mode="jug_total")   # por jugador (across roles)
+    dr_total = _agg_minutes(df_pres, mode="jug_rol")     # por jugador & rol
 
-    # Minutos y tramos (merge intervals) usando tu helper global
-    # → devuelve (df_por_rol, df_por_jugador) con 'segundos','mmss','minutos','n_tramos'
-    df_por_rol, df_por_jugador = minutos_por_presencia(df_pres[["nombre","rol","start_s","end_s"]])
-
-    # Descriptores (conteos)
+    # Descriptores (conteo de instancias etiquetadas)
     desc_por_rol, desc_por_jug = _descriptor_counts(df_pres)
 
-    # Merge para vista por jugador total
-    dj = pd.merge(df_por_jugador, desc_por_jug, on="nombre", how="left")
-    # Merge para vista por rol
-    drol_full = pd.merge(df_por_rol, desc_por_rol, on=["nombre","rol"], how="left")
+    # Merge
+    dj_merged = pd.merge(dj_total, desc_por_jug, on="nombre", how="left")
+    dj_merged[DESC_CANON] = dj_merged[DESC_CANON].fillna(0).astype(int)
 
-    # Ordenar por segundos desc / nombre asc
-    if not dj.empty:
-        dj = dj.sort_values(["segundos","nombre"], ascending=[False, True]).reset_index(drop=True)
-    if not drol_full.empty:
-        drol_full = drol_full.sort_values(["segundos","nombre"], ascending=[False, True]).reset_index(drop=True)
+    dr_merged = pd.merge(dr_total, desc_por_rol, on=["nombre","rol"], how="left")
+    dr_merged[DESC_CANON] = dr_merged[DESC_CANON].fillna(0).astype(int)
+
+    # Orden estándar
+    if not dj_merged.empty:
+        dj_merged = dj_merged.sort_values(["segundos","nombre"], ascending=[False, True]).reset_index(drop=True)
+    if not dr_merged.empty:
+        dr_merged = dr_merged.sort_values(["segundos","nombre"], ascending=[False, True]).reset_index(drop=True)
 
     # =========================
-    # Filtros de visualización
+    # UI — Vistas
     # =========================
     scope = st.radio("Ver:", ["Jugador total", "Por rol"], horizontal=True)
 
     if scope == "Jugador total":
-        # -------- Tabla --------
         st.subheader("⏱️ Minutos totales por jugador (con descriptores)")
-        view = _prep_minutes_table(dj, include_role=False)
+        view = _prep_minutes_table(dj_merged, include_role=False)
         show_full_table(view)
 
-        # -------- Gráfico --------
-        if not dj.empty:
+        if not dj_merged.empty:
             fig = _fig_bar_minutos(
-                labels=dj["nombre"].tolist(),
-                secs_list=dj["segundos"].tolist(),
-                ntramos_list=dj["n_tramos"].tolist(),
-                title="Minutos totales por jugador (con nº de tramos)"
+                labels=dj_merged["nombre"].tolist(),
+                secs_list=dj_merged["segundos"].tolist(),
+                ntramos_list=dj_merged["n_tramos"].tolist(),
+                title=("Minutos totales por jugador" if data_scope=="Todos los partidos"
+                       else "Minutos totales por jugador (partido seleccionado)")
             )
             st.pyplot(fig, use_container_width=True)
         else:
-            st.info("Sin datos válidos para este partido.")
+            st.info("Sin datos válidos.")
 
     else:  # Por rol
-        roles_presentes = sorted([r for r in drol_full["rol"].dropna().unique().tolist()])
+        roles_presentes = sorted([r for r in dr_merged["rol"].dropna().unique().tolist()])
         if not roles_presentes:
-            st.info("No hay roles registrados para este partido.")
+            st.info("No hay roles registrados en el alcance seleccionado.")
             st.stop()
 
         sel_rol = st.selectbox("Rol", roles_presentes, index=0)
 
-        drol = drol_full[drol_full["rol"] == sel_rol].copy()
+        drol = dr_merged[dr_merged["rol"] == sel_rol].copy()
 
-        # -------- Tabla --------
         st.subheader(f"⏱️ Jugadores en rol: {sel_rol}")
         view = _prep_minutes_table(drol, include_role=True)
         show_full_table(view)
 
-        # -------- Gráfico --------
         if not drol.empty:
             fig = _fig_bar_minutos(
                 labels=(drol["nombre"] + " (" + drol["rol"] + ")").tolist(),
                 secs_list=drol["segundos"].tolist(),
                 ntramos_list=drol["n_tramos"].tolist(),
-                title=f"Minutos en rol {sel_rol} (con nº de tramos)"
+                title=(f"Minutos en rol {sel_rol} — acumulado" if data_scope=="Todos los partidos"
+                       else f"Minutos en rol {sel_rol} — partido seleccionado")
             )
             st.pyplot(fig, use_container_width=True)
         else:
-            st.info("Ese rol no tiene jugadores en este partido.")
+            st.info("Ese rol no tiene jugadores en el alcance seleccionado.")
+
 
 # =========================
 # 🔗 RED DE PASES
