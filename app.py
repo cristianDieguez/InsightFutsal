@@ -1874,11 +1874,60 @@ elif menu == "🔥 Mapas de calor":
 
     sel = st.selectbox("Elegí partido", [m["label"] for m in matches], index=0)
     match = get_match_by_label(sel)
+
+    # Cargamos XML de jugadores y preparamos dataset base (jugador, rol, pos_x,pos_y)
     df_raw = cargar_datos_nacsport(match["xml_players"]) if match else pd.DataFrame()
-    df_xy = explode_coords_for_heatmap(df_raw)
-    df_xy = rotate_coords_for_attack_right(df_xy)
-    fig = fig_heatmap(df_xy, f"Mapa de calor {sel}")
+    df_xy_all = explode_coords_for_heatmap(df_raw)
+
+    # Listas de nombres/roles presentes en ese partido
+    jugadores = sorted(df_xy_all["player_name"].dropna().unique().tolist())
+    roles_por_jugador = {
+        j: sorted(df_xy_all.loc[df_xy_all["player_name"] == j, "role"].dropna().unique().tolist())
+        for j in jugadores
+    }
+
+    st.subheader("Opciones de visualización")
+    scope = st.radio("Ámbito", ["Equipo entero", "Jugador", "Jugador + Rol"], horizontal=True)
+
+    # Filtro y rotación (la rotación por rol sólo se aplica cuando elegís un rol específico)
+    title_suffix = ""
+    if scope == "Equipo entero" or not jugadores:
+        # Fallback a equipo si no hay jugadores detectados
+        df_filt = df_xy_all.copy()
+        df_rot  = rotate_coords_for_attack_right(df_filt, role=None)
+        title_suffix = "Equipo"
+        if not jugadores:
+            st.info("No se detectaron jugadores en el XML. Se muestra el mapa del equipo.")
+    elif scope == "Jugador":
+        sel_player = st.selectbox("Jugador", jugadores, index=0)
+        df_filt = df_xy_all[df_xy_all["player_name"] == sel_player].copy()
+        df_rot  = rotate_coords_for_attack_right(df_filt, role=None)  # puede mezclar roles
+        title_suffix = f"Jugador: {sel_player}"
+        if df_rot.empty:
+            st.info("Ese jugador no tiene eventos válidos para el mapa en este partido.")
+    else:  # Jugador + Rol
+        colp, colr = st.columns([2, 1])
+        with colp:
+            sel_player = st.selectbox("Jugador", jugadores, index=0)
+        roles = roles_por_jugador.get(sel_player, [])
+        with colr:
+            sel_role = st.selectbox("Rol", roles, index=0 if roles else None)
+        if roles:
+            df_filt = df_xy_all[(df_xy_all["player_name"] == sel_player) & (df_xy_all["role"] == sel_role)].copy()
+            df_rot  = rotate_coords_for_attack_right(df_filt, role=sel_role)  # flip vertical sólo si Ala I/D
+            title_suffix = f"Jugador: {sel_player}  |  Rol: {sel_role}"
+            if df_rot.empty:
+                st.info("No hay eventos para ese jugador en ese rol en este partido.")
+        else:
+            st.info("Ese jugador no tiene roles registrados en este partido. Se muestra el mapa del equipo.")
+            df_filt = df_xy_all.copy()
+            df_rot  = rotate_coords_for_attack_right(df_filt, role=None)
+            title_suffix = "Equipo"
+
+    # Dibujar
+    fig = fig_heatmap(df_rot, f"Mapa de calor — {sel} — {title_suffix}")
     st.pyplot(fig, use_container_width=True)
+
 
 # =========================
 # 🕓 DISTRIBUCIÓN DE MINUTOS
