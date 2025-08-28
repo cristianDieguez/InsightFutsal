@@ -2091,7 +2091,6 @@ elif menu == "🕓 Distribución de minutos":
             return pd.DataFrame(columns=base_cols)
 
         d = df.copy()
-
         # asegurar 5 descriptores
         for c in DESC_CANON:
             if c not in d.columns:
@@ -2116,7 +2115,6 @@ elif menu == "🕓 Distribución de minutos":
 
         # NaN -> 0 en descriptores
         d[DESC_CANON] = d[DESC_CANON].fillna(0).astype(int)
-
         return d
 
     def _fig_bar_minutos(labels, secs_list, ntramos_list, title):
@@ -2145,29 +2143,38 @@ elif menu == "🕓 Distribución de minutos":
             else:              # suficientes → dentro, blanco
                 fs = 10; ha = "right"; color = "white"; txt_x = x - 0.08
             ax.text(txt_x, y, f"{mmss} ({nt})", va="center", ha=ha, fontsize=fs, color=color, fontweight="bold")
-
         plt.tight_layout()
         return fig
 
-    # --- NUEVOS helpers (no reemplazan nada) ---
-    def _fig_bar_value(labels, values, title, xlabel, pct=False):
-        vals = np.array(values, dtype=float)
-        finite = vals[np.isfinite(vals)]
-        xmax = float(finite.max() if finite.size else 1.0)
-        H = max(3.6, 0.46*len(labels))
+    def _fig_bar_generic(labels, values, title, fmt_fn=None, x_is_pct=False):
+        """Barras ordenadas de mayor a menor. fmt_fn(value)->str para etiqueta."""
+        order = np.argsort(-np.array(values, dtype=float))
+        labels_ord = [labels[i] for i in order]
+        vals_ord   = [values[i] for i in order]
+
+        H = max(3.6, 0.46*len(labels_ord))
         fig, ax = plt.subplots(figsize=(10, H))
-        bars = ax.barh(labels, vals, alpha=0.9)
-        ax.invert_yaxis(); ax.set_title(title); ax.set_xlabel(xlabel)
+        bars = ax.barh(labels_ord, vals_ord, alpha=0.92)
+        ax.invert_yaxis()
+        ax.set_title(title)
         ax.grid(axis="x", linestyle=":", alpha=0.35)
-        ax.set_xlim(0, xmax*1.15 + (0.1 if xmax>0 else 0.5))
-        for b, v in zip(bars, vals):
-            y = b.get_y() + b.get_height()/2
-            lab = ("—" if not np.isfinite(v) else (f"{v*100:.1f}%" if pct else f"{v:.2f}"))
+        if x_is_pct:
+            from matplotlib.ticker import FuncFormatter
+            ax.xaxis.set_major_formatter(FuncFormatter(lambda v,_: f"{v*100:.0f}%"))
+        vmax = float(max(vals_ord) if vals_ord else 1.0)
+        ax.set_xlim(0, vmax*1.10 + (0.02 if x_is_pct else 0.4))
+
+        for b, v in zip(bars, vals_ord):
             x = b.get_width()
-            if x < ax.get_xlim()[1]*0.18:
-                ax.text(x + 0.06, y, lab, va="center", ha="left", fontsize=9, color="black", fontweight="bold")
+            y = b.get_y() + b.get_height()/2
+            text = fmt_fn(v) if fmt_fn else (f"{v:.2f}" if not x_is_pct else f"{v*100:.1f}%")
+            if x < (0.06 if x_is_pct else 1.2):
+                fs = 8; ha="left"; color="black"; tx = x + (0.01 if x_is_pct else 0.10)
+            elif x < (0.18 if x_is_pct else 3.0):
+                fs = 9; ha="left"; color="black"; tx = x + (0.01 if x_is_pct else 0.08)
             else:
-                ax.text(x - 0.06, y, lab, va="center", ha="right", fontsize=10, color="white", fontweight="bold")
+                fs = 10; ha="right"; color="white"; tx = x - (0.01 if x_is_pct else 0.08)
+            ax.text(tx, y, text, va="center", ha=ha, fontsize=fs, color=color, fontweight="bold")
         plt.tight_layout()
         return fig
 
@@ -2285,14 +2292,15 @@ elif menu == "🕓 Distribución de minutos":
         por_jug = por_jug[["nombre"] + DESC_CANON]
         return por_rol, por_jug
 
-    def _merge_intervals(intervals):
-        ints = [(float(s), float(e)) for s, e in intervals if s is not None and e is not None and e > s]
-        if not ints: return []
-        ints.sort(); merged = [list(ints[0])]
-        for s, e in ints[1:]:
-            if s <= merged[-1][1]: merged[-1][1] = max(merged[-1][1], e)
-            else: merged.append([s, e])
-        return [(s, e) for s, e in merged]
+    def _merge_min_by_keys(df_pres: pd.DataFrame, base_keys: list[str]) -> pd.DataFrame:
+        """Merge de intervalos por keys; devuelve segundos y n_tramos (por esas keys)."""
+        rows = []
+        for keys, g in df_pres.groupby(base_keys, dropna=False):
+            intervals = list(zip(g["start_s"], g["end_s"]))
+            merged = _merge_intervals(intervals)
+            secs = int(round(sum((e - s) for s, e in merged)))
+            rows.append({**{k:v for k,v in zip(base_keys, keys)}, "segundos": secs, "n_tramos": len(merged)})
+        return pd.DataFrame(rows)
 
     def _agg_minutes(df_pres: pd.DataFrame, mode: str) -> pd.DataFrame:
         """
@@ -2315,14 +2323,7 @@ elif menu == "🕓 Distribución de minutos":
             base_keys  = ["nombre","partido"]
             final_keys = ["nombre"]
 
-        rows = []
-        for keys, g in df_pres.groupby(base_keys, dropna=False):
-            intervals = list(zip(g["start_s"], g["end_s"]))
-            merged = _merge_intervals(intervals)
-            secs = int(round(sum((e - s) for s, e in merged)))
-            rows.append({**{k:v for k,v in zip(base_keys, keys)}, "segundos": secs, "n_tramos": len(merged)})
-
-        base_df = pd.DataFrame(rows)
+        base_df = _merge_min_by_keys(df_pres, base_keys)
         if base_df.empty:
             if mode == "jug_rol":
                 return pd.DataFrame(columns=["nombre","rol","segundos","mmss","minutos","n_tramos"])
@@ -2337,76 +2338,85 @@ elif menu == "🕓 Distribución de minutos":
         out = out.sort_values(final_keys + ["segundos"], ascending=[True]*len(final_keys) + [False])
         return out
 
-    # === NUEVO: minutos totales del equipo (unión de arqueros por partido) ===
-    def _team_total_seconds_from_goalies(df_pres: pd.DataFrame) -> int:
-        if df_pres is None or df_pres.empty:
-            return 0
-        total = 0.0
-        for _, g in df_pres.groupby("partido", dropna=False):
-            rol_lc = g["rol"].astype(str).map(nlower)
-            gk = g[rol_lc == "arq"]
-            if not gk.empty:
-                total += sum(e - s for s, e in _merge_intervals(list(zip(gk["start_s"], gk["end_s"]))))
+    def _add_ratio_cols(df_in: pd.DataFrame) -> pd.DataFrame:
+        """Agrega ratios: %CS/tramo, %PF/GF_on, %IA/GA_on (como proporciones 0..1)."""
+        d = df_in.copy()
+        C     = "Valla Invicta en cancha"
+        GF_on = "Goles a favor en cancha"
+        PF    = "Participa en Gol Hecho"
+        GA_on = "Gol Rival en cancha"
+        IA    = "Involucrado en gol recibido"
+
+        d["ratio_CS_tramo"]   = np.where(d["n_tramos"]>0, d[C] / d["n_tramos"], 0.0)
+        d["ratio_PF_sobre_GF"] = np.where(d[GF_on]>0,    d[PF] / d[GF_on],       0.0)
+        d["ratio_IA_sobre_GA"] = np.where(d[GA_on]>0,    d[IA] / d[GA_on],       0.0)
+        return d
+
+    def _add_impact_cols(d_base: pd.DataFrame,
+                         dr_merged: pd.DataFrame,
+                         pesos_gen_pos=(0.60,0.30,0.10),  # (PF, GF_on, CS)
+                         pesos_gen_neg=(0.60,0.30,0.10),  # (IA, GA_on, noCS)
+                         pesos_arq_pos=(0.10,0.10,0.80),  # override para "Arq"
+                         pesos_arq_neg=(0.10,0.10,0.80),  # override para "Arq"
+                         apply_arq_override=True,
+                         is_by_role=False) -> pd.DataFrame:
+        """
+        Agrega columnas P_40, N_40, Net_40 a un DF de minutos + descriptores.
+        - Si is_by_role=True, decide pesos por la col 'rol' (si == 'Arq' usa override).
+        - Si is_by_role=False, decide por jugador: si el único rol del jugador es 'Arq' usa override.
+        """
+        C     = "Valla Invicta en cancha"
+        GF_on = "Goles a favor en cancha"
+        PF    = "Participa en Gol Hecho"
+        GA_on = "Gol Rival en cancha"
+        IA    = "Involucrado en gol recibido"
+
+        d = d_base.copy()
+        # map de roles por jugador (para Jugador total)
+        roles_by_player = (dr_merged.groupby("nombre")["rol"]
+                           .apply(lambda s: sorted(set([r for r in s.dropna().astype(str)])))
+                           .to_dict()) if not is_by_role else {}
+
+        def _is_pure_arq(row):
+            if is_by_role:
+                return (str(row.get("rol","")) == "Arq")
+            roles = roles_by_player.get(row["nombre"], [])
+            return (len(roles) > 0) and (set(roles) == {"Arq"})
+
+        # pesos
+        pf_gf_cs_gen = pesos_gen_pos   # PF, GF_on, CS
+        ia_ga_nc_gen = pesos_gen_neg   # IA, GA_on, noCS
+        pf_gf_cs_arq = pesos_arq_pos
+        ia_ga_nc_arq = pesos_arq_neg
+
+        p40, n40 = [], []
+        for _, r in d.iterrows():
+            mins = float(r["segundos"])/60.0 if float(r["segundos"])>0 else 0.0
+            nT   = int(r["n_tramos"])
+            cs   = int(r.get(C,0))
+            pf   = int(r.get(PF,0))
+            gf   = int(r.get(GF_on,0))
+            ia   = int(r.get(IA,0))
+            ga   = int(r.get(GA_on,0))
+            noCS = max(0, nT - cs)
+
+            use_arq = apply_arq_override and _is_pure_arq(r)
+            (w_pf, w_gf, w_cs) = (pf_gf_cs_arq if use_arq else pf_gf_cs_gen)
+            (w_ia, w_ga, w_nc) = (ia_ga_nc_arq if use_arq else ia_ga_nc_gen)
+
+            P_raw = w_pf*pf + w_gf*gf + w_cs*cs
+            N_raw = w_ia*ia + w_ga*ga + w_nc*noCS
+
+            if mins <= 0:
+                p40.append(0.0); n40.append(0.0)
             else:
-                smin = pd.to_numeric(g["start_s"], errors="coerce").min()
-                emax = pd.to_numeric(g["end_s"],   errors="coerce").max()
-                if pd.notna(smin) and pd.notna(emax):
-                    total += max(0.0, emax - smin)
-        return int(round(total))
+                scale = 40.0 / mins
+                p40.append(P_raw * scale)
+                n40.append(N_raw * scale)
 
-    # === NUEVO: KPIs / métricas (no afecta tablas base) ===
-    def _metrics_table_numeric(df_merged: pd.DataFrame, team_secs: int, include_role: bool=False) -> pd.DataFrame:
-        # columnas base
-        base_cols = (["nombre","rol"] if include_role else ["nombre"])
-        if df_merged is None or df_merged.empty:
-            return pd.DataFrame(columns=base_cols + [
-                "% Min equipo","% CS sobre tramos","% Part. GF sobre GF_on","% Invol. GC sobre GC_on",
-                "Impacto + (40')","Impacto − (40')","Impacto Neto (40')"
-            ])
-        d = df_merged.copy()
-        secs = d["segundos"].astype(float)
-        nT   = d["n_tramos"].replace(0, np.nan).astype(float)
-
-        # aliases descriptores
-        cCS, cGF, cPF, cGA, cIA = (
-            "Valla Invicta en cancha", "Goles a favor en cancha", "Participa en Gol Hecho",
-            "Gol Rival en cancha", "Involucrado en gol recibido"
-        )
-        # % minutos sobre total equipo
-        d["% Min equipo"] = np.where(team_secs>0, secs/float(team_secs), np.nan)
-        # % valla invicta sobre tramos
-        d["% CS sobre tramos"] = d[cCS] / nT
-        # % part. GF sobre GF_on
-        denom_gf = d[cGF].replace(0, np.nan).astype(float)
-        d["% Part. GF sobre GF_on"] = d[cPF] / denom_gf
-        # % invol. GC sobre GC_on
-        denom_gc = d[cGA].replace(0, np.nan).astype(float)
-        d["% Invol. GC sobre GC_on"] = d[cIA] / denom_gc
-        # Impactos por 40'
-        mins_played = secs.replace(0, np.nan) / 60.0
-        d["Impacto + (40')"]  = d[cPF] / mins_played * 40.0
-        d["Impacto − (40')"]  = d[cIA] / mins_played * 40.0
-        d["Impacto Neto (40')"] = d["Impacto + (40')"] - d["Impacto − (40')"]
-
-        keep = base_cols + [
-            "% Min equipo","% CS sobre tramos","% Part. GF sobre GF_on","% Invol. GC sobre GC_on",
-            "Impacto + (40')","Impacto − (40')","Impacto Neto (40')"
-        ]
-        return d.loc[:, keep]
-
-    def _metrics_table_pretty(df_num: pd.DataFrame, include_role: bool=False) -> pd.DataFrame:
-        if df_num is None or df_num.empty:
-            base_cols = (["nombre","rol"] if include_role else ["nombre"])
-            return pd.DataFrame(columns=base_cols + [
-                "% Min equipo","% CS sobre tramos","% Part. GF sobre GF_on","% Invol. GC sobre GC_on",
-                "Impacto + (40')","Impacto − (40')","Impacto Neto (40')"
-            ])
-        d = df_num.copy()
-        def _fmt_pct(x): return ("—" if not pd.notna(x) else f"{x*100:.1f}%")
-        for c in ["% Min equipo","% CS sobre tramos","% Part. GF sobre GF_on","% Invol. GC sobre GC_on"]:
-            if c in d: d[c] = d[c].map(_fmt_pct)
-        for c in ["Impacto + (40')","Impacto − (40')","Impacto Neto (40')"]:
-            if c in d: d[c] = d[c].map(lambda v: "—" if not pd.notna(v) else f"{v:.2f}")
+        d["Impacto_+_40"] = np.array(p40, dtype=float)
+        d["Impacto_-_40"] = np.array(n40, dtype=float)
+        d["Impacto_Neto_40"] = d["Impacto_+_40"] - d["Impacto_-_40"]
         return d
 
     # =========================
@@ -2451,64 +2461,134 @@ elif menu == "🕓 Distribución de minutos":
     dr_merged = pd.merge(dr_total, desc_por_rol, on=["nombre","rol"], how="left")
     dr_merged[DESC_CANON] = dr_merged[DESC_CANON].fillna(0).astype(int)
 
-    # Orden estándar
+    # Orden estándar para minutos
     if not dj_merged.empty:
         dj_merged = dj_merged.sort_values(["segundos","nombre"], ascending=[False, True]).reset_index(drop=True)
     if not dr_merged.empty:
         dr_merged = dr_merged.sort_values(["segundos","nombre"], ascending=[False, True]).reset_index(drop=True)
 
-    # Minutos totales del equipo (para % minutos)
-    team_secs = _team_total_seconds_from_goalies(df_pres)
-    if team_secs > 0:
-        st.caption(f"⏱️ Minutos totales disputados por el equipo (unión de arqueros): **{_format_mmss(team_secs)}**")
-
     # =========================
-    # UI — Vistas
+    # UI — Vistas y ajustes
     # =========================
+    # Desplegable de visualización
     scope = st.radio("Ver:", ["Jugador total", "Por rol"], horizontal=True)
 
+    with st.expander("Ajustes de pesos (impacto)"):
+        colA, colB = st.columns(2)
+        with colA:
+            st.caption("Pesos POSITIVOS (general)")
+            w_pf = st.slider("Participa en Gol Hecho (PF)", 0.0, 1.0, 0.60, 0.05)
+            w_gf = st.slider("Goles a favor en cancha (GF_on)", 0.0, 1.0, 0.30, 0.05)
+            w_cs = st.slider("Valla invicta (CS)", 0.0, 1.0, 0.10, 0.05)
+        with colB:
+            st.caption("Pesos NEGATIVOS (general)")
+            w_ia = st.slider("Involucrado en gol recibido (IA)", 0.0, 1.0, 0.60, 0.05)
+            w_ga = st.slider("Goles rival en cancha (GA_on)", 0.0, 1.0, 0.30, 0.05)
+            w_nc = st.slider("No valla invicta (noCS)", 0.0, 1.0, 0.10, 0.05)
+
+        st.markdown("---")
+        colC, colD = st.columns(2)
+        with colC:
+            st.caption("Pesos POSITIVOS (ARQ)")
+            aw_pf = st.slider("PF (Arq)", 0.0, 1.0, 0.10, 0.05)
+            aw_gf = st.slider("GF_on (Arq)", 0.0, 1.0, 0.10, 0.05)
+            aw_cs = st.slider("CS (Arq)", 0.0, 1.0, 0.80, 0.05)
+        with colD:
+            st.caption("Pesos NEGATIVOS (ARQ)")
+            aw_ia = st.slider("IA (Arq)", 0.0, 1.0, 0.10, 0.05)
+            aw_ga = st.slider("GA_on (Arq)", 0.0, 1.0, 0.10, 0.05)
+            aw_nc = st.slider("noCS (Arq)", 0.0, 1.0, 0.80, 0.05)
+
+        apply_arq_override = st.checkbox("Usar pesos especiales para 'Arq' (auto)", True)
+
+    # Visualización a ejecutar (un gráfico/tabla a la vez)
+    viz_opts_base = [
+        "Tabla — Minutos y descriptores",
+        "Barras — Minutos",
+        "Impacto (40') — Positivo",
+        "Impacto (40') — Negativo",
+        "Impacto (40') — Neto",
+        "Ratios — %CS/tramo, %PF/GF_on, %IA/GA_on",
+    ]
+
     if scope == "Jugador total":
-        # ---------- BASE (tal como lo tenías) ----------
-        st.subheader("⏱️ Minutos totales por jugador (con descriptores)")
-        view = _prep_minutes_table(dj_merged, include_role=False)
-        show_full_table(view)
+        viz_opt = st.selectbox("Visualización", viz_opts_base, index=0)
 
-        if not dj_merged.empty:
-            fig = _fig_bar_minutos(
-                labels=dj_merged["nombre"].tolist(),
-                secs_list=dj_merged["segundos"].tolist(),
-                ntramos_list=dj_merged["n_tramos"].tolist(),
-                title=("Minutos totales por jugador" if data_scope=="Todos los partidos"
-                       else "Minutos totales por jugador (partido seleccionado)")
-            )
-            st.pyplot(fig, use_container_width=True)
+        # ---- Tabla / Minutos ----
+        if viz_opt == "Tabla — Minutos y descriptores":
+            st.subheader("⏱️ Minutos totales por jugador (con descriptores)")
+            view = _prep_minutes_table(dj_merged, include_role=False)
+            show_full_table(view)
+
+        elif viz_opt == "Barras — Minutos":
+            if not dj_merged.empty:
+                fig = _fig_bar_minutos(
+                    labels=dj_merged["nombre"].tolist(),
+                    secs_list=dj_merged["segundos"].tolist(),
+                    ntramos_list=dj_merged["n_tramos"].tolist(),
+                    title=("Minutos totales por jugador" if data_scope=="Todos los partidos"
+                           else "Minutos totales por jugador (partido seleccionado)")
+                )
+                st.pyplot(fig, use_container_width=True)
+            else:
+                st.info("Sin datos válidos.")
+
         else:
-            st.info("Sin datos válidos.")
+            # ---- Impactos / Ratios (Jugador total) ----
+            if dj_merged.empty:
+                st.info("Sin datos válidos.")
+                st.stop()
 
-        # ---------- NUEVOS INDICADORES ----------
-        st.markdown("### 📊 Indicadores nuevos (jugador)")
-        met_num = _metrics_table_numeric(dj_merged, team_secs, include_role=False)
-        met_pretty = _metrics_table_pretty(met_num, include_role=False)
-        show_full_table(met_pretty)
+            dj_imp = _add_impact_cols(
+                d_base=dj_merged,
+                dr_merged=dr_merged,
+                pesos_gen_pos=(w_pf,w_gf,w_cs),
+                pesos_gen_neg=(w_ia,w_ga,w_nc),
+                pesos_arq_pos=(aw_pf,aw_gf,aw_cs),
+                pesos_arq_neg=(aw_ia,aw_ga,aw_nc),
+                apply_arq_override=apply_arq_override,
+                is_by_role=False
+            )
 
-        # Visualizaciones de impacto y % (opcional)
-        if not met_num.empty:
-            st.markdown("#### Visualizaciones")
-            st.pyplot(_fig_bar_value(met_num["nombre"], met_num["% Min equipo"], "Porcentaje de minutos del equipo", "% del total", pct=True), use_container_width=True)
-            st.pyplot(_fig_bar_value(met_num["nombre"], met_num["% CS sobre tramos"], "Valla invicta sobre tramos", "%", pct=True), use_container_width=True)
-            st.pyplot(_fig_bar_value(met_num["nombre"], met_num["% Part. GF sobre GF_on"], "Participación en GF / GF en cancha", "%", pct=True), use_container_width=True)
-            st.pyplot(_fig_bar_value(met_num["nombre"], met_num["% Invol. GC sobre GC_on"], "Involucrado en GC / GC en cancha", "%", pct=True), use_container_width=True)
+            if viz_opt == "Impacto (40') — Positivo":
+                labels = dj_imp["nombre"].tolist()
+                vals   = dj_imp["Impacto_+_40"].tolist()
+                fig = _fig_bar_generic(labels, vals, "Impacto positivo (escala a 40')", fmt_fn=lambda v: f"{v:.2f}")
+                st.pyplot(fig, use_container_width=True)
 
-            st.markdown("#### Impacto (por 40')")
-            st.pyplot(_fig_bar_value(met_num["nombre"], met_num["Impacto + (40')"], "Impacto POSITIVO — por 40’", "Involucramientos/40’"), use_container_width=True)
-            st.pyplot(_fig_bar_value(met_num["nombre"], met_num["Impacto − (40')"], "Impacto NEGATIVO — por 40’", "Involucramientos/40’"), use_container_width=True)
-            st.pyplot(_fig_bar_value(met_num["nombre"], met_num["Impacto Neto (40')"], "Impacto NETO — por 40’", "Net/40’"), use_container_width=True)
+            elif viz_opt == "Impacto (40') — Negativo":
+                labels = dj_imp["nombre"].tolist()
+                vals   = dj_imp["Impacto_-_40"].tolist()
+                fig = _fig_bar_generic(labels, vals, "Impacto negativo (escala a 40')", fmt_fn=lambda v: f"{v:.2f}")
+                st.pyplot(fig, use_container_width=True)
 
-            # Solapa/expander opcional para índice combinado
-            with st.expander("Índice neto combinado (añade aporte de valla invicta)", expanded=False):
-                w_cs = st.slider("Peso de valla invicta (equivalente a goles por 40’)", 0.0, 1.0, 0.30, 0.05)
-                idx_comb = met_num["Impacto Neto (40')"].fillna(0).to_numpy() + w_cs * met_num["% CS sobre tramos"].fillna(0).to_numpy()
-                st.pyplot(_fig_bar_value(met_num["nombre"], idx_comb, "Índice NETO combinado (+ valla invicta)", "Índice (goles/40’ eq.)"), use_container_width=True)
+            elif viz_opt == "Impacto (40') — Neto":
+                labels = dj_imp["nombre"].tolist()
+                vals   = dj_imp["Impacto_Neto_40"].tolist()
+                fig = _fig_bar_generic(labels, vals, "Impacto NETO (escala a 40')", fmt_fn=lambda v: f"{v:.2f}")
+                st.pyplot(fig, use_container_width=True)
+
+            elif viz_opt == "Ratios — %CS/tramo, %PF/GF_on, %IA/GA_on":
+                drr = _add_ratio_cols(_prep_minutes_table(dj_merged, include_role=False)
+                                      .merge(dj_merged[["nombre","n_tramos"]], on="nombre", how="left"))
+                # Tres gráficos (uno por vez, elegibles)
+                ratio_pick = st.selectbox(
+                    "Elegí ratio",
+                    ["%CS sobre tramos", "%PF sobre GF_on", "%IA sobre GA_on"],
+                    index=0
+                )
+                if ratio_pick == "%CS sobre tramos":
+                    labels = drr["nombre"].tolist(); vals = drr["ratio_CS_tramo"].tolist()
+                    fig = _fig_bar_generic(labels, vals, "Valla invicta / tramos", x_is_pct=True)
+                    st.pyplot(fig, use_container_width=True)
+                elif ratio_pick == "%PF sobre GF_on":
+                    labels = drr["nombre"].tolist(); vals = drr["ratio_PF_sobre_GF"].tolist()
+                    fig = _fig_bar_generic(labels, vals, "Participación en GF_on / GF_on", x_is_pct=True)
+                    st.pyplot(fig, use_container_width=True)
+                else:
+                    labels = drr["nombre"].tolist(); vals = drr["ratio_IA_sobre_GA"].tolist()
+                    fig = _fig_bar_generic(labels, vals, "Involucrado en GA_on / GA_on", x_is_pct=True)
+                    st.pyplot(fig, use_container_width=True)
 
     else:  # Por rol
         roles_presentes = sorted([r for r in dr_merged["rol"].dropna().unique().tolist()])
@@ -2517,49 +2597,78 @@ elif menu == "🕓 Distribución de minutos":
             st.stop()
 
         sel_rol = st.selectbox("Rol", roles_presentes, index=0)
+        viz_opt = st.selectbox("Visualización", viz_opts_base, index=0)
 
         drol = dr_merged[dr_merged["rol"] == sel_rol].copy()
 
-        # ---------- BASE (tal como lo tenías) ----------
-        st.subheader(f"⏱️ Jugadores en rol: {sel_rol}")
-        view = _prep_minutes_table(drol, include_role=True)
-        show_full_table(view)
+        if viz_opt == "Tabla — Minutos y descriptores":
+            st.subheader(f"⏱️ Jugadores en rol: {sel_rol}")
+            view = _prep_minutes_table(drol, include_role=True)
+            show_full_table(view)
 
-        if not drol.empty:
-            fig = _fig_bar_minutos(
-                labels=(drol["nombre"] + " (" + drol["rol"] + ")").tolist(),
-                secs_list=drol["segundos"].tolist(),
-                ntramos_list=drol["n_tramos"].tolist(),
-                title=(f"Minutos en rol {sel_rol} — acumulado" if data_scope=="Todos los partidos"
-                       else f"Minutos en rol {sel_rol} — partido seleccionado")
-            )
-            st.pyplot(fig, use_container_width=True)
-        else:
-            st.info("Ese rol no tiene jugadores en el alcance seleccionado.")
+        elif viz_opt == "Barras — Minutos":
+            if not drol.empty:
+                fig = _fig_bar_minutos(
+                    labels=(drol["nombre"] + " (" + drol["rol"] + ")").tolist(),
+                    secs_list=drol["segundos"].tolist(),
+                    ntramos_list=drol["n_tramos"].tolist(),
+                    title=(f"Minutos en rol {sel_rol} — acumulado" if data_scope=="Todos los partidos"
+                           else f"Minutos en rol {sel_rol} — partido seleccionado")
+                )
+                st.pyplot(fig, use_container_width=True)
+            else:
+                st.info("Ese rol no tiene jugadores en el alcance seleccionado.")
 
-        # ---------- NUEVOS INDICADORES ----------
-        st.markdown(f"### 📊 Indicadores nuevos (rol: {sel_rol})")
-        met_r_num = _metrics_table_numeric(drol, team_secs, include_role=True)
-        met_r_pretty = _metrics_table_pretty(met_r_num, include_role=True)
-        show_full_table(met_r_pretty)
+        elif viz_opt in {"Impacto (40') — Positivo","Impacto (40') — Negativo","Impacto (40') — Neto"}:
+            if drol.empty:
+                st.info("Ese rol no tiene jugadores en el alcance seleccionado.")
+            else:
+                drol_imp = _add_impact_cols(
+                    d_base=drol,
+                    dr_merged=dr_merged,
+                    pesos_gen_pos=(w_pf,w_gf,w_cs),
+                    pesos_gen_neg=(w_ia,w_ga,w_nc),
+                    pesos_arq_pos=(aw_pf,aw_gf,aw_cs),
+                    pesos_arq_neg=(aw_ia,aw_ga,aw_nc),
+                    apply_arq_override=apply_arq_override,
+                    is_by_role=True
+                )
+                labels = (drol_imp["nombre"] + " (" + drol_imp["rol"] + ")").tolist()
+                if viz_opt == "Impacto (40') — Positivo":
+                    vals = drol_imp["Impacto_+_40"].tolist()
+                    fig = _fig_bar_generic(labels, vals, f"Impacto positivo (40') — Rol {sel_rol}", fmt_fn=lambda v: f"{v:.2f}")
+                elif viz_opt == "Impacto (40') — Negativo":
+                    vals = drol_imp["Impacto_-_40"].tolist()
+                    fig = _fig_bar_generic(labels, vals, f"Impacto negativo (40') — Rol {sel_rol}", fmt_fn=lambda v: f"{v:.2f}")
+                else:
+                    vals = drol_imp["Impacto_Neto_40"].tolist()
+                    fig = _fig_bar_generic(labels, vals, f"Impacto NETO (40') — Rol {sel_rol}", fmt_fn=lambda v: f"{v:.2f}")
+                st.pyplot(fig, use_container_width=True)
 
-        if not met_r_num.empty:
-            labels_r = (met_r_num["nombre"] + " (" + sel_rol + ")").tolist()
-            st.markdown("#### Visualizaciones")
-            st.pyplot(_fig_bar_value(labels_r, met_r_num["% Min equipo"], "Porcentaje de minutos del equipo", "% del total", pct=True), use_container_width=True)
-            st.pyplot(_fig_bar_value(labels_r, met_r_num["% CS sobre tramos"], "Valla invicta sobre tramos", "%", pct=True), use_container_width=True)
-            st.pyplot(_fig_bar_value(labels_r, met_r_num["% Part. GF sobre GF_on"], "Participación en GF / GF en cancha", "%", pct=True), use_container_width=True)
-            st.pyplot(_fig_bar_value(labels_r, met_r_num["% Invol. GC sobre GC_on"], "Involucrado en GC / GC en cancha", "%", pct=True), use_container_width=True)
-
-            st.markdown("#### Impacto (por 40')")
-            st.pyplot(_fig_bar_value(labels_r, met_r_num["Impacto + (40')"], "Impacto POSITIVO — por 40’", "Involucramientos/40’"), use_container_width=True)
-            st.pyplot(_fig_bar_value(labels_r, met_r_num["Impacto − (40')"], "Impacto NEGATIVO — por 40’", "Involucramientos/40’"), use_container_width=True)
-            st.pyplot(_fig_bar_value(labels_r, met_r_num["Impacto Neto (40')"], "Impacto NETO — por 40’", "Net/40’"), use_container_width=True)
-
-            with st.expander("Índice neto combinado (añade aporte de valla invicta)", expanded=False):
-                w_cs_r = st.slider("Peso de valla invicta (equivalente a goles por 40’)", 0.0, 1.0, 0.30, 0.05, key="w_cs_rol")
-                idx_comb_r = met_r_num["Impacto Neto (40')"].fillna(0).to_numpy() + w_cs_r * met_r_num["% CS sobre tramos"].fillna(0).to_numpy()
-                st.pyplot(_fig_bar_value(labels_r, idx_comb_r, "Índice NETO combinado (+ valla invicta)", "Índice (goles/40’ eq.)"), use_container_width=True)
+        else:  # Ratios en rol
+            if drol.empty:
+                st.info("Ese rol no tiene jugadores en el alcance seleccionado.")
+            else:
+                drr = _add_ratio_cols(_prep_minutes_table(drol, include_role=True)
+                                      .merge(drol[["nombre","rol","n_tramos"]], on=["nombre","rol"], how="left"))
+                ratio_pick = st.selectbox(
+                    "Elegí ratio",
+                    ["%CS sobre tramos", "%PF sobre GF_on", "%IA sobre GA_on"],
+                    index=0
+                )
+                if ratio_pick == "%CS sobre tramos":
+                    labels = (drr["nombre"] + " (" + drr["rol"] + ")").tolist()
+                    vals = drr["ratio_CS_tramo"].tolist()
+                    fig = _fig_bar_generic(labels, vals, f"Valla invicta / tramos — Rol {sel_rol}", x_is_pct=True)
+                elif ratio_pick == "%PF sobre GF_on":
+                    labels = (drr["nombre"] + " (" + drr["rol"] + ")").tolist()
+                    vals = drr["ratio_PF_sobre_GF"].tolist()
+                    fig = _fig_bar_generic(labels, vals, f"Participación en GF_on / GF_on — Rol {sel_rol}", x_is_pct=True)
+                else:
+                    labels = (drr["nombre"] + " (" + drr["rol"] + ")").tolist()
+                    vals = drr["ratio_IA_sobre_GA"].tolist()
+                    fig = _fig_bar_generic(labels, vals, f"Involucrado en GA_on / GA_on — Rol {sel_rol}", x_is_pct=True)
+                st.pyplot(fig, use_container_width=True)
 
 # =========================
 # 🔗 RED DE PASES
