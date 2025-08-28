@@ -2167,34 +2167,48 @@ elif menu == "🕓 Distribución de minutos":
         view = view[[c for c in cols_front if c in view.columns] + [c for c in DESC_CANON if c in view.columns]]
         return view
 
-    def _fig_bar_minutos(labels, secs_list, ntramos_list, title):
-        """Barras de minutos con etiqueta 'MM:SS (nT)' autoajustada para barras chicas."""
+    def _fig_bar_minutos(labels, secs_list, ntramos_list, title,
+                         sort_desc=True, label_place="inside"):
+        """
+        Barras de minutos ordenadas (desc por defecto) y etiquetas consistentes.
+        label_place: "inside" o "outside" (todas iguales).
+        """
+        # ---- ordenar por minutos (desc) ----
+        rows = list(zip(labels, secs_list, ntramos_list))
+        rows.sort(key=lambda t: t[1], reverse=bool(sort_desc))
+        if rows:
+            labels, secs_list, ntramos_list = map(list, zip(*rows))
+        else:
+            labels, secs_list, ntramos_list = [], [], []
+    
         mins = np.array(secs_list, dtype=float) / 60.0
         H = max(3.8, 0.48*len(labels))
         fig, ax = plt.subplots(figsize=(10, H))
         bars = ax.barh(labels, mins, alpha=0.9)
-        ax.invert_yaxis()
+        ax.invert_yaxis()  # mayor arriba
         ax.set_xlabel("Minutos")
         ax.set_title(title)
         ax.grid(axis="x", linestyle=":", alpha=0.35)
         vmax = float(mins.max() if len(mins) else 1.0)
         ax.set_xlim(0, vmax*1.12 + 0.4)
-
-        # Etiquetas
+    
+        # ---- etiquetas consistentes (todas iguales) ----
         for b, secs, nt in zip(bars, secs_list, ntramos_list):
-            mmss = _format_mmss(secs)
+            txt = f"{_format_mmss(secs)} ({nt})"
             x = b.get_width()
             y = b.get_y() + b.get_height()/2
-            # Heurística de tamaño y posición
-            if x < 1.2:
-                fs = 8;  ha = "left";  color = "black"; txt_x = x + 0.10
-            elif x < 3.0:
-                fs = 9;  ha = "left";  color = "black"; txt_x = x + 0.08
-            else:
-                fs = 10; ha = "right"; color = "white"; txt_x = x - 0.08
-            ax.text(txt_x, y, f"{mmss} ({nt})", va="center", ha=ha, fontsize=fs, color=color, fontweight="bold")
+    
+            if label_place == "inside":
+                ax.text(x - 0.08, y, txt, va="center", ha="right",
+                        fontsize=10, color="white", fontweight="normal")
+            else:  # outside
+                ax.text(x + 0.10, y, txt, va="center", ha="left",
+                        fontsize=10, color="white", fontweight="normal",
+                        path_effects=[pe.withStroke(linewidth=2.2, foreground=bg_green)])
+    
         plt.tight_layout()
         return fig
+
 
     def _tv_load_presencias(xml_path: str, partido_label: str) -> pd.DataFrame:
         """
@@ -2444,7 +2458,9 @@ elif menu == "🕓 Distribución de minutos":
                     secs_list=dj_merged["segundos"].tolist(),
                     ntramos_list=dj_merged["n_tramos"].tolist(),
                     title=("Minutos totales por jugador" if data_scope=="Todos los partidos"
-                           else "Minutos totales por jugador (partido seleccionado)")
+                           else "Minutos totales por jugador (partido seleccionado)"),
+                    sort_desc=True,
+                    label_place="inside"   # <- cambiá a "outside" si preferís
                 )
                 st.pyplot(fig, use_container_width=True)
             else:
@@ -2469,7 +2485,9 @@ elif menu == "🕓 Distribución de minutos":
                     secs_list=drol["segundos"].tolist(),
                     ntramos_list=drol["n_tramos"].tolist(),
                     title=(f"Minutos en rol {sel_rol} — acumulado" if data_scope=="Todos los partidos"
-                           else f"Minutos en rol {sel_rol} — partido seleccionado")
+                           else f"Minutos en rol {sel_rol} — partido seleccionado"),
+                    sort_desc=True,
+                    label_place="inside"   # <- cambiá a "outside" si preferís
                 )
                 st.pyplot(fig, use_container_width=True)
             else:
