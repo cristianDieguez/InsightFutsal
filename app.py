@@ -2149,6 +2149,28 @@ elif menu == "🕓 Distribución de minutos":
         plt.tight_layout()
         return fig
 
+    # --- NUEVOS helpers (no reemplazan nada) ---
+    def _fig_bar_value(labels, values, title, xlabel, pct=False):
+        vals = np.array(values, dtype=float)
+        finite = vals[np.isfinite(vals)]
+        xmax = float(finite.max() if finite.size else 1.0)
+        H = max(3.6, 0.46*len(labels))
+        fig, ax = plt.subplots(figsize=(10, H))
+        bars = ax.barh(labels, vals, alpha=0.9)
+        ax.invert_yaxis(); ax.set_title(title); ax.set_xlabel(xlabel)
+        ax.grid(axis="x", linestyle=":", alpha=0.35)
+        ax.set_xlim(0, xmax*1.15 + (0.1 if xmax>0 else 0.5))
+        for b, v in zip(bars, vals):
+            y = b.get_y() + b.get_height()/2
+            lab = ("—" if not np.isfinite(v) else (f"{v*100:.1f}%" if pct else f"{v:.2f}"))
+            x = b.get_width()
+            if x < ax.get_xlim()[1]*0.18:
+                ax.text(x + 0.06, y, lab, va="center", ha="left", fontsize=9, color="black", fontweight="bold")
+            else:
+                ax.text(x - 0.06, y, lab, va="center", ha="right", fontsize=10, color="white", fontweight="bold")
+        plt.tight_layout()
+        return fig
+
     def _tv_load_presencias(xml_path: str, partido_label: str) -> pd.DataFrame:
         """
         Lee SOLO XML TotalValues (no NacSport) y devuelve las instancias válidas para minutos:
@@ -2263,6 +2285,15 @@ elif menu == "🕓 Distribución de minutos":
         por_jug = por_jug[["nombre"] + DESC_CANON]
         return por_rol, por_jug
 
+    def _merge_intervals(intervals):
+        ints = [(float(s), float(e)) for s, e in intervals if s is not None and e is not None and e > s]
+        if not ints: return []
+        ints.sort(); merged = [list(ints[0])]
+        for s, e in ints[1:]:
+            if s <= merged[-1][1]: merged[-1][1] = max(merged[-1][1], e)
+            else: merged.append([s, e])
+        return [(s, e) for s, e in merged]
+
     def _agg_minutes(df_pres: pd.DataFrame, mode: str) -> pd.DataFrame:
         """
         Calcula minutos y nº de tramos con merge de intervalos por partido y luego suma.
@@ -2305,6 +2336,78 @@ elif menu == "🕓 Distribución de minutos":
         # ordenar
         out = out.sort_values(final_keys + ["segundos"], ascending=[True]*len(final_keys) + [False])
         return out
+
+    # === NUEVO: minutos totales del equipo (unión de arqueros por partido) ===
+    def _team_total_seconds_from_goalies(df_pres: pd.DataFrame) -> int:
+        if df_pres is None or df_pres.empty:
+            return 0
+        total = 0.0
+        for _, g in df_pres.groupby("partido", dropna=False):
+            rol_lc = g["rol"].astype(str).map(nlower)
+            gk = g[rol_lc == "arq"]
+            if not gk.empty:
+                total += sum(e - s for s, e in _merge_intervals(list(zip(gk["start_s"], gk["end_s"]))))
+            else:
+                smin = pd.to_numeric(g["start_s"], errors="coerce").min()
+                emax = pd.to_numeric(g["end_s"],   errors="coerce").max()
+                if pd.notna(smin) and pd.notna(emax):
+                    total += max(0.0, emax - smin)
+        return int(round(total))
+
+    # === NUEVO: KPIs / métricas (no afecta tablas base) ===
+    def _metrics_table_numeric(df_merged: pd.DataFrame, team_secs: int, include_role: bool=False) -> pd.DataFrame:
+        # columnas base
+        base_cols = (["nombre","rol"] if include_role else ["nombre"])
+        if df_merged is None or df_merged.empty:
+            return pd.DataFrame(columns=base_cols + [
+                "% Min equipo","% CS sobre tramos","% Part. GF sobre GF_on","% Invol. GC sobre GC_on",
+                "Impacto + (40')","Impacto − (40')","Impacto Neto (40')"
+            ])
+        d = df_merged.copy()
+        secs = d["segundos"].astype(float)
+        nT   = d["n_tramos"].replace(0, np.nan).astype(float)
+
+        # aliases descriptores
+        cCS, cGF, cPF, cGA, cIA = (
+            "Valla Invicta en cancha", "Goles a favor en cancha", "Participa en Gol Hecho",
+            "Gol Rival en cancha", "Involucrado en gol recibido"
+        )
+        # % minutos sobre total equipo
+        d["% Min equipo"] = np.where(team_secs>0, secs/float(team_secs), np.nan)
+        # % valla invicta sobre tramos
+        d["% CS sobre tramos"] = d[cCS] / nT
+        # % part. GF sobre GF_on
+        denom_gf = d[cGF].replace(0, np.nan).astype(float)
+        d["% Part. GF sobre GF_on"] = d[cPF] / denom_gf
+        # % invol. GC sobre GC_on
+        denom_gc = d[cGA].replace(0, np.nan).astype(float)
+        d["% Invol. GC sobre GC_on"] = d[cIA] / denom_gc
+        # Impactos por 40'
+        mins_played = secs.replace(0, np.nan) / 60.0
+        d["Impacto + (40')"]  = d[cPF] / mins_played * 40.0
+        d["Impacto − (40')"]  = d[cIA] / mins_played * 40.0
+        d["Impacto Neto (40')"] = d["Impacto + (40')"] - d["Impacto − (40')"]
+
+        keep = base_cols + [
+            "% Min equipo","% CS sobre tramos","% Part. GF sobre GF_on","% Invol. GC sobre GC_on",
+            "Impacto + (40')","Impacto − (40')","Impacto Neto (40')"
+        ]
+        return d.loc[:, keep]
+
+    def _metrics_table_pretty(df_num: pd.DataFrame, include_role: bool=False) -> pd.DataFrame:
+        if df_num is None or df_num.empty:
+            base_cols = (["nombre","rol"] if include_role else ["nombre"])
+            return pd.DataFrame(columns=base_cols + [
+                "% Min equipo","% CS sobre tramos","% Part. GF sobre GF_on","% Invol. GC sobre GC_on",
+                "Impacto + (40')","Impacto − (40')","Impacto Neto (40')"
+            ])
+        d = df_num.copy()
+        def _fmt_pct(x): return ("—" if not pd.notna(x) else f"{x*100:.1f}%")
+        for c in ["% Min equipo","% CS sobre tramos","% Part. GF sobre GF_on","% Invol. GC sobre GC_on"]:
+            if c in d: d[c] = d[c].map(_fmt_pct)
+        for c in ["Impacto + (40')","Impacto − (40')","Impacto Neto (40')"]:
+            if c in d: d[c] = d[c].map(lambda v: "—" if not pd.notna(v) else f"{v:.2f}")
+        return d
 
     # =========================
     # UI — Alcance de datos
@@ -2354,12 +2457,18 @@ elif menu == "🕓 Distribución de minutos":
     if not dr_merged.empty:
         dr_merged = dr_merged.sort_values(["segundos","nombre"], ascending=[False, True]).reset_index(drop=True)
 
+    # Minutos totales del equipo (para % minutos)
+    team_secs = _team_total_seconds_from_goalies(df_pres)
+    if team_secs > 0:
+        st.caption(f"⏱️ Minutos totales disputados por el equipo (unión de arqueros): **{_format_mmss(team_secs)}**")
+
     # =========================
     # UI — Vistas
     # =========================
     scope = st.radio("Ver:", ["Jugador total", "Por rol"], horizontal=True)
 
     if scope == "Jugador total":
+        # ---------- BASE (tal como lo tenías) ----------
         st.subheader("⏱️ Minutos totales por jugador (con descriptores)")
         view = _prep_minutes_table(dj_merged, include_role=False)
         show_full_table(view)
@@ -2376,6 +2485,31 @@ elif menu == "🕓 Distribución de minutos":
         else:
             st.info("Sin datos válidos.")
 
+        # ---------- NUEVOS INDICADORES ----------
+        st.markdown("### 📊 Indicadores nuevos (jugador)")
+        met_num = _metrics_table_numeric(dj_merged, team_secs, include_role=False)
+        met_pretty = _metrics_table_pretty(met_num, include_role=False)
+        show_full_table(met_pretty)
+
+        # Visualizaciones de impacto y % (opcional)
+        if not met_num.empty:
+            st.markdown("#### Visualizaciones")
+            st.pyplot(_fig_bar_value(met_num["nombre"], met_num["% Min equipo"], "Porcentaje de minutos del equipo", "% del total", pct=True), use_container_width=True)
+            st.pyplot(_fig_bar_value(met_num["nombre"], met_num["% CS sobre tramos"], "Valla invicta sobre tramos", "%", pct=True), use_container_width=True)
+            st.pyplot(_fig_bar_value(met_num["nombre"], met_num["% Part. GF sobre GF_on"], "Participación en GF / GF en cancha", "%", pct=True), use_container_width=True)
+            st.pyplot(_fig_bar_value(met_num["nombre"], met_num["% Invol. GC sobre GC_on"], "Involucrado en GC / GC en cancha", "%", pct=True), use_container_width=True)
+
+            st.markdown("#### Impacto (por 40')")
+            st.pyplot(_fig_bar_value(met_num["nombre"], met_num["Impacto + (40')"], "Impacto POSITIVO — por 40’", "Involucramientos/40’"), use_container_width=True)
+            st.pyplot(_fig_bar_value(met_num["nombre"], met_num["Impacto − (40')"], "Impacto NEGATIVO — por 40’", "Involucramientos/40’"), use_container_width=True)
+            st.pyplot(_fig_bar_value(met_num["nombre"], met_num["Impacto Neto (40')"], "Impacto NETO — por 40’", "Net/40’"), use_container_width=True)
+
+            # Solapa/expander opcional para índice combinado
+            with st.expander("Índice neto combinado (añade aporte de valla invicta)", expanded=False):
+                w_cs = st.slider("Peso de valla invicta (equivalente a goles por 40’)", 0.0, 1.0, 0.30, 0.05)
+                idx_comb = met_num["Impacto Neto (40')"].fillna(0).to_numpy() + w_cs * met_num["% CS sobre tramos"].fillna(0).to_numpy()
+                st.pyplot(_fig_bar_value(met_num["nombre"], idx_comb, "Índice NETO combinado (+ valla invicta)", "Índice (goles/40’ eq.)"), use_container_width=True)
+
     else:  # Por rol
         roles_presentes = sorted([r for r in dr_merged["rol"].dropna().unique().tolist()])
         if not roles_presentes:
@@ -2386,6 +2520,7 @@ elif menu == "🕓 Distribución de minutos":
 
         drol = dr_merged[dr_merged["rol"] == sel_rol].copy()
 
+        # ---------- BASE (tal como lo tenías) ----------
         st.subheader(f"⏱️ Jugadores en rol: {sel_rol}")
         view = _prep_minutes_table(drol, include_role=True)
         show_full_table(view)
@@ -2401,6 +2536,30 @@ elif menu == "🕓 Distribución de minutos":
             st.pyplot(fig, use_container_width=True)
         else:
             st.info("Ese rol no tiene jugadores en el alcance seleccionado.")
+
+        # ---------- NUEVOS INDICADORES ----------
+        st.markdown(f"### 📊 Indicadores nuevos (rol: {sel_rol})")
+        met_r_num = _metrics_table_numeric(drol, team_secs, include_role=True)
+        met_r_pretty = _metrics_table_pretty(met_r_num, include_role=True)
+        show_full_table(met_r_pretty)
+
+        if not met_r_num.empty:
+            labels_r = (met_r_num["nombre"] + " (" + sel_rol + ")").tolist()
+            st.markdown("#### Visualizaciones")
+            st.pyplot(_fig_bar_value(labels_r, met_r_num["% Min equipo"], "Porcentaje de minutos del equipo", "% del total", pct=True), use_container_width=True)
+            st.pyplot(_fig_bar_value(labels_r, met_r_num["% CS sobre tramos"], "Valla invicta sobre tramos", "%", pct=True), use_container_width=True)
+            st.pyplot(_fig_bar_value(labels_r, met_r_num["% Part. GF sobre GF_on"], "Participación en GF / GF en cancha", "%", pct=True), use_container_width=True)
+            st.pyplot(_fig_bar_value(labels_r, met_r_num["% Invol. GC sobre GC_on"], "Involucrado en GC / GC en cancha", "%", pct=True), use_container_width=True)
+
+            st.markdown("#### Impacto (por 40')")
+            st.pyplot(_fig_bar_value(labels_r, met_r_num["Impacto + (40')"], "Impacto POSITIVO — por 40’", "Involucramientos/40’"), use_container_width=True)
+            st.pyplot(_fig_bar_value(labels_r, met_r_num["Impacto − (40')"], "Impacto NEGATIVO — por 40’", "Involucramientos/40’"), use_container_width=True)
+            st.pyplot(_fig_bar_value(labels_r, met_r_num["Impacto Neto (40')"], "Impacto NETO — por 40’", "Net/40’"), use_container_width=True)
+
+            with st.expander("Índice neto combinado (añade aporte de valla invicta)", expanded=False):
+                w_cs_r = st.slider("Peso de valla invicta (equivalente a goles por 40’)", 0.0, 1.0, 0.30, 0.05, key="w_cs_rol")
+                idx_comb_r = met_r_num["Impacto Neto (40')"].fillna(0).to_numpy() + w_cs_r * met_r_num["% CS sobre tramos"].fillna(0).to_numpy()
+                st.pyplot(_fig_bar_value(labels_r, idx_comb_r, "Índice NETO combinado (+ valla invicta)", "Índice (goles/40’ eq.)"), use_container_width=True)
 
 # =========================
 # 🔗 RED DE PASES
