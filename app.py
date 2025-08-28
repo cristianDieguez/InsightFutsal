@@ -2616,10 +2616,84 @@ elif menu == "🛡️ Pérdidas y Recuperaciones":
 
     sel = st.selectbox("Elegí partido", [m["label"] for m in matches], index=0)
     match = get_match_by_label(sel)
-    df_raw = pr_cargar_datos(match["xml_players"]) if match else pd.DataFrame()
+
+    # Carga cruda (sin filtrar)
+    df_raw  = pr_cargar_datos(match["xml_players"]) if match else pd.DataFrame()
     df_pres = pr_cargar_presencias_equipo(match["xml_players"]) if match else pd.DataFrame()
 
-    total_acc, perdidas, recupera, porc_perd, porc_recu, df_reg = pr_procesar(df_raw, df_pres, None)
+    # ====== NUEVO: nivel de análisis ======
+    st.markdown("##### Nivel de análisis")
+    col_lvl, col_jug, col_rol = st.columns([1.15, 1.6, 1.6])
+
+    with col_lvl:
+        nivel_analisis = st.radio(
+            "Analizar por",
+            options=["Equipo", "Jugador", "Jugador (rol)"],
+            index=0,
+            horizontal=True,
+            label_visibility="collapsed"
+        )
+
+    # Derivados de nombres/roles (solo si hay datos)
+    if not df_raw.empty:
+        # extraigo nombre y rol a partir del code "Nombre (Rol)"
+        nr = df_raw["jugador"].apply(pr_split_name_role)
+        df_raw = df_raw.assign(
+            _nombre = nr.apply(lambda t: t[0] if t else None),
+            _rol    = nr.apply(lambda t: t[1] if t else None),
+        )
+    if not df_pres.empty:
+        # df_pres ya tiene nombre/rol por cómo la cargas
+        df_pres = df_pres.rename(columns={"nombre":"_nombre","rol":"_rol"})
+
+    # Selectores y Filtros
+    selected_players, selected_roles = [], []
+
+    if nivel_analisis in {"Jugador", "Jugador (rol)"} and not df_raw.empty:
+        jugadores = (df_raw["_nombre"].dropna().astype(str).sort_values().unique().tolist())
+        with col_jug:
+            default_players = jugadores[:1] if jugadores else []
+            selected_players = st.multiselect(
+                "Jugador(es)",
+                options=jugadores,
+                default=default_players,
+                help="Aplica los cálculos sólo a estos jugadores."
+            )
+        if selected_players:
+            df_raw  = df_raw[df_raw["_nombre"].astype(str).isin(selected_players)]
+            if not df_pres.empty:
+                df_pres = df_pres[df_pres["_nombre"].astype(str).isin(selected_players)]
+
+    if nivel_analisis == "Jugador (rol)" and not df_raw.empty:
+        roles_disp = (df_raw["_rol"].dropna().astype(str).sort_values().unique().tolist())
+        with col_rol:
+            selected_roles = st.multiselect(
+                "Rol(es)",
+                options=roles_disp,
+                default=roles_disp,  # por defecto, todos
+                help="Podés limitar a uno o varios roles."
+            )
+        if selected_roles:
+            df_raw  = df_raw[df_raw["_rol"].astype(str).isin(selected_roles)]
+            if not df_pres.empty:
+                df_pres = df_pres[df_pres["_rol"].astype(str).isin(selected_roles)]
+
+    # Contexto (solo texto, no altera cálculos)
+    contexto_txt = "Equipo"
+    if selected_players:
+        contexto_txt = "Jugador/es: " + ", ".join(selected_players)
+        if selected_roles:
+            contexto_txt += " | Rol/es: " + ", ".join(selected_roles)
+
+    st.caption(f"Contexto: {contexto_txt}")
+
+    # IMPORTANTE: pr_procesar ya contempla chequeo de minutos en cancha.
+    # Como ya filtramos df_raw/df_pres por jugador/rol, pasamos jugador_filter=None.
+    total_acc, perdidas, recupera, porc_perd, porc_recu, df_reg = pr_procesar(
+        df_raw.copy(), 
+        df_pres.copy(), 
+        None  # sin filtro adicional, ya lo hicimos arriba
+    )
     df_resumen = pr_resumen_df(total_acc, perdidas, recupera, porc_perd, porc_recu)
 
     st.subheader("📋 Resumen pérdidas/recuperaciones")
@@ -2636,6 +2710,7 @@ elif menu == "🛡️ Pérdidas y Recuperaciones":
 
     st.subheader("📊 Ranking de zonas con más recuperaciones")
     st.pyplot(pr_bars(df_resumen, "%_recuperaciones_sobre_total", "Zonas con más recuperaciones"), use_container_width=True)
+
 
 # =========================
 # 🎯 MAPA DE TIROS
