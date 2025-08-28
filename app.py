@@ -1936,131 +1936,172 @@ elif menu == "🔥 Mapas de calor":
 # 🕓 DISTRIBUCIÓN DE MINUTOS
 # =========================
 elif menu == "🕓 Distribución de minutos":
-    # --- helper local para etiquetas prolijas (adentro/afuera + tamaño adaptativo) ---
-    def _fig_barh_minutos_tramos(labels, vals_sec, n_tramos, title, xlabel="Minutos"):
-        import numpy as np
-        fig, ax = plt.subplots(figsize=(10, max(3.8, 0.48*len(labels))))
-        vals_min = (np.array(vals_sec, dtype=float) / 60.0)
-        bars = ax.barh(labels, vals_min, alpha=0.9)
-        ax.invert_yaxis()
-
-        # grid y límites
-        ax.grid(axis="x", linestyle=":", alpha=0.35)
-        vmax = float(vals_min.max()) if len(vals_min) else 1.0
-        ax.set_xlim(0, vmax * 1.12 + 0.4)
-        axis_max = ax.get_xlim()[1]
-
-        # etiquetas: "MM:SS | nT: X" con tamaño/posición adaptativos
-        for b, secs, tr in zip(bars, vals_sec, n_tramos):
-            mmss = _format_mmss(secs)
-            txt  = f"{mmss}  |  nT: {int(tr)}"
-            x    = b.get_width()
-            y    = b.get_y() + b.get_height()/2
-            ratio = (x / axis_max) if axis_max else 0.0
-
-            if ratio < 0.12:        # muy corta → afuera, más chico
-                fs, ha, color = 7, "left",  "black"
-                x_txt = min(x + axis_max*0.012, axis_max*0.985)
-            elif ratio < 0.22:      # corta → afuera, chico
-                fs, ha, color = 8, "left",  "black"
-                x_txt = min(x + axis_max*0.012, axis_max*0.985)
-            elif ratio < 0.38:      # media → adentro, blanco
-                fs, ha, color = 8, "right", "white"
-                x_txt = x * 0.985
-            else:                   # larga → adentro, un poco más grande
-                fs, ha, color = 9, "right", "white"
-                x_txt = x * 0.985
-
-            ax.text(x_txt, y, txt, va="center", ha=ha, fontsize=fs, color=color,
-                    fontweight="bold", clip_on=False)
-
-        ax.set_xlabel(xlabel)
-        ax.set_title(title)
-        plt.tight_layout()
-        return fig
-
-    # --- datos base ---
     matches = discover_matches()
     if not matches:
         st.warning("No encontré partidos en data/minutos.")
         st.stop()
 
     sel = st.selectbox("Elegí partido", [m["label"] for m in matches], index=0)
-    match = get_match_by_label(sel)
-    df_pres = cargar_minutos_desde_xml_totalvalues(match["xml_players"]) if match else pd.DataFrame()
-    df_por_rol, df_por_jugador = minutos_por_presencia(df_pres)
 
-    # colecciones de nombres y roles presentes
-    jugadores = sorted(df_por_jugador["nombre"].dropna().unique().tolist())
-    roles     = sorted(df_por_rol["rol"].dropna().unique().tolist())
-
-    # --- Resumen general (equipo) ---
-    st.subheader("⏱️ Minutos totales por jugador (equipo)")
-    if df_por_jugador.empty:
-        st.info("Sin presencias en este partido.")
+    # ⬅️ OBLIGATORIO: tomar SIEMPRE el XML TotalValues para minutos
+    XML_TV, _ = infer_paths_for_label(sel)
+    if not XML_TV or not os.path.isfile(XML_TV):
+        st.error("Para 'Distribución de minutos' necesito el archivo 'XML TotalValues'. No lo encontré para este partido.")
         st.stop()
 
-    # tabla: sin 'segundos' ni 'minutos' (float) — renombrar 'mmss' → 'minutos'
-    df_show_tot = (df_por_jugador[["nombre","mmss","n_tramos"]]
-                   .rename(columns={"mmss":"minutos"}))
-    st.dataframe(df_show_tot, use_container_width=True)
+    # Cargar presencias estrictamente desde TotalValues (sólo Jugador (Rol) válidos de Ferro)
+    df_pres = cargar_minutos_desde_xml_totalvalues(XML_TV)
 
-    fig_tot = _fig_barh_minutos_tramos(
-        labels   = df_por_jugador["nombre"].tolist(),
-        vals_sec = df_por_jugador["segundos"].tolist(),
-        n_tramos = df_por_jugador["n_tramos"].tolist(),
-        title    = f"Minutos totales por jugador — {sel}"
+    # --- helpers específicos de este menú (locales para no tocar otros) ---
+    def _agg_por_nombre_rol(dfp: pd.DataFrame) -> pd.DataFrame:
+        """Minutos y tramos por (Jugador, Rol). Cada (start,end) se mergea dentro de ese rol."""
+        if dfp.empty:
+            return pd.DataFrame(columns=["nombre","rol","segundos","mmss","minutos","n_tramos"])
+        rows = []
+        for (nombre, rol), g in dfp.groupby(["nombre","rol"], dropna=False):
+            merged = _merge_intervals(list(zip(g["start_s"], g["end_s"])))
+            secs = sum(e - s for s, e in merged)
+            rows.append({
+                "nombre":  nombre,
+                "rol":     rol,
+                "segundos": int(round(secs)),
+                "mmss":     _format_mmss(secs),
+                "minutos":  round(secs/60.0, 2),
+                "n_tramos": len(merged),
+            })
+        out = pd.DataFrame(rows).sort_values(["segundos","nombre","rol"], ascending=[False, True, True]).reset_index(drop=True)
+        return out
+
+    def _agg_por_nombre_union(dfp: pd.DataFrame) -> pd.DataFrame:
+        """
+        Minutos y tramos por Jugador (TOTAL): une intervalos de TODOS los roles del jugador.
+        Esto evita sobrecontar tramos si cambió de rol sin salir de cancha.
+        """
+        if dfp.empty:
+            return pd.DataFrame(columns=["nombre","segundos","mmss","minutos","n_tramos"])
+        rows = []
+        for nombre, g in dfp.groupby("nombre", dropna=False):
+            merged = _merge_intervals(list(zip(g["start_s"], g["end_s"])))
+            secs = sum(e - s for s, e in merged)
+            rows.append({
+                "nombre":  nombre,
+                "segundos": int(round(secs)),
+                "mmss":     _format_mmss(secs),
+                "minutos":  round(secs/60.0, 2),
+                "n_tramos": len(merged),
+            })
+        out = pd.DataFrame(rows).sort_values(["segundos","nombre"], ascending=[False, True]).reset_index(drop=True)
+        return out
+
+    def _fig_barh_minutos_tramos(labels, vals_sec, n_tramos, title, xlabel="Minutos"):
+        """Barra horizontal con etiqueta 'MM:SS | nT: #tramos' dentro/fuera según ancho."""
+        vals_min = (np.array(vals_sec) / 60.0)
+        fig, ax = plt.subplots(figsize=(10, max(3.8, 0.48*len(labels))))
+        bars = ax.barh(labels, vals_min, alpha=0.9); ax.invert_yaxis()
+        # Etiquetas
+        xlim = max(1.0, (vals_min.max() if len(vals_min) else 1.0))
+        for b, secs, tr in zip(bars, vals_sec, n_tramos):
+            mmss = _format_mmss(secs)
+            txt = f"{mmss}  |  nT: {int(tr)}"
+            x = b.get_width(); y = b.get_y() + b.get_height()/2
+            if x < 0.9:
+                ax.text(min(x + 0.1, xlim * 0.98), y, txt, va="center", ha="left",
+                        fontsize=9, color="black", fontweight="bold")
+            else:
+                ax.text(x * 0.98, y, txt, va="center", ha="right",
+                        fontsize=9, color="white", fontweight="bold")
+        ax.set_xlabel(xlabel); ax.set_title(title)
+        ax.grid(axis="x", linestyle=":", alpha=0.35)
+        ax.set_xlim(0, xlim * 1.12 + 0.4)
+        plt.tight_layout()
+        return fig
+
+    # --- datasets base ---
+    df_por_rol      = _agg_por_nombre_rol(df_pres)
+    df_por_jugador  = _agg_por_nombre_union(df_pres)
+
+    jugadores = sorted(df_pres["nombre"].dropna().unique().tolist())
+    roles     = sorted(df_pres["rol"].dropna().unique().tolist())
+
+    st.subheader("Opciones de visualización")
+    vista = st.radio(
+        "Ver:",
+        ["Jugador (total)", "Jugador (rol)", "Sólo un rol"],
+        horizontal=True
     )
-    st.pyplot(fig_tot, use_container_width=True)
 
-    st.markdown("---")
+    # ========== VISTA 1: Jugador (total) ==========
+    if vista == "Jugador (total)":
+        st.markdown("**Minutos totales por jugador (unión de intervalos, sin importar el rol)**")
+        if df_por_jugador.empty:
+            st.info("Sin presencias válidas en el XML TotalValues.")
+            st.stop()
+        st.dataframe(df_por_jugador, use_container_width=True)
+        fig_tot = _fig_barh_minutos_tramos(
+            labels=df_por_jugador["nombre"].tolist(),
+            vals_sec=df_por_jugador["segundos"].tolist(),
+            n_tramos=df_por_jugador["n_tramos"].tolist(),
+            title=f"Minutos totales por jugador — {sel}"
+        )
+        st.pyplot(fig_tot, use_container_width=True)
 
-    # --- Vista 1: Jugador → minutos por rol ---
-    st.subheader("🎭 Minutos por rol — jugador seleccionado")
-    if jugadores:
-        sel_jug = st.selectbox("Jugador", jugadores, index=0, key="min_jugador")
-        d_jr = df_por_rol[df_por_rol["nombre"] == sel_jug].copy()
-        if d_jr.empty:
-            st.info("Ese jugador no tiene tramos en este partido.")
-        else:
-            d_jr_show = (d_jr[["rol","mmss","n_tramos"]]
-                         .rename(columns={"mmss":"minutos"}))
-            st.dataframe(d_jr_show, use_container_width=True)
+    # ========== VISTA 2: Jugador (rol) ==========
+    elif vista == "Jugador (rol)":
+        if df_por_rol.empty:
+            st.info("Sin presencias válidas en el XML TotalValues.")
+            st.stop()
 
+        sel_jug = st.selectbox("Jugador", ["(Todos)"] + jugadores, index=0)
+
+        if sel_jug == "(Todos)":
+            st.markdown("**Minutos por jugador (rol)**")
+            st.dataframe(df_por_rol, use_container_width=True)
+            labels = (df_por_rol["nombre"] + " (" + df_por_rol["rol"] + ")").tolist()
             fig_jr = _fig_barh_minutos_tramos(
-                labels   = d_jr["rol"].tolist(),
-                vals_sec = d_jr["segundos"].tolist(),
-                n_tramos = d_jr["n_tramos"].tolist(),
-                title    = f"{sel_jug} — minutos y tramos por rol — {sel}"
+                labels=labels,
+                vals_sec=df_por_rol["segundos"].tolist(),
+                n_tramos=df_por_rol["n_tramos"].tolist(),
+                title=f"Minutos por jugador (rol) — {sel}"
             )
             st.pyplot(fig_jr, use_container_width=True)
-    else:
-        st.info("No hay jugadores detectados.")
+        else:
+            d = df_por_rol[df_por_rol["nombre"] == sel_jug].copy()
+            if d.empty:
+                st.info("Ese jugador no tiene tramos en este partido.")
+            else:
+                st.markdown(f"**Apertura por rol — {sel_jug}**")
+                st.dataframe(d, use_container_width=True)
+                fig_jr1 = _fig_barh_minutos_tramos(
+                    labels=d["rol"].tolist(),
+                    vals_sec=d["segundos"].tolist(),
+                    n_tramos=d["n_tramos"].tolist(),
+                    title=f"{sel_jug} — minutos y tramos por rol — {sel}"
+                )
+                st.pyplot(fig_jr1, use_container_width=True)
 
-    st.markdown("---")
+    # ========== VISTA 3: Sólo un rol ==========
+    else:  # "Sólo un rol"
+        if not roles:
+            st.info("No hay roles detectados en el XML TotalValues.")
+            st.stop()
 
-    # --- Vista 2: Rol → minutos por jugador ---
-    st.subheader("🧩 Minutos por jugador — rol seleccionado")
-    if roles:
-        sel_rol = st.selectbox("Rol", roles, index=0, key="min_rol")
-        d_r = (df_por_rol[df_por_rol["rol"] == sel_rol]
-               .sort_values(["segundos","nombre"], ascending=[False, True]))
-        if d_r.empty:
+        sel_rol = st.selectbox("Rol", roles, index=0)
+        d = df_por_rol[df_por_rol["rol"] == sel_rol].copy().sort_values(
+            ["segundos","nombre"], ascending=[False, True]
+        )
+        st.markdown(f"**Jugadores que cumplieron el rol {sel_rol}**")
+        if d.empty:
             st.info(f"No hubo presencias con el rol '{sel_rol}'.")
         else:
-            d_r_show = (d_r[["nombre","mmss","n_tramos"]]
-                        .rename(columns={"mmss":"minutos"}))
-            st.dataframe(d_r_show, use_container_width=True)
-
+            st.dataframe(d[["nombre","rol","mmss","minutos","segundos","n_tramos"]], use_container_width=True)
             fig_r = _fig_barh_minutos_tramos(
-                labels   = d_r["nombre"].tolist(),
-                vals_sec = d_r["segundos"].tolist(),
-                n_tramos = d_r["n_tramos"].tolist(),
-                title    = f"Rol: {sel_rol} — minutos por jugador — {sel}"
+                labels=d["nombre"].tolist(),
+                vals_sec=d["segundos"].tolist(),
+                n_tramos=d["n_tramos"].tolist(),
+                title=f"Rol: {sel_rol} — minutos por jugador — {sel}"
             )
             st.pyplot(fig_r, use_container_width=True)
-    else:
-        st.info("No hay roles detectados para este partido.")
+
 
 # =========================
 # 🔗 RED DE PASES
