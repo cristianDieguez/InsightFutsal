@@ -891,16 +891,32 @@ def _merge_intervals(intervals):
         else: merged.append([s, e])
     return [(s, e) for s, e in merged]
 
+# --- Descriptores permitidos (los 5 que pediste) ---
+DESC_CANON = [
+    "Valla invicta en cancha",
+    "Goles a favor en cancha",
+    "Participa en Gol Hecho",
+    "Gol Rival en cancha",
+    "Involucrado en gol recibido",
+]
+DESC_CANON_LC = [nlower(x) for x in DESC_CANON]
+DESC_IGNORE   = {nlower("Total")}  # label a ignorar si aparece solo
+
 def cargar_minutos_desde_xml_totalvalues(xml_path: str) -> pd.DataFrame:
     """
     Lee SOLO instancias de Jugador (Rol) del XML TotalValues cuya lista de labels:
-      - esté vacía (o solo tenga 'Total'),  O
+      - esté vacía (o sólo tenga 'Total'),  O
       - contenga al menos uno de estos descriptores:
         'Valla invicta en cancha', 'Goles a favor en cancha',
         'Participa en Gol Hecho', 'Gol Rival en cancha', 'Involucrado en gol recibido'
+
     Devuelve filas crudas de tramos: code, nombre, rol, start_s, end_s, dur_s
+    + una columna por descriptor con 0/1 indicando si ese tramo lo contiene.
     """
-    cols = ["code","nombre","rol","start_s","end_s","dur_s"]
+    base_cols = ["code","nombre","rol","start_s","end_s","dur_s"]
+    desc_cols = DESC_CANON[:]  # usamos los nombres canónicos como encabezados
+    cols = base_cols + desc_cols
+
     if not xml_path or not os.path.isfile(xml_path):
         return pd.DataFrame(columns=cols)
 
@@ -909,15 +925,6 @@ def cargar_minutos_desde_xml_totalvalues(xml_path: str) -> pd.DataFrame:
     except Exception:
         return pd.DataFrame(columns=cols)
 
-    ALLOWED = {
-        nlower("Valla invicta en cancha"),
-        nlower("Goles a favor en cancha"),
-        nlower("Participa en Gol Hecho"),
-        nlower("Gol Rival en cancha"),
-        nlower("Involucrado en gol recibido"),
-    }
-    IGNORABLE = {nlower("Total")}
-
     rows = []
     for inst in root.findall(".//instance"):
         code = inst.findtext("code") or ""
@@ -925,12 +932,12 @@ def cargar_minutos_desde_xml_totalvalues(xml_path: str) -> pd.DataFrame:
             continue
 
         # labels normalizados
-        labels = [ (lab.findtext("text") or "").strip() for lab in inst.findall("./label") ]
+        labels = [(lab.findtext("text") or "").strip() for lab in inst.findall("./label")]
         labels_low = [nlower(l) for l in labels if l]
-        decision = [l for l in labels_low if l not in IGNORABLE]
+        decision = [l for l in labels_low if l not in DESC_IGNORE]
 
         # criterio de inclusión
-        keep = (len(decision) == 0) or any(l in ALLOWED for l in decision)
+        keep = (len(decision) == 0) or any(l in DESC_CANON_LC for l in decision)
         if not keep:
             continue
 
@@ -948,12 +955,31 @@ def cargar_minutos_desde_xml_totalvalues(xml_path: str) -> pd.DataFrame:
         if not m:
             continue
         nombre, rol = m.group(1).strip(), m.group(2).strip()
+
+        # flags de descriptores
+        present_lc = set(decision)
+        flags = []
+        for canon, canon_lc in zip(DESC_CANON, DESC_CANON_LC):
+            flags.append(1 if canon_lc in present_lc else 0)
+
         rows.append({
             "code": code, "nombre": nombre, "rol": rol,
-            "start_s": s, "end_s": e, "dur_s": e - s
+            "start_s": s, "end_s": e, "dur_s": e - s,
+            **{canon: flag for canon, flag in zip(DESC_CANON, flags)}
         })
 
-    return pd.DataFrame(rows, columns=cols)
+    df = pd.DataFrame(rows, columns=cols)
+    return df
+
+def _sumar_descriptores(df: pd.DataFrame, by: list[str]) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame(columns=by + DESC_CANON)
+    # Asegura que las cols existan (por si algún XML no trae ninguno)
+    for c in DESC_CANON:
+        if c not in df.columns:
+            df[c] = 0
+    agg = df.groupby(by, as_index=False)[DESC_CANON].sum()
+    return agg
 
 def _format_mmss(seconds: float | int) -> str:
     if seconds is None or not np.isfinite(seconds): return "00:00"
@@ -999,7 +1025,6 @@ def minutos_por_presencia(df_pres: pd.DataFrame):
     return df_por_rol, df_por_jugador
 
 def _inside_bar_label(ax, bars, values_sec):
-    # usamos el ancho real en minutos para decidir tamaño/posición
     xmax = ax.get_xlim()[1] if ax.get_xlim()[1] > 0 else 1.0
     for b, secs in zip(bars, values_sec):
         mmss = _format_mmss(secs)
@@ -1007,14 +1032,11 @@ def _inside_bar_label(ax, bars, values_sec):
         y = b.get_y() + b.get_height()/2
 
         if w < 0.60:
-            # barra muy corta → texto afuera, chico y oscuro
             x = min(w + 0.12, xmax * 0.98)
             ax.text(x, y, mmss, va="center", ha="left", fontsize=8, color="black", fontweight="bold")
         elif w < 1.40:
-            # adentro pero con tipografía más chica
             ax.text(w * 0.98, y, mmss, va="center", ha="right", fontsize=8.5, color="white", fontweight="bold")
         else:
-            # adentro normal
             ax.text(w * 0.98, y, mmss, va="center", ha="right", fontsize=9.5, color="white", fontweight="bold")
 
 def fig_barh_minutos(labels, vals_sec, title, xlabel="Minutos"):
@@ -2001,9 +2023,6 @@ elif menu == "🔥 Mapas de calor":
     fig = fig_heatmap(df_rot, f"Mapa de calor — {sel} — {title_suffix}")
     st.pyplot(fig, use_container_width=True)
 
-# =========================
-# 🕓 DISTRIBUCIÓN DE MINUTOS
-# =========================
 elif menu == "🕓 Distribución de minutos":
     matches = discover_matches()
     if not matches:
@@ -2011,38 +2030,75 @@ elif menu == "🕓 Distribución de minutos":
         st.stop()
 
     sel = st.selectbox("Elegí partido", [m["label"] for m in matches], index=0)
-    # Forzar XML TotalValues (no NacSport)
+
+    # Forzamos TOTALVALUES (solo éste sirve para presencias)
     XML_TV, _ = infer_paths_for_label(sel)
     if not XML_TV or not os.path.isfile(XML_TV):
         st.error("No encontré el XML TotalValues para este partido.")
         st.stop()
 
-    # 1) Presencias desde TotalValues con el filtro de descriptores correcto
+    # 1) Tramos crudos con flags de descriptores
     df_pres = cargar_minutos_desde_xml_totalvalues(XML_TV)
 
-    # 2) Agregados
+    # 2) Minutos / tramos agregados (rol y jugador total)
     df_por_rol, df_por_jugador = minutos_por_presencia(df_pres)
 
-    # 3) Tablas — como pediste: sin 'segundos', renombrar 'mmss' a 'minutos' y quitar 'minutos' (numérico)
-    st.subheader("⏱️ Minutos por jugador (rol)")
-    df_rol_view = df_por_rol.loc[:, ["nombre","rol","mmss","n_tramos"]].rename(columns={"mmss":"minutos", "n_tramos":"nT"})
-    show_full_table(df_rol_view)
+    # 3) Contadores de descriptores
+    desc_por_rol      = _sumar_descriptores(df_pres, ["nombre","rol"])
+    desc_por_jugador  = _sumar_descriptores(df_pres, ["nombre"])
 
-    # Gráfico por jugador (rol)
-    if not df_por_rol.empty:
-        fig1 = fig_barh_minutos(df_por_rol["nombre"] + " (" + df_por_rol["rol"] + ")",
-                                df_por_rol["segundos"], "Minutos por jugador (rol)")
-        st.pyplot(fig1, use_container_width=True)
+    # 4) UI de filtros
+    st.subheader("Opciones de visualización")
+    vista = st.radio("Vista", ["Jugador total", "Por rol"], horizontal=True)
 
-    st.subheader("⏱️ Minutos totales por jugador")
-    df_j_view = df_por_jugador.loc[:, ["nombre","mmss","n_tramos"]].rename(columns={"mmss":"minutos", "n_tramos":"nT"})
-    show_full_table(df_j_view)
+    if vista == "Jugador total":
+        # Merge minutos+tramos + descriptores
+        if df_por_jugador is None or df_por_jugador.empty:
+            st.info("No hay datos de presencias para este partido.")
+            st.stop()
 
-    # Gráfico por jugador (total)
-    if not df_por_jugador.empty:
-        fig2 = fig_barh_minutos(df_por_jugador["nombre"], df_por_jugador["segundos"], "Minutos totales por jugador")
-        st.pyplot(fig2, use_container_width=True)
+        dj = df_por_jugador.merge(desc_por_jugador, on="nombre", how="left").fillna(0)
 
+        # TABLA (como pediste): 'minutos' en MM:SS, sin 'segundos' ni 'minutos' numérico
+        st.subheader("⏱️ Minutos totales por jugador (con descriptores)")
+        cols_tab = ["nombre","mmss","n_tramos"] + DESC_CANON
+        view = (dj.rename(columns={"mmss":"minutos"})
+                  .loc[:, ["nombre","minutos","n_tramos"] + DESC_CANON]
+                  .rename(columns={"n_tramos":"nT"}))
+        show_full_table(view)
+
+        # GRÁFICO
+        fig = fig_barh_minutos(dj["nombre"], dj["segundos"], "Minutos totales por jugador")
+        st.pyplot(fig, use_container_width=True)
+
+    else:  # Por rol
+        roles_presentes = sorted(df_por_rol["rol"].dropna().unique().tolist())
+        if not roles_presentes:
+            st.info("No hay roles detectados en este partido.")
+            st.stop()
+
+        sel_rol = st.selectbox("Elegí el rol", roles_presentes, index=0)
+
+        drol = df_por_rol[df_por_rol["rol"] == sel_rol].copy()
+        if drol.empty:
+            st.info("Ese rol no tiene jugadores en este partido.")
+            st.stop()
+
+        ddesc = desc_por_rol[desc_por_rol["rol"] == sel_rol].copy()
+        drol = drol.merge(ddesc, on=["nombre","rol"], how="left").fillna(0)
+
+        # TABLA: jugadores que cumplieron ese rol
+        st.subheader(f"⏱️ Jugadores en rol: {sel_rol}")
+        cols_tab = ["nombre","rol","mmss","n_tramos"] + DESC_CANON
+        view = (drol.rename(columns={"mmss":"minutos"})
+                    .loc[:, ["nombre","rol","minutos","n_tramos"] + DESC_CANON]
+                    .rename(columns={"n_tramos":"nT"}))
+        show_full_table(view)
+
+        # GRÁFICO
+        labels = drol["nombre"] + " (" + drol["rol"] + ")"
+        fig = fig_barh_minutos(labels, drol["segundos"], f"Minutos por jugador — Rol: {sel_rol}")
+        st.pyplot(fig, use_container_width=True)
 
 # =========================
 # 🔗 RED DE PASES
