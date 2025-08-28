@@ -2171,57 +2171,75 @@ elif menu == "🕓 Distribución de minutos":
         return fig
 
     # === NUEVO: Scatter Impacto (+ vs −) con NETO en el círculo ===
-    def _fig_scatter_impact(view_df: pd.DataFrame, title: str):
-        """
-        X = Impacto + ; Y = Impacto − ; círculo muestra Impacto neto y etiqueta el nombre.
-        Traza líneas guía en los promedios de X e Y.
-        """
-        if view_df is None or view_df.empty:
-            return None
+  def _fig_scatter_impact(df: pd.DataFrame, title: str, include_role: bool=False):
+    """Scatter Impacto + (x) vs Impacto − (y) con color por Impacto neto."""
+    import matplotlib.pyplot as plt
+    from matplotlib import cm, colors
+    from matplotlib.ticker import FormatStrFormatter
 
-        df = view_df.copy()
-        needed = ["Impacto +", "Impacto −", "Impacto neto"]
-        for c in needed:
-            df[c] = pd.to_numeric(df.get(c, 0), errors="coerce")
-        df = df.dropna(subset=needed)
-        if df.empty:
-            return None
+    if df is None or df.empty:
+        return None
 
-        # etiqueta: "Nombre (Rol)" si existe rol, si no solo nombre
-        if "rol" in df.columns:
-            labels = (df["nombre"].astype(str) + " (" + df["rol"].astype(str) + ")").tolist()
-        else:
-            labels = df["nombre"].astype(str).tolist()
+    d = df.copy()
+    if include_role:
+        labels = (d["nombre"] + " (" + d["rol"] + ")").tolist()
+    else:
+        labels = d["nombre"].tolist()
 
-        x   = df["Impacto +"].to_numpy(float)
-        y   = df["Impacto −"].to_numpy(float)
-        net = df["Impacto neto"].to_numpy(float)
+    x = d["Impacto +"].astype(float).to_numpy()
+    y = d["Impacto −"].astype(float).to_numpy()
+    net = d["Impacto neto"].astype(float).to_numpy()
 
-        mx = float(np.mean(x)); my = float(np.mean(y))
+    # ---- colores por neto (rojo neg, verde pos) ----
+    amax = float(max(0.001, np.nanmax(np.abs(net))))
+    norm = colors.Normalize(vmin=-amax, vmax=amax)
+    cmap = cm.get_cmap("RdYlGn")
+    point_colors = cmap(norm(net))
 
-        fig, ax = plt.subplots(figsize=(9.5, 6))
-        ax.scatter(x, y, s=320, c="#4FC3F7", edgecolors="black", linewidths=0.6, alpha=0.95)
+    # ---- figura ----
+    H = max(4.5, 0.32*len(labels))
+    fig, ax = plt.subplots(figsize=(10, H))
+    ax.set_facecolor("#0b5e3b")  # si tenés variable bg, podés quitar esta línea
+    sc = ax.scatter(x, y, s=180, c=point_colors, edgecolor="white", linewidth=1.1)
 
-        # valor NETO dentro del círculo (blanco)
-        for xi, yi, ni in zip(x, y, net):
-            ax.text(xi, yi, f"{ni:.2f}", ha="center", va="center",
-                    fontsize=9, fontweight="bold", color="white")
+    # líneas de promedio
+    mx = float(np.nanmean(x)) if len(x) else 0.0
+    my = float(np.nanmean(y)) if len(y) else 0.0
+    ax.axvline(mx, color="white", ls="--", lw=1, alpha=0.6)
+    ax.axhline(my, color="white", ls="--", lw=1, alpha=0.6)
 
-        # nombre del jugador cerca del punto
-        for xi, yi, name in zip(x, y, labels):
-            ax.annotate(name, (xi, yi), xytext=(6, 6), textcoords="offset points",
-                        fontsize=9, color="white")
+    # ejes homogéneos: 0…máx con un margen
+    x_max = max(0.01, float(np.nanmax(x)))
+    y_max = max(0.01, float(np.nanmax(y)))
+    ax.set_xlim(0, x_max*1.12)
+    ax.set_ylim(0, y_max*1.12)
+    ax.xaxis.set_major_formatter(FormatStrFormatter('%.1f'))
+    ax.yaxis.set_major_formatter(FormatStrFormatter('%.1f'))
+    ax.set_xlabel("Impacto +")
+    ax.set_ylabel("Impacto −")
+    ax.set_title(title)
+    ax.grid(True, linestyle=":", alpha=0.35)
 
-        # líneas guía por promedios
-        ax.axvline(mx, linestyle="--", color="gray", alpha=0.7)
-        ax.axhline(my, linestyle="--", color="gray", alpha=0.7)
+    # etiquetas con neto; offsets alternados para reducir solapes
+    dx = (ax.get_xlim()[1] - ax.get_xlim()[0]) * 0.01  # ~1% ancho
+    dy = (ax.get_ylim()[1] - ax.get_ylim()[0]) * 0.02  # ~2% alto
+    for i, (xi, yi, name, ni) in enumerate(zip(x, y, labels, net)):
+        # patrón de desplazamiento alternado
+        sx = ([-8, 8, 0, -8, 8][i % 5]) * dx
+        sy = ([6, 6, -6, -6, 0][i % 5]) * dy
+        ax.annotate(f"{name}\n{ni:+.2f}",
+                    xy=(xi, yi), xytext=(sx, sy), textcoords="offset points",
+                    ha="center", va="center", fontsize=9, color="white",
+                    bbox=dict(boxstyle="round,pad=0.25", fc=(0,0,0,0.45), ec="white", lw=0.8))
 
-        ax.set_xlabel("Impacto +")
-        ax.set_ylabel("Impacto −")
-        ax.set_title(title)
-        ax.grid(True, linestyle=":", alpha=0.35)
-        plt.tight_layout()
-        return fig
+    # barra de color (referencia del neto)
+    sm = cm.ScalarMappable(cmap=cmap, norm=norm); sm.set_array([])
+    cbar = fig.colorbar(sm, ax=ax, fraction=0.045, pad=0.02)
+    cbar.set_label("Impacto neto (− rojo ↔ verde +)")
+
+    plt.tight_layout()
+    return fig
+
 
     # ---------- Lectura TotalValues ----------
     def _tv_load_presencias(xml_path: str, partido_label: str) -> pd.DataFrame:
