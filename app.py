@@ -1875,8 +1875,13 @@ elif menu == "🔥 Mapas de calor":
     sel = st.selectbox("Elegí partido", [m["label"] for m in matches], index=0)
     match = get_match_by_label(sel)
 
-    # Cargamos XML de jugadores y preparamos dataset base (jugador, rol, pos_x,pos_y)
+    # Cargamos XML de jugadores
     df_raw = cargar_datos_nacsport(match["xml_players"]) if match else pd.DataFrame()
+
+    # ⬅️ NUEVO: SOLO jugadores válidos de Ferro (Nombre (Rol)); excluye rival, posesión y no jugado
+    df_raw = df_raw[df_raw["jugador"].apply(is_player_code)].copy()
+
+    # Dataset base (jugador, rol, pos_x,pos_y)
     df_xy_all = explode_coords_for_heatmap(df_raw)
 
     # Listas de nombres/roles presentes en ese partido
@@ -1892,7 +1897,6 @@ elif menu == "🔥 Mapas de calor":
     # Filtro y rotación (la rotación por rol sólo se aplica cuando elegís un rol específico)
     title_suffix = ""
     if scope == "Equipo entero" or not jugadores:
-        # Fallback a equipo si no hay jugadores detectados
         df_filt = df_xy_all.copy()
         df_rot  = rotate_coords_for_attack_right(df_filt, role=None)
         title_suffix = "Equipo"
@@ -1901,7 +1905,7 @@ elif menu == "🔥 Mapas de calor":
     elif scope == "Jugador":
         sel_player = st.selectbox("Jugador", jugadores, index=0)
         df_filt = df_xy_all[df_xy_all["player_name"] == sel_player].copy()
-        df_rot  = rotate_coords_for_attack_right(df_filt, role=None)  # puede mezclar roles
+        df_rot  = rotate_coords_for_attack_right(df_filt, role=None)
         title_suffix = f"Jugador: {sel_player}"
         if df_rot.empty:
             st.info("Ese jugador no tiene eventos válidos para el mapa en este partido.")
@@ -1914,7 +1918,7 @@ elif menu == "🔥 Mapas de calor":
             sel_role = st.selectbox("Rol", roles, index=0 if roles else None)
         if roles:
             df_filt = df_xy_all[(df_xy_all["player_name"] == sel_player) & (df_xy_all["role"] == sel_role)].copy()
-            df_rot  = rotate_coords_for_attack_right(df_filt, role=sel_role)  # flip vertical sólo si Ala I/D
+            df_rot  = rotate_coords_for_attack_right(df_filt, role=sel_role)  # flip vertical para Ala I/D
             title_suffix = f"Jugador: {sel_player}  |  Rol: {sel_role}"
             if df_rot.empty:
                 st.info("No hay eventos para ese jugador en ese rol en este partido.")
@@ -1927,7 +1931,6 @@ elif menu == "🔥 Mapas de calor":
     # Dibujar
     fig = fig_heatmap(df_rot, f"Mapa de calor — {sel} — {title_suffix}")
     st.pyplot(fig, use_container_width=True)
-
 
 # =========================
 # 🕓 DISTRIBUCIÓN DE MINUTOS
