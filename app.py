@@ -2064,9 +2064,6 @@ elif menu == "🔥 Mapas de calor":
 # =========================
 # 🕓 DISTRIBUCIÓN DE MINUTOS
 # =========================
-# =========================
-# 🕓 DISTRIBUCIÓN DE MINUTOS
-# =========================
 
 elif menu == "🕓 Distribución de minutos":
     # =========================
