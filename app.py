@@ -2172,12 +2172,6 @@ elif menu == "🕓 Distribución de minutos":
 
     # === NUEVO: Scatter Impacto (+ vs −) con NETO en el círculo ===
     def _fig_scatter_impact(df: pd.DataFrame, title: str, include_role: bool=False):
-    """
-    Scatter Impacto + (x) vs Impacto − (y, invertido: menor es mejor).
-    - Color rojo↔verde por Impacto neto
-    - Líneas de promedio en X e Y
-    - Etiquetas con nombre y neto (+/-xx.xx) con offsets anti-solape
-    """
     import matplotlib.pyplot as plt
     from matplotlib import cm, colors
     from matplotlib.ticker import FormatStrFormatter
