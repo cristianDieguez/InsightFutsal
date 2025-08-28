@@ -3525,7 +3525,6 @@ if menu == "🏆 Tabla & Resultados":
             st.dataframe(d, use_container_width=True, height=max(140, 38 * (len(d) + 1)))
 
     # --- TAB 4: TABLA FECHA A FECHA + ELO + W/D/L ---
-    # --- TAB 4: TABLA FECHA A FECHA + ELO + W/D/L ---
     with tab4:
         if df_res.empty:
             st.info("Aún no hay partidos finalizados para construir la tabla por fecha.")
@@ -3564,7 +3563,7 @@ if menu == "🏆 Tabla & Resultados":
             eqs = sorted(wdl_jornada_df["Equipo"].unique())
             c1, c2 = st.columns(2)
             with c1:
-                eq1 = st.selectbox("Equipo A", eqs, index=0)
+                eq1 = st.selectbox("Equipo A", eqs, index=10)
             with c2:
                 eq2 = st.selectbox("Equipo B (opcional)", ["(ninguno)"] + eqs, index=0)
             
