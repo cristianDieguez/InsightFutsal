@@ -4036,8 +4036,8 @@ if menu == "📈 Radar comparativo":
         else ("Radar — Rol" if scope == "Por rol" else "Radar — Jugador & Rol"),
         fontsize=26, pad=18, color="#FFFFFF", weight="bold"
     )
-    fig.text(0.50, 0.03, "Escala radial relativa (0–100%). % reales; absolutos normalizados por el máximo global del grupo a 40’.",
-             ha="center", fontsize=8, color="#D6D9DE")
+    #fig.text(0.50, 0.03, "Escala radial relativa (0–100%). % reales; absolutos normalizados por el máximo global del grupo a 40’.",
+    #         ha="center", fontsize=8, color="#D6D9DE")
 
     st.pyplot(fig, use_container_width=True)
     # ---------- /RADAR ----------
