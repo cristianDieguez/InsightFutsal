@@ -3972,7 +3972,7 @@ if menu == "📈 Radar comparativo":
     ax.spines["polar"].set_linewidth(1.3)
 
     # ===== chips de ejes: AFUERA, chicos y sin tocar el anillo =====
-    CHIP_R = 1.365  # fuera del 1.0 pero cerquita
+    CHIP_R = 1.165  # fuera del 1.0 pero cerquita
     ax.set_xticks(angles[:-1]); ax.set_xticklabels([])
     for a, lbl in zip(angles[:-1], labels_wrapped):
         ax.text(a, CHIP_R, lbl, ha="center", va="center",
