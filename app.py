@@ -3967,62 +3967,117 @@ if menu == "📈 Radar comparativo":
         st.error(f"Faltan columnas en los datos: {miss}")
         st.stop()
 
-    # ---------- RADAR ----------
-    # construir tabla radar (0–1 para % y reescalado para absolutos si querés)
-    # regla: % se pasa a 0–1; absolutos se normalizan min-max sobre el subconjunto para comparabilidad de forma.
-    rad = base[[label_col, "minutos"] + metrics].copy()
-
-    # % → 0–1
-    for c in metrics:
-        if "%" in c:
-            rad[c] = pd.to_numeric(rad[c], errors="coerce") / 100.0
-
-    # abs → min-max (subconjunto actual), evitando división por 0
-    for c in metrics:
-        if "%" not in c:
-            s = pd.to_numeric(rad[c], errors="coerce")
-            mn, mx = float(np.nanmin(s.values)), float(np.nanmax(s.values))
-            if np.isfinite(mn) and np.isfinite(mx) and mx > mn:
-                rad[c] = (s - mn) / (mx - mn)
+    # ---------- RADAR (solo visual, estilo infografía 1/2) ----------
+    def _wrap_lbl(lbl: str, maxlen: int = 18) -> str:
+        ws = re.split(r"\s+", str(lbl).strip())
+        lines, cur = [], ""
+        for w in ws:
+            if len(cur) + len(w) + (1 if cur else 0) <= maxlen:
+                cur = (cur + " " + w).strip()
             else:
-                # si todos iguales → 0.5 para que se vea, o 0
-                rad[c] = 0.5
-
-    labels = metrics
-    N = len(labels)
-    angles = [n / float(N) * 2 * pi for n in range(N)]
+                if cur: lines.append(cur)
+                cur = w
+        if cur: lines.append(cur)
+        return "\n".join(lines)
+    
+    def _tint(hex_color: str, t: float = 0.35):
+        # mezcla color con blanco para el fill (0 = sin mezcla, 1 = blanco)
+        r, g, b = mpl.colors.to_rgb(hex_color)
+        return (r + (1 - r) * t, g + (1 - g) * t, b + (1 - b) * t)
+    
+    def _palette(n: int) -> list[str]:
+        # colores vibrantes y bien distinguibles (12). Si hay más, cae a tab20.
+        base = [
+            "#FF7A59", "#F9C74F", "#43AA8B", "#277DA1", "#9B5DE5", "#F15BB5",
+            "#00BBF9", "#00F5D4", "#F3722C", "#90BE6D", "#3A86FF", "#EF476F"
+        ]
+        if n <= len(base): 
+            return base[:n]
+        # fallback si comparás muchísimos jugadores
+        cmap = plt.cm.tab20(np.linspace(0, 1, n))
+        return [mpl.colors.to_hex(c) for c in cmap]
+    
+    labels_wrapped = [_wrap_lbl(l) for l in labels]
+    N = len(labels_wrapped)
+    angles = [n / float(N) * 2 * np.pi for n in range(N)]
     angles += angles[:1]
-
+    
+    # --- lienzo estilo "infografía" ---
     plt.close("all")
-    fig = plt.figure(figsize=(9.5, 9.5))
-    ax = plt.subplot(111, polar=True)
-    ax.set_theta_offset(pi/2)
-    ax.set_theta_direction(-1)
+    fig = plt.figure(figsize=(9.6, 9.2))
+    ax = fig.add_subplot(111, polar=True)
+    
+    # Fondos y grillas suaves
+    fig.patch.set_facecolor("#F3F5F8")
+    ax.set_facecolor("#E9EDF2")
+    ax.grid(False)
+    
+    # anillo y radios (como en las imágenes)
+    rings = [0.2, 0.4, 0.6, 0.8, 1.0]
+    for r in rings:
+        ax.plot(np.linspace(0, 2*np.pi, 512), [r]*512, lw=1.5, color="#D4DAE2", alpha=0.9, zorder=1)
+    # radios
+    for a in angles[:-1]:
+        ax.plot([a, a], [0, 1.0], lw=1.0, color="#D4DAE2", alpha=0.9, zorder=1)
+    
+    ax.spines["polar"].set_color("#C1C9D3")
+    ax.spines["polar"].set_linewidth(1.8)
+    
+    # etiquetas en "chips" redondeados
     ax.set_xticks(angles[:-1])
-    ax.set_xticklabels(labels, fontsize=10, fontweight="bold")
+    ax.set_xticklabels([])
+    for a, lbl in zip(angles[:-1], labels_wrapped):
+        ax.text(a, 1.08, lbl, ha="center", va="center", fontsize=10, fontweight="bold",
+                color="#2B2F36",
+                bbox=dict(boxstyle="round,pad=0.28", fc="#ECEFF4", ec="#C9D1DB", lw=0.9))
+    
+    # radios (0–1) tipo guía
+    ax.set_yticks(rings)
+    ax.set_yticklabels([f"{int(r*100)}%" for r in rings], fontsize=9, color="#4C5563")
     ax.set_rlabel_position(0)
-    ax.set_yticks([0.25, 0.5, 0.75, 1.0])
-    ax.set_yticklabels(["0.25","0.5","0.75","1.0"], fontsize=9)
-
+    
+    # --- series ---
     series = rad[label_col].tolist()
-    vals_mat = rad[labels].values
-
-    # paleta tab10/tab20
-    n_series = len(series)
-    colors = plt.cm.tab10(np.linspace(0, 1, min(n_series,10))) if n_series <= 10 else plt.cm.tab20(np.linspace(0, 1, min(n_series,20)))
-
-    for i, row in enumerate(vals_mat):
-        vals = row.tolist()
-        vals += vals[:1]
-        color = colors[i % len(colors)]
-        tag = f"{series[i]} ({int(round(rad.iloc[i]['minutos']))}m)"
-        ax.plot(angles, vals, linewidth=2.0, marker="o", markersize=4, color=color, label=tag)
-        ax.fill(angles, vals, alpha=0.15, color=color)
-
-    ttl = "Radar — Jugador total" if scope=="Jugador total" else ("Radar — Por rol" if scope=="Por rol" else "Radar — Jugador & Rol")
-    ax.legend(loc="upper right", bbox_to_anchor=(1.35, 1.08), fontsize=9, frameon=False)
-    plt.title(ttl, fontsize=14, pad=18)
+    vals_mat = rad[labels].values  # ya normalizado: %→0–1, abs→min-max
+    cols = _palette(len(series))
+    handles = []
+    
+    for i, (name, row) in enumerate(zip(series, vals_mat)):
+        vals = row.tolist(); vals += vals[:1]
+        edge = cols[i]
+        fill = _tint(edge, 0.55)
+    
+        # relleno con leve sombra (look “copado”)
+        poly = ax.fill(angles, vals, facecolor=fill, edgecolor=edge,
+                       linewidth=2.4, alpha=0.85, zorder=3)
+        poly[0].set_path_effects([
+            pe.SimplePatchShadow(offset=(1.0, -1.0), alpha=0.22, rho=0.98),
+            pe.Normal()
+        ])
+    
+        # línea superior para que “resalte”
+        ax.plot(angles, vals, color=edge, linewidth=2.6, zorder=4)
+    
+        # marcadores en cada vértice (tipo imagen 1/2)
+        ax.scatter(angles[:-1], row, s=32, zorder=5, color="#1F2328",
+                   edgecolors="white", linewidths=0.8)
+    
+        handles.append(plt.Line2D([0], [0], color=edge, lw=3,
+                                  marker="o", markersize=6, markerfacecolor=edge))
+    
+    # leyenda compacta a la derecha
+    ax.legend(handles, [f"{s} ({int(round(m))}m)" for s, m in zip(series, rad["minutos"])],
+              loc="upper left", bbox_to_anchor=(1.08, 1.05), frameon=False, fontsize=9)
+    
+    plt.title(
+        "Radar — Jugadores" if scope=="Jugador total" else
+        ("Radar — Rol" if scope=="Por rol" else "Radar — Jugador & Rol"),
+        fontsize=15, pad=16, color="#2B2F36", weight="bold"
+    )
+    
     st.pyplot(fig, use_container_width=True)
+    # ---------- /RADAR ----------
+
 
     # ---------- Tabla de valores visibles ----------
     # Para la tabla: % en 0–100 (si quieres), absolutos mostrar sin min-max (entonces mostramos la tabla original base)
