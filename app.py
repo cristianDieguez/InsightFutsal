@@ -3399,7 +3399,6 @@ if menu == "📬 Destino de pases":
 
 # =========================
 # 📈 RADAR COMPARATIVO — Jugador total / Por rol / Jugador & Rol
-# Cálculo on-the-fly: Minutos (XML TotalValues) + Matrix (XLSX)
 # =========================
 if menu == "📈 Radar comparativo":
     import os, re, unicodedata as ud, xml.etree.ElementTree as ET
@@ -3407,6 +3406,7 @@ if menu == "📈 Radar comparativo":
     import pandas as pd
     import numpy as np
     import matplotlib.pyplot as plt
+    import matplotlib as mpl
     from math import pi
 
     # ---------- UI: rutas base ----------
@@ -3540,20 +3540,16 @@ if menu == "📈 Radar comparativo":
                 counts = {k:0 for k in ("gf_on","ga_on","part_gf","invol_ga","valla")}
                 for l in labs_all:
                     if l in HARD_LABELS:
-                        counts[HARD_LABELS[l]] += 1
+                        counts[l] += 1  # cuenta cruda por etiqueta
 
                 key = (nombre, rol)
                 if key not in agg:
-                    agg[key] = {"intervals": [], "gf":0, "ga":0, "part":0, "invol":0, "valla":0}
+                    agg[key] = {"intervals": [], "gf_on":0, "ga_on":0, "part_gf":0, "invol_ga":0, "valla":0}
                 a = agg[key]
                 a["intervals"].append((s, e))
-                a["gf"]    += counts["gf_on"]
-                a["ga"]    += counts["ga_on"]
-                a["part"]  += counts["part_gf"]
-                a["invol"] += counts["invol_ga"]
-                a["valla"] += counts["valla"]
+                for k in counts: a[k] += counts[k]
 
-            # construir filas
+            # construir filas por rol
             for (nombre, rol), a in agg.items():
                 merged = merge_intervals(a["intervals"])
                 segundos = sum(e - s for s, e in merged)
@@ -3685,7 +3681,7 @@ if menu == "📈 Radar comparativo":
         # wide → long
         action_cols = []
         for c in df.columns:
-            if c in ("jugador","rol","code"):
+            if c in ("jugador","rol","code"): 
                 continue
             col_obj = pd.to_numeric(df[c], errors="coerce")
             if col_obj.notna().any() or norm_txt(c) in NORM_TO_ORIG:
@@ -3718,57 +3714,40 @@ if menu == "📈 Radar comparativo":
     def add_derived_percentages(df):
         if df.empty: return df
         df = df.copy()
-    
-        import re, unicodedata as ud
-        def _norm(s):
-            s = ud.normalize("NFKD", str(s)).encode("ascii","ignore").decode("ascii")
-            return re.sub(r"\s+"," ", s.strip().lower())
-    
-        # Buscar columnas por patrón normalizado
-        norm_cols = {_norm(c): c for c in df.columns}
-        def find_col(regex_pat):
-            for k, orig in norm_cols.items():
-                if re.search(regex_pat, k):
-                    return orig
-            return None
-    
+
         def s(*cols):
             vals = [pd.to_numeric(df.get(c, 0), errors="coerce").fillna(0) for c in cols if c in df.columns]
             return sum(vals) if vals else pd.Series(0, index=df.index)
-    
-        # ---------- Regates
+
+        # Regates
         rcols = GROUPS["Regates"]
         if all(c in df.columns for c in rcols):
             df["Regates - Total"] = s(*rcols)
             exi = pd.to_numeric(df["Regate conseguido - Mantiene pelota"], errors="coerce").fillna(0)
-            den = df["Regates - Total"].replace(0, np.nan)
-            df["% Regates Exitosos"] = (exi / den) * 100
-    
-        # ---------- 1v1 (muy tolerante con nombres)
-        g1_col = find_col(r"^1\s*v\s*1.*ganad")  # 1 v 1, 1v1, 1 vs 1, etc.
-        p1_col = find_col(r"^1\s*v\s*1.*perdid")
-        if g1_col and p1_col:
-            g1 = pd.to_numeric(df[g1_col], errors="coerce").fillna(0)
-            p1 = pd.to_numeric(df[p1_col], errors="coerce").fillna(0)
-            den = (g1 + p1).replace(0, np.nan)
-            df["% Duelos Ganados"] = (g1 / den) * 100
-    
-        # ---------- Tiros
+            df["% Regates Exitosos"] = ratio(exi, df["Regates - Total"]) * 100
+
+        # 1v1
+        if "1v1 Ganado" in df.columns and "1v1 perdido" in df.columns:
+            g1 = pd.to_numeric(df["1v1 Ganado"], errors="coerce").fillna(0)
+            p1 = pd.to_numeric(df["1v1 perdido"], errors="coerce").fillna(0)
+            df["% Duelos Ganados"] = ratio(g1, g1 + p1) * 100
+
+        # Tiros
         if "Tiro al arco" in df.columns and "Tiro Hecho" in df.columns:
             ta = pd.to_numeric(df["Tiro al arco"], errors="coerce").fillna(0)
             th = pd.to_numeric(df["Tiro Hecho"], errors="coerce").fillna(0)
             gol = pd.to_numeric(df.get("Gol", 0), errors="coerce").fillna(0)
-            df["Tiros - % al arco"] = np.where(th>0, ta/th, np.nan) * 100
-            df["Tiros - % Goles/Tiro al arco"] = np.where(ta>0, gol/ta, np.nan) * 100
-    
-        # ---------- Recuperaciones / Pérdidas
-        rec_cols = GROUPS["Recuperaciones"]; per_cols = GROUPS["Perdidas"]
+            df["Tiros - % al arco"] = ratio(ta, th) * 100
+            df["Tiros - % Goles/Tiro al arco"] = ratio(gol, ta) * 100
+
+        # Recuperaciones / Pérdidas
+        rec_cols = GROUPS["Recuperaciones"]
+        per_cols = GROUPS["Perdidas"]
         df["Recuperaciones - Total"] = s(*rec_cols)
         df["Perdidas - Total"]      = s(*per_cols)
-        den = (df["Recuperaciones - Total"] + df["Perdidas - Total"]).replace(0, np.nan)
-        df["% Recuperaciones"]      = (df["Recuperaciones - Total"] / den) * 100
-    
-        # ---------- % Pases (OK/Base y Completado/Base)
+        df["% Recuperaciones"]      = ratio(df["Recuperaciones - Total"], df["Recuperaciones - Total"] + df["Perdidas - Total"]) * 100
+
+        # % Pases (OK/Base y Completado/Base)
         passlike = [k for k in GROUPS if k.startswith("Pase ") or k.startswith("Arquero Pase")]
         for gname in passlike:
             base, comp, ok = GROUPS[gname]
@@ -3776,26 +3755,25 @@ if menu == "📈 Radar comparativo":
                 b = pd.to_numeric(df[base], errors="coerce").fillna(0)
                 c = pd.to_numeric(df.get(comp, 0), errors="coerce").fillna(0)
                 o = pd.to_numeric(df.get(ok, 0), errors="coerce").fillna(0)
-                df[f"% {base}"] = np.where(b>0, o/b, np.nan) * 100
-                df[f"% {comp}"] = np.where(b>0, c/b, np.nan) * 100
-    
-        # ---------- Índice positivo (simple)
+                df[f"% {base}"] = ratio(o, b) * 100
+                df[f"% {comp}"] = ratio(c, b) * 100
+
+        # Índice positivo (simple)
         posit = []
         posit += [c for c in df.columns if "Completado" in c and not c.strip().startswith("%")]
         posit += ["Centros Rematados","Tiro al arco",
-                  "Regate conseguido - Mantiene pelota","Aguanta Pivotea","Gira",
-                  "Faltas Recibidas","Recuperaciones - Total","1v1 Ganado",
-                  "Asistencia","Pase Clave","Gol","Conduccion"]
+                  "Regate conseguido - Mantiene pelota",
+                  "Aguanta Pivotea","Gira","Faltas Recibidas",
+                  "Recuperaciones - Total","1v1 Ganado","Asistencia","Pase Clave","Gol","Conduccion"]
         posit = list(dict.fromkeys([c for c in posit if c in df.columns]))
         tot = [c for c in df.columns if c in ALL_ACTIONS]
-    
-        def s_cols(cols):
+
+        def s_cols(cols): 
             return sum(pd.to_numeric(df[c], errors="coerce").fillna(0) for c in cols) if cols else pd.Series(0, index=df.index)
-    
+
         df["Acciones Positivas - Total"] = s_cols(posit)
         df["Acciones - Total"] = s_cols(tot)
-        den = df["Acciones - Total"].replace(0, np.nan)
-        df["% Acciones Positivas"] = (df["Acciones Positivas - Total"] / den) * 100
+        df["% Acciones Positivas"] = ratio(df["Acciones Positivas - Total"], df["Acciones - Total"]) * 100
         return df
 
     @st.cache_data(show_spinner=True)
@@ -3809,22 +3787,22 @@ if menu == "📈 Radar comparativo":
             except Exception:
                 continue
             for sh, df in (sheets or {}).items():
-                if df is None or df.empty:
+                if df is None or df.empty: 
                     continue
                 df = normalize_columns(df)
                 df = merge_duplicate_columns(df)
 
-                # eliminar columnas alineación tipo "Nombre (rol)" si aparecen como extra
+                # eliminar columnas alineación tipo "Nombre (rol)"
                 alineacion_pat = re.compile(r".+\((?:cierre|pivot|ala\s*[di])\)$", flags=re.I)
                 cols_alineacion = [c for c in df.columns if alineacion_pat.match(str(c))]
                 if cols_alineacion:
                     df = df.drop(columns=cols_alineacion, errors="ignore")
 
                 long_df = wide_or_long_to_wide(df)
-                if long_df.empty:
+                if long_df.empty: 
                     continue
                 cnt = counts_per_jugrol(long_df)
-                if cnt.empty:
+                if cnt.empty: 
                     continue
                 cnt.insert(0, "partido_id", partido_id)
                 cnt.insert(1, "fecha", fecha)
@@ -3884,7 +3862,7 @@ if menu == "📈 Radar comparativo":
 
     # Normalizar ABS por partido a 40 min, luego promediar
     def normalize_and_avg(df, by_cols):
-        if df.empty:
+        if df.empty: 
             return df
         abs_cols, pct_cols = split_pct_abs(df)
         out = df.copy()
@@ -3904,19 +3882,18 @@ if menu == "📈 Radar comparativo":
     # ---------- UI de comparación ----------
     scope = st.radio("Ámbito de comparación", ["Jugador total", "Por rol", "Jugador y rol"], horizontal=True)
 
-    # lista de métricas elegibles (todas las numéricas disponibles)
-    candidates = sorted([c for c in df_mat_rol.columns if c not in
+    # lista de métricas elegibles
+    candidates = sorted([c for c in df_mat_rol.columns if c not in 
                         {"partido_id","fecha","rival","archivo","hoja","jugador","rol"}])
-    # separamos por tipo
     pct_candidates = [c for c in candidates if "%" in c]
     abs_candidates = [c for c in candidates if "%" not in c]
 
     st.markdown("**Elegí métricas (pueden ser % y/o absolutos normalizados a 40’)**")
     c1, c2 = st.columns(2)
     with c1:
-        mets_pct = st.multiselect("Métricas %", pct_candidates, default=["% Acciones Positivas"])
+        mets_pct = st.multiselect("Métricas %", pct_candidates, default=["% Acciones Positivas","% Duelos Ganados","% Regates Exitosos","Tiros - % al arco"])
     with c2:
-        mets_abs = st.multiselect("Métricas absolutas", abs_candidates, default=[])
+        mets_abs = st.multiselect("Métricas absolutas", abs_candidates, default=["Pase Clave","Gol","Regates - Total","Tiro al arco","Recuperacion x Duelo","Acciones Positivas - Total"])
 
     metrics = [*mets_pct, *mets_abs]
     if not metrics:
@@ -3925,17 +3902,16 @@ if menu == "📈 Radar comparativo":
 
     min_minutos = st.number_input("Minutos mínimos totales (para incluir en la comparación)", min_value=0.0, value=20.0, step=5.0)
 
-    # filtros según scope
+    # filtros según scope (y ref_df para máximos globales del scope)
     if scope == "Jugador total":
         base = df_avg_por_jugador.copy()
         if base.empty:
             st.warning("No hay datos válidos para Jugador total.")
             st.stop()
-        # sumar minutos válidos
         mins_valid = join_jug.groupby("jugador", as_index=False)["minutos"].sum()
         base = pd.merge(base, mins_valid, on="jugador", how="left", suffixes=("","_tot"))
         base = base[base["minutos"] >= min_minutos].copy()
-        # selección de jugadores
+        ref_df = base.copy()  # <<<<<< referencia global del scope
         jugadores = sorted(base["jugador"].unique().tolist())
         sel_jug = st.multiselect("Jugadores a comparar", jugadores, default=jugadores[:min(6, len(jugadores))])
         base = base[base["jugador"].isin(sel_jug)]
@@ -3946,32 +3922,31 @@ if menu == "📈 Radar comparativo":
         if base.empty:
             st.warning("No hay datos válidos para Rol.")
             st.stop()
-        # minutos por jug+rol
         mins_valid = join_rol.groupby(["jugador","rol"], as_index=False)["minutos"].sum()
         base = pd.merge(base, mins_valid, on=["jugador","rol"], how="left")
-        # filtro rol
         roles = sorted(base["rol"].dropna().unique().tolist())
         sel_rol = st.selectbox("Rol", roles, index=0 if roles else None)
         base = base[base["rol"] == sel_rol]
         base = base[base["minutos"] >= min_minutos].copy()
+        ref_df = base.copy()  # <<<<<< referencia global del scope (rol elegido)
         jugadores = sorted(base["jugador"].unique().tolist())
         sel_jug = st.multiselect("Jugadores a comparar", jugadores, default=jugadores[:min(6, len(jugadores))])
         base = base[base["jugador"].isin(sel_jug)]
         label_col = "jugador"
 
-    else:  # Jugador y rol (comparar entradas jug-rol entre sí)
+    else:  # Jugador y rol
         base = df_avg_por_rol.copy()
         if base.empty:
             st.warning("No hay datos válidos para Jugador & Rol.")
             st.stop()
         mins_valid = join_rol.groupby(["jugador","rol"], as_index=False)["minutos"].sum()
         base = pd.merge(base, mins_valid, on=["jugador","rol"], how="left")
-        # escoger combinaciones
         base["jug_rol"] = base["jugador"] + " (" + base["rol"].astype(str) + ")"
+        base = base[base["minutos"] >= min_minutos].copy()
+        ref_df = base.copy()  # <<<<<< referencia global del scope
         combos = sorted(base["jug_rol"].unique().tolist())
         sel_combo = st.multiselect("Jugador (Rol)", combos, default=combos[:min(6, len(combos))])
         base = base[base["jug_rol"].isin(sel_combo)]
-        base = base[base["minutos"] >= min_minutos].copy()
         label_col = "jug_rol"
 
     if base.empty:
@@ -3984,9 +3959,7 @@ if menu == "📈 Radar comparativo":
         st.error(f"Faltan columnas en los datos: {miss}")
         st.stop()
 
-    # ---------- RADAR (solo visual, estilo infografía) ----------
-    import matplotlib as mpl
-
+    # ---------- RADAR (estilo infografía) ----------
     def _wrap_lbl(lbl: str, maxlen: int = 12) -> str:
         ws = re.split(r"\s+", str(lbl).strip())
         out, cur = [], ""
@@ -4010,40 +3983,53 @@ if menu == "📈 Radar comparativo":
         if n <= len(base): return base[:n]
         return [mpl.colors.to_hex(c) for c in plt.cm.tab20(np.linspace(0,1,n))]
 
-    # --- datos base ---
-    rad = base[[label_col, "minutos"] + metrics].copy()
-    
-    # NORMALIZACIÓN + info de rangos por eje
     def _fmt(x):
         if not np.isfinite(x): return "-"
-        # números chicos con un decimal, el resto enteros
         return f"{x:.1f}" if (abs(x) < 10 and abs(x) != int(round(x))) else f"{int(round(x))}"
-    
-    rad_norm = rad.copy()
-    axis_info = {}  # métrica -> dict(is_pct, mn, mx)
-    
+
+    def _nice_scale(max_val, n=5):
+        """Devuelve (max_redondeado, paso) para n anillos."""
+        if not np.isfinite(max_val) or max_val <= 0:
+            return 1.0, 1.0/n
+        raw_step = max_val / n
+        exp = np.floor(np.log10(raw_step))
+        frac = raw_step / (10**exp)
+        if frac <= 1: step = 1
+        elif frac <= 2: step = 2
+        elif frac <= 2.5: step = 2.5
+        elif frac <= 5: step = 5
+        else: step = 10
+        step *= 10**exp
+        max_round = step * n
+        return float(max_round), float(step)
+
+    # --- datos plot (filtrados) y referencia (global del scope)
+    rad_plot = base[[label_col, "minutos"] + metrics].copy()
+    rad_ref  = ref_df[[label_col, "minutos"] + metrics].copy()
+
+    # NORMALIZACIÓN con info de eje
+    axis_info = {}               # métrica -> {is_pct, mx, step}
+    rad_norm = rad_plot.copy()   # valores normalizados 0–1 para plot
+
     for c in metrics:
-        raw = pd.to_numeric(rad[c], errors="coerce")
         if "%" in c:
-            rad_norm[c] = (raw / 100.0).fillna(0.0)  # si no hubo duelos, mostramos 0 en el radar
-            axis_info[c] = {"is_pct": True, "mn": 0.0, "mx": 100.0}
+            s_plot = pd.to_numeric(rad_plot[c], errors="coerce")
+            rad_norm[c] = (s_plot / 100.0).clip(0, 1)
+            axis_info[c] = {"is_pct": True, "mx": 100.0, "step": 20.0}
         else:
-            mn = float(np.nanmin(raw.values))
-            mx = float(np.nanmax(raw.values))
-            if np.isfinite(mn) and np.isfinite(mx) and mx > mn:
-                rad_norm[c] = (raw - mn) / (mx - mn)
-            else:
-                rad_norm[c] = 0.5
-            axis_info[c] = {"is_pct": False, "mn": mn, "mx": mx}
-    
-    rad_norm[metrics] = rad_norm[metrics].clip(0.0, 1.0)
-    
+            s_ref = pd.to_numeric(rad_ref[c], errors="coerce")
+            mx_raw = float(np.nanmax(s_ref.values)) if s_ref.notna().any() else 1.0
+            mx, step = _nice_scale(mx_raw, n=5)
+            s_plot = pd.to_numeric(rad_plot[c], errors="coerce")
+            rad_norm[c] = (s_plot / (mx if mx>0 else 1.0)).clip(0, 1)
+            axis_info[c] = {"is_pct": False, "mx": mx, "step": step}
+
     labels = metrics[:]
     labels_wrapped = [_wrap_lbl(l) for l in labels]
     N = len(labels_wrapped)
     angles = [n / float(N) * 2 * np.pi for n in range(N)]
     angles += angles[:1]
-    
+
     # --- lienzo ---
     plt.close("all")
     fig = plt.figure(figsize=(9.2, 8.7))
@@ -4052,7 +4038,7 @@ if menu == "📈 Radar comparativo":
     ax.set_facecolor("#E9EDF2")
     ax.grid(False)
     ax.set_ylim(0, 1.0)
-    
+
     # anillos + radios
     rings = [0.2, 0.4, 0.6, 0.8, 1.0]
     for r in rings:
@@ -4061,58 +4047,54 @@ if menu == "📈 Radar comparativo":
         ax.plot([a, a], [0, 1.0], lw=0.9, color="#D4DAE2", zorder=1)
     ax.spines["polar"].set_color("#C1C9D3")
     ax.spines["polar"].set_linewidth(1.4)
-    
-    # Chips SOLO con el nombre del eje
+
+    # Chips SOLO con nombre
     ax.set_xticks(angles[:-1]); ax.set_xticklabels([])
     for a, lbl in zip(angles[:-1], labels_wrapped):
         ax.text(a, 1.02, lbl, ha="center", va="center", fontsize=8.5, fontweight="bold",
                 color="#2B2F36",
                 bbox=dict(boxstyle="round,pad=0.20", fc="#ECEFF4", ec="#C9D1DB", lw=0.9))
-    
-    # Quitar las etiquetas globales del radio
+
+    # Etiquetas por anillo y por eje (distintas para % vs absolutos)
     ax.set_yticks(rings); ax.set_yticklabels([])
-    
-    # Referencias en CADA anillo y CADA eje (como pediste)
     for a, key in zip(angles[:-1], labels):
         info = axis_info[key]
-        mn, mx, is_pct = info["mn"], info["mx"], info["is_pct"]
-        for r in rings:
-            if is_pct:
-                txt = f"{int(r*100)}%"
-            else:
-                val = mn + r*(mx - mn)
-                txt = _fmt(val)
-            # un pelín afuera del anillo para que no lo tape la línea
-            rr = r + 0.012
-            ax.text(a, rr, txt, ha="center", va="center", fontsize=7.0, color="#6B7280",
-                    bbox=dict(boxstyle="round,pad=0.16", fc="#F3F5F8", ec="#D4DAE2", lw=0.4, alpha=0.95),
-                    zorder=10)
+        if info["is_pct"]:
+            for j, r in enumerate(rings, start=1):
+                ax.text(a, r+0.012, f"{j*20}%", ha="center", va="center",
+                        fontsize=7.0, color="#6B7280",
+                        bbox=dict(boxstyle="round,pad=0.16", fc="#F3F5F8", ec="#D4DAE2", lw=0.4, alpha=0.95),
+                        zorder=10)
+        else:
+            step = info["step"]
+            for j, r in enumerate(rings, start=1):
+                val = step * j
+                ax.text(a, r+0.012, _fmt(val), ha="center", va="center",
+                        fontsize=7.0, color="#6B7280",
+                        bbox=dict(boxstyle="round,pad=0.16", fc="#F3F5F8", ec="#D4DAE2", lw=0.4, alpha=0.95),
+                        zorder=10)
 
-
-    # --- series (relleno suave + estilos de línea para no taparse) ---
+    # --- series ---
     names   = rad_norm[label_col].tolist()
-    minutes = rad["minutos"].tolist()
+    minutes = rad_plot["minutos"].tolist()
     vals_M  = rad_norm[labels].values
     colors  = _palette(len(names))
     line_styles = ["-","--","-.",":"]
 
-    # rellenos (muy bajos si hay >1)
+    # rellenos suaves debajo
     for i, row in enumerate(vals_M):
         vals = row.tolist() + row[:1].tolist()
         edge = colors[i]; fill = _tint(edge, 0.62)
         ax.fill(angles, vals, facecolor=fill, edgecolor="none",
                 alpha=0.18 if len(names) > 1 else 0.28, zorder=2)
 
-    # líneas+marcadores por encima
+    # líneas+marcadores por encima (no se tapan)
     for i, row in enumerate(vals_M):
         vals = row.tolist() + row[:1].tolist()
         edge = colors[i]
-        ax.plot(angles, vals, color=edge, linewidth=2.6,
-                linestyle=line_styles[i % len(line_styles)], zorder=5)
-        ax.scatter(angles[:-1], row, s=26, zorder=6, color=edge,
-                   edgecolors="white", linewidths=1.0)
+        ax.plot(angles, vals, color=edge, linewidth=2.6, linestyle=line_styles[i % len(line_styles)], zorder=5)
+        ax.scatter(angles[:-1], row, s=26, zorder=6, color=edge, edgecolors="white", linewidths=1.0)
 
-    # leyenda
     ax.legend([plt.Line2D([0],[0], color=c, lw=3, linestyle=line_styles[i % len(line_styles)],
                            marker="o", markersize=6, markerfacecolor=c)
                for i, c in enumerate(colors)],
@@ -4124,7 +4106,7 @@ if menu == "📈 Radar comparativo":
         else ("Radar — Rol" if scope == "Por rol" else "Radar — Jugador & Rol"),
         fontsize=16, pad=14, color="#2B2F36", weight="bold"
     )
-    fig.text(0.5, 0.02, "Escala radial relativa (0–100%). % reales se muestran tal cual; absolutos se normalizan min–max del grupo a 40’",
+    fig.text(0.5, 0.02, "Escala radial relativa (0–100%). % reales se muestran tal cual; absolutos usan máximo global del scope y se normalizan min–max a 40’",
             ha="center", fontsize=8, color="#6B7280")
 
     st.pyplot(fig, use_container_width=True)
@@ -4134,7 +4116,7 @@ if menu == "📈 Radar comparativo":
     tabla = base[[label_col, "minutos"] + metrics].copy()
     for c in metrics:
         tabla[c] = pd.to_numeric(tabla[c], errors="coerce").round(2)
-    st.markdown("**Tabla de métricas (promedios; abs normalizados a 40’ por partido antes de promediar)**")
+    st.markdown("**Tabla de métricas (promedios; absolutos normalizados a 40’ por partido antes de promediar)**")
     st.dataframe(tabla.sort_values("minutos", ascending=False), use_container_width=True)
 
 
