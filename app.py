@@ -3682,7 +3682,7 @@ if menu == "📈 Radar comparativo":
         reg_exitos = s("Regate conseguido - Mantiene pelota","Regate conseguido - Pierde pelota")
         df["% Regates Exitosos"] = ratio(reg_exitos, df["Regates - Total"]) * 100
 
-        # % Duelos Ganados = (1v1 Ganado + Rec x Duelo) / (1v1 Ganado + 1v1 perdido + Rec x Duelo + Pérdida x Duelo)
+        # % Duelos Ganados
         duelos_num = s("1v1 Ganado","Recuperacion x Duelo")
         duelos_den = s("1v1 Ganado","1v1 perdido","Recuperacion x Duelo","Pérdida x Duelo")
         df["% Duelos Ganados"] = ratio(duelos_num, duelos_den) * 100
@@ -3698,7 +3698,7 @@ if menu == "📈 Radar comparativo":
         df["% Recuperaciones"] = ratio(df["Recuperaciones - Total"],
                                        df["Recuperaciones - Total"] + df["Perdidas - Total"]) * 100
 
-        # % Pases (base = primer elemento del grupo)
+        # % Pases
         pass_groups = {
             "Pase Corto Frontal":      ["Pase Corto Frontal", "Pase Corto Frontal Completado", "Pase Corto Frontal OK"],
             "Pase Corto Lateral":      ["Pase Corto Lateral", "Pase Corto Lateral Completado", "Pase Corto Lateral OK"],
@@ -3839,7 +3839,6 @@ if menu == "📈 Radar comparativo":
 
     df_avg_por_rol      = normalize_and_avg(join_rol, by_cols=["jugador","rol"])
     df_avg_por_jugador  = normalize_and_avg(join_jug, by_cols=["jugador"])
-    # Uso:
     df_avg_por_jugador = weighted_percentages(df_avg_por_jugador, ["jugador"])
     df_avg_por_rol     = weighted_percentages(df_avg_por_rol, ["jugador","rol"])
     
@@ -3848,7 +3847,6 @@ if menu == "📈 Radar comparativo":
 
     candidates = sorted([c for c in df_mat_rol.columns if c not in {"partido_id","fecha","rival","archivo","hoja","jugador","rol"}])
 
-    # 🚀 métricas por defecto (las del radar “imagen 1” que usamos)
     DEFAULT_METRICS = [
         "% Acciones Positivas", "% Duelos Ganados", "% Recuperaciones",
         "Tiros - % al arco", "Tiros - % Goles/Tiro al arco", "% Regates Exitosos",
@@ -3874,6 +3872,8 @@ if menu == "📈 Radar comparativo":
 
     min_minutos = st.number_input("Minutos mínimos totales (para incluir en la comparación)", min_value=0.0, value=20.0, step=5.0)
 
+    DEFAULT_PLAYERS = ["Bruno", "JuanBe", "Zurdo"]  # 🟢 defaults pedidos
+
     if scope == "Jugador total":
         base = df_avg_por_jugador.copy()
         if base.empty: st.warning("No hay datos válidos para Jugador total."); st.stop()
@@ -3881,10 +3881,11 @@ if menu == "📈 Radar comparativo":
         base = pd.merge(base, mins_valid, on="jugador", how="left", suffixes=("","_tot"))
         base = base[base["minutos"] >= min_minutos].copy()
         jugadores = sorted(base["jugador"].unique().tolist())
-        sel_jug = st.multiselect("Jugadores a comparar", jugadores, default=jugadores[:min(6, len(jugadores))])
+        default_jug = [j for j in DEFAULT_PLAYERS if j in jugadores] or jugadores[:min(6, len(jugadores))]
+        sel_jug = st.multiselect("Jugadores a comparar", jugadores, default=default_jug)
         base = base[base["jugador"].isin(sel_jug)]
         label_col = "jugador"
-        global_df_for_max = df_avg_por_jugador  # para máximos absolutos
+        global_df_for_max = df_avg_por_jugador
     elif scope == "Por rol":
         base = df_avg_por_rol.copy()
         if base.empty: st.warning("No hay datos válidos para Rol."); st.stop()
@@ -3894,7 +3895,8 @@ if menu == "📈 Radar comparativo":
         sel_rol = st.selectbox("Rol", roles, index=0 if roles else None)
         base = base[(base["rol"] == sel_rol) & (base["minutos"] >= min_minutos)].copy()
         jugadores = sorted(base["jugador"].unique().tolist())
-        sel_jug = st.multiselect("Jugadores a comparar", jugadores, default=jugadores[:min(6, len(jugadores))])
+        default_jug = [j for j in DEFAULT_PLAYERS if j in jugadores] or jugadores[:min(6, len(jugadores))]
+        sel_jug = st.multiselect("Jugadores a comparar", jugadores, default=default_jug)
         base = base[base["jugador"].isin(sel_jug)]
         label_col = "jugador"
         global_df_for_max = df_avg_por_rol
@@ -3923,7 +3925,7 @@ if menu == "📈 Radar comparativo":
         out, cur = [], ""
         for w in ws:
             if len(cur) + len(w) + (1 if cur else 0) <= maxlen: cur = (cur + " " + w).strip()
-            else: 
+            else:
                 if cur: out.append(cur)
                 cur = w
         if cur: out.append(cur)
@@ -3952,7 +3954,6 @@ if menu == "📈 Radar comparativo":
         if "%" in c:
             rad_norm[c] = (s / 100.0).clip(0, 1)
         else:
-            # min-max sobre el subconjunto para dibujar
             mn, mx = float(np.nanmin(s.values)), float(np.nanmax(s.values))
             if np.isfinite(mn) and np.isfinite(mx) and mx > mn:
                 rad_norm[c] = (s - mn) / (mx - mn)
@@ -3972,13 +3973,13 @@ if menu == "📈 Radar comparativo":
     angles = [n / float(N) * 2 * np.pi for n in range(N)]
     angles += angles[:1]
 
-    # lienzo (más chico y título blanco)
+    # --- lienzo más chico y con margen; título blanco ---
     plt.close("all")
-    fig = plt.figure(figsize=(9.2, 8.4))
+    fig = plt.figure(figsize=(8.6, 7.6))                 # más compacto
     ax = fig.add_subplot(111, polar=True)
-    fig.patch.set_facecolor("#0C5C3B")  # tu verde fondo
+    fig.patch.set_facecolor("#0C5C3B")
     ax.set_facecolor("#E9EDF2")
-    fig.subplots_adjust(top=0.80, bottom=0.10, left=0.06, right=0.86)  # radar más chico
+    fig.subplots_adjust(top=0.76, bottom=0.14, left=0.10, right=0.82)
     ax.grid(False)
     ax.set_ylim(0, 1.0)
 
@@ -3990,40 +3991,35 @@ if menu == "📈 Radar comparativo":
     ax.spines["polar"].set_color("#C1C9D3")
     ax.spines["polar"].set_linewidth(1.4)
 
-    # --- etiquetas de ejes (chips) ---
+    # --- etiquetas de ejes (chips) por fuera del círculo ---
+    CHIP_R = 1.12  # radio > 1 => fuera del último anillo
     ax.set_xticks(angles[:-1]); ax.set_xticklabels([])
     for a, lbl in zip(angles[:-1], labels_wrapped):
-        ax.text(a, 1.03, lbl, ha="center", va="center", fontsize=8.5, fontweight="bold",
-                color="#2B2F36",
+        ax.text(a, CHIP_R, lbl, ha="center", va="center",
+                fontsize=8.2, fontweight="bold", color="#2B2F36",
+                clip_on=False,
                 bbox=dict(boxstyle="round,pad=0.20", fc="#ECEFF4", ec="#C9D1DB", lw=0.9))
-    
-    # 🔧 Ocultamos etiquetas globales de los anillos (para no duplicar)
-    ax.set_yticks(rings)
-    ax.set_yticklabels([])        # <— nada en el borde global
-    ax.set_rlabel_position(95)
-    ax.tick_params(axis="y", pad=2)
-    
+
+    # sin etiquetas globales de anillos (ponemos referencias por eje abajo)
+    ax.set_yticks(rings); ax.set_yticklabels([])
+    ax.set_rlabel_position(95); ax.tick_params(axis="y", pad=2)
+
     def _fmt_num(v):
         if pd.isna(v): return ""
         if abs(v) >= 100: return f"{int(round(v))}"
         if abs(v) >= 10:  return f"{v:.1f}".rstrip("0").rstrip(".")
         return f"{v:.2f}".rstrip("0").rstrip(".")
-    
-    # 🔧 Referencias en CADA anillo y CADA eje
+
+    # referencias por anillo y por eje
     for a, raw in zip(angles[:-1], labels):
         if "%" in raw:
-            # porcentuales: 20%, 40%, 60%, 80%, 100% en cada eje
             for r in rings:
-                ax.text(a, r, f"{int(r*100)}%", ha="center", va="center",
-                        fontsize=7.6, color="#6B7280")
+                ax.text(a, r, f"{int(r*100)}%", ha="center", va="center", fontsize=7.6, color="#6B7280")
         else:
-            # absolutos: usando el máximo global por métrica
             mx = global_abs_max.get(raw, np.nan)
             if np.isfinite(mx) and mx > 0:
                 for r in rings:
-                    ax.text(a, r, _fmt_num(r * mx), ha="center", va="center",
-                            fontsize=7.6, color="#6B7280")
-
+                    ax.text(a, r, _fmt_num(r * mx), ha="center", va="center", fontsize=7.6, color="#6B7280")
 
     # series
     names   = rad_norm[label_col].tolist()
@@ -4032,14 +4028,14 @@ if menu == "📈 Radar comparativo":
     colors  = _palette(len(names))
     line_styles = ["-","--","-.",":"]
 
-    # relleno ligero
+    # relleno
     for i, row in enumerate(vals_M):
         vals = row.tolist() + row[:1].tolist()
         edge = colors[i]; fill = _tint(edge, 0.62)
         ax.fill(angles, vals, facecolor=fill, edgecolor="none",
                 alpha=0.18 if len(names) > 1 else 0.28, zorder=2)
 
-    # líneas + marcadores (nunca se cortan: ya fillna(0))
+    # líneas + marcadores
     for i, row in enumerate(vals_M):
         vals = row.tolist() + row[:1].tolist()
         edge = colors[i]
@@ -4055,7 +4051,7 @@ if menu == "📈 Radar comparativo":
     plt.title(
         "Radar — Jugadores" if scope == "Jugador total"
         else ("Radar — Rol" if scope == "Por rol" else "Radar — Jugador & Rol"),
-        fontsize=18, pad=12, color="#FFFFFF", weight="bold"   # blanco
+        fontsize=18, pad=12, color="#FFFFFF", weight="bold"
     )
     fig.text(0.50, 0.03, "Escala radial relativa (0–100%). % reales se muestran tal cual; absolutos se normalizan con el máximo global del grupo a 40’",
              ha="center", fontsize=8, color="#D6D9DE")
