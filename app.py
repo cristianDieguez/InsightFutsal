@@ -2650,7 +2650,7 @@ elif menu == "🕓 Distribución de minutos e Impacto":
                 st.pyplot(fig_sc, use_container_width=True)
 
 # =========================
-# 🔗 RED DE PASES (MENÚ)
+# 🔗 RED DE PASES (con Top-5 jugadores por intentos)
 # =========================
 elif menu == "🔗 Red de Pases":
     matches = discover_matches()
@@ -2660,12 +2660,180 @@ elif menu == "🔗 Red de Pases":
 
     sel = st.selectbox("Elegí partido", [m["label"] for m in matches], index=0)
     match = get_match_by_label(sel)
-
-    # Cargar del XML preferido (campo 'xml_players' que arma discover_matches)
     df_raw = cargar_datos_nacsport(match["xml_players"]) if match else pd.DataFrame()
 
-    fig = red_de_pases_por_rol(df_raw)
+    # === Helpers locales SOLO para este menú ===
+    import unicodedata, re
+    from collections import defaultdict
+
+    def _strip_accents(s: str) -> str:
+        s = unicodedata.normalize("NFD", str(s))
+        return "".join(ch for ch in s if unicodedata.category(ch) != "Mn")
+
+    def _norm(s: str) -> str:
+        # normaliza: sin tildes, minúsculas, colapsa espacios
+        s = _strip_accents(s or "").lower()
+        s = re.sub(r"\s+", " ", s).strip()
+        return s
+
+    # Lista estricta de nombres que cuentan como "intento de pase"
+    _STRICT_PASS_NAMES = [
+        "Pase Progresivo Frontal",
+        "Pase Progresivo Lateral",
+        "Pase Corto Frontal",
+        "Pase Corto Lateral",
+        "Pase Progresivo Frontal cPie",
+        "Pase Progresivo Lateral cPie",
+        "Salida de arco progresivo cMano",
+        "Pase Corto Frontal cPie",
+        "Pase Corto Lateral cPie",
+        "Salida de arco corto cMano",
+    ]
+    # set normalizado para comparación exacta (case/acentos/espacios-tolerante)
+    STRICT_PASS_SET = { _norm(x) for x in _STRICT_PASS_NAMES }
+    # tolerancia a typos de "progresivo/progesivo"
+    STRICT_PASS_SET |= { s.replace("progresivo", "progesivo") for s in STRICT_PASS_SET }
+    STRICT_PASS_SET |= { s.replace("progresiva", "progesiva") for s in STRICT_PASS_SET }
+
+    NAME_ROLE_RX = re.compile(r"^\s*([^(]+?)\s*\(([^)]+)\)\s*$")
+
+    def _is_strict_pass_attempt(code: str, labels: list[str]) -> bool:
+        code_n = _norm(code)
+        if code_n in STRICT_PASS_SET:
+            return True
+        for l in (labels or []):
+            if _norm(l) in STRICT_PASS_SET:
+                return True
+        return False
+
+    def _name_and_role(code: str):
+        m = NAME_ROLE_RX.match(code or "")
+        if not m: return None, None
+        return (m.group(1).strip(), m.group(2).strip())
+
+    def _dest_role_from_labels(lbls: list[str], rol_origen: str|None) -> str|None:
+        # busca ".... (ROL)" en los labels y toma el primero distinto al origen
+        for lb in (lbls or []):
+            if "(" in (lb or "") and ")" in (lb or ""):
+                cand = lb.split("(")[-1].split(")")[0].strip()
+                if cand and cand != rol_origen:
+                    return cand
+        return None
+
+    def _map_raw_to_pitch(x_raw, y_raw):
+        # XML: x_raw=0..20, y_raw=0..40  → Cancha 35x20, atacando a la derecha
+        x = 35.0 - (y_raw * (35.0 / 40.0))  # invierte para atacar a la derecha
+        y = x_raw                           # 0..20 va directo al eje Y cancha
+        return float(x), float(y)
+
+    def red_de_pases_por_rol_con_top5(df: pd.DataFrame) -> plt.Figure:
+        fig, ax = plt.subplots(figsize=(10, 6))
+        draw_futsal_pitch_grid(ax)
+
+        coords_origen = defaultdict(list)        # rol -> [(x0,y0), ...]
+        edges_count   = defaultdict(int)         # (rol_a, rol_b) sorted -> intentos
+        tot_por_rol   = defaultdict(int)         # rol -> intentos (para el número del nodo)
+        intentos_por_jugador = defaultdict(int)  # jugador -> intentos (TOP 5)
+
+        for _, row in df.iterrows():
+            code = row.get("jugador") or ""
+            if not is_player_code(code):
+                continue
+
+            labels = [l for l in (row.get("labels") or []) if l]
+            if not _is_strict_pass_attempt(code, labels):
+                continue
+
+            nombre, rol_origen = _name_and_role(code)
+            if not nombre:  # por las dudas
+                continue
+
+            # Conteo por jugador (estricto)
+            intentos_por_jugador[nombre] += 1
+
+            # Para red de pases por rol
+            if rol_origen:
+                # origen geométrico: 1er punto
+                px, py = row.get("pos_x_list") or [], row.get("pos_y_list") or []
+                if px and py:
+                    x0, y0 = _map_raw_to_pitch(px[0], py[0])
+                    coords_origen[rol_origen].append((x0, y0))
+
+                tot_por_rol[rol_origen] += 1
+
+                # rol destino (si viene en labels con "(Rol)")
+                rol_destino = _dest_role_from_labels(labels, rol_origen)
+                if rol_destino and rol_destino != rol_origen:
+                    a, b = sorted([rol_origen, rol_destino])
+                    edges_count[(a, b)] += 1
+
+        # Promedios de posición por rol
+        rol_coords = {}
+        for rol, coords in coords_origen.items():
+            if not coords: continue
+            arr = np.array(coords)
+            rol_coords[rol] = (float(arr[:,0].mean()), float(arr[:,1].mean()))
+
+        # Heurística para arquero + swap de alas (queremos Ala I arriba)
+        if "Arq" in rol_coords:
+            rol_coords["Arq"] = (3.0, 10.0)
+        if "Ala I" in rol_coords and "Ala D" in rol_coords and rol_coords["Ala I"][1] > rol_coords["Ala D"][1]:
+            # si Ala I quedó abajo (y más "y"), intercambiamos para que quede arriba
+            rol_coords["Ala I"], rol_coords["Ala D"] = rol_coords["Ala D"], rol_coords["Ala I"]
+            # re-mapear conteos si intercambiamos etiquetas
+            new_edges = defaultdict(int)
+            for (ra, rb), v in edges_count.items():
+                ra2 = "Ala D" if ra=="Ala I" else ("Ala I" if ra=="Ala D" else ra)
+                rb2 = "Ala D" if rb=="Ala I" else ("Ala I" if rb=="Ala D" else rb)
+                new_edges[tuple(sorted([ra2, rb2]))] += v
+            edges_count = new_edges
+            new_tot = defaultdict(int)
+            for r, t in tot_por_rol.items():
+                if r=="Ala I": new_tot["Ala D"] = t
+                elif r=="Ala D": new_tot["Ala I"] = t
+                else: new_tot[r] = t
+            tot_por_rol = new_tot
+
+        # Dibujar edges
+        max_pases = max(edges_count.values()) if edges_count else 1
+        for (ra, rb), count in edges_count.items():
+            if ra in rol_coords and rb in rol_coords:
+                x1, y1 = rol_coords[ra]; x2, y2 = rol_coords[rb]
+                lw = 1 + (count / max_pases) * 5
+                ax.plot([x1, x2], [y1, y2], color='red', linewidth=lw, alpha=0.7, zorder=3)
+                ax.text((x1+x2)/2, (y1+y2)/2, str(count), color='blue', fontsize=10,
+                        ha='center', va='center', fontweight='bold', zorder=6)
+
+        # Dibujar nodos (círculos por rol + número de intentos)
+        for rol, (x, y) in rol_coords.items():
+            ax.scatter(x, y, s=2000, color='white', edgecolors='black', zorder=5)
+            ax.text(x, y, f"{rol}\n{tot_por_rol.get(rol, 0)}", ha='center', va='center',
+                    fontsize=10, fontweight='bold', color='black', zorder=7)
+
+        ax.set_title("Red de Pases por Rol (intentos estrictos)", fontsize=13)
+        plt.tight_layout()
+
+        # ---------- TOP-5 JUGADORES (recuadro arriba-derecha) ----------
+        top = sorted(intentos_por_jugador.items(), key=lambda kv: (-kv[1], kv[0]))[:5]
+        if not top:
+            box_txt = "TOP 5 intentos de pase\n— Sin datos —"
+        else:
+            lines = [f"{i}. {nom}: {cnt}" for i, (nom, cnt) in enumerate(top, 1)]
+            box_txt = "TOP 5 intentos de pase\n" + "\n".join(lines)
+
+        ax.text(
+            0.985, 0.985, box_txt,
+            transform=ax.transAxes, ha="right", va="top",
+            fontsize=10, color="black",
+            bbox=dict(boxstyle="round", facecolor="white", edgecolor="black", alpha=0.92, pad=0.45),
+            zorder=10
+        )
+
+        return fig
+
+    fig = red_de_pases_por_rol_con_top5(df_raw)
     st.pyplot(fig, use_container_width=True)
+
 
 # =========================
 # 🛡️ PÉRDIDAS Y RECUPERACIONES
