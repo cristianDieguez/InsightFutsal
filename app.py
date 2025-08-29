@@ -3669,52 +3669,70 @@ if menu == "📈 Radar comparativo":
         return r
 
     def add_derived_percentages(df):
-        if df.empty: return df
+        if df.empty:
+            return df
         df = df.copy()
-
+    
         def s(*cols):
             vals = [pd.to_numeric(df.get(c, 0), errors="coerce").fillna(0) for c in cols if c in df.columns]
             return sum(vals) if vals else pd.Series(0, index=df.index)
-
-        # Regates
-        rcols = GROUPS["Regates"]
+    
+        def ratio(num, den):
+            with np.errstate(divide='ignore', invalid='ignore'):
+                r = np.where(den > 0, num / den, np.nan)
+            return r
+    
+        # -------- Regates
+        # Total = 4 variantes; Éxitos = conseguido (mantiene + pierde)
+        rcols = [
+            "Regate conseguido - Mantiene pelota",
+            "Regate conseguido - Pierde pelota",
+            "Regate No conseguido - Mantiene pelota",
+            "Regate No conseguido - Pierde pelota",
+        ]
         if all(c in df.columns for c in rcols):
             df["Regates - Total"] = s(*rcols)
-            exi = pd.to_numeric(df["Regate conseguido - Mantiene pelota"], errors="coerce").fillna(0)
+            exi = s("Regate conseguido - Mantiene pelota", "Regate conseguido - Pierde pelota")
             df["% Regates Exitosos"] = ratio(exi, df["Regates - Total"]) * 100
-
-        # 1v1 → % Duelos Ganados
-        if "1v1 Ganado" in df.columns and "1v1 perdido" in df.columns:
-            g1 = pd.to_numeric(df["1v1 Ganado"], errors="coerce").fillna(0)
-            p1 = pd.to_numeric(df["1v1 perdido"], errors="coerce").fillna(0)
-            df["% Duelos Ganados"] = ratio(g1, g1 + p1) * 100
-
-        # Tiros
-        if "Tiro al arco" in df.columns and "Tiro Hecho" in df.columns:
-            ta = pd.to_numeric(df["Tiro al arco"], errors="coerce").fillna(0)
-            th = pd.to_numeric(df["Tiro Hecho"], errors="coerce").fillna(0)
-            gol = pd.to_numeric(df.get("Gol", 0), errors="coerce").fillna(0)
+    
+        # -------- 1v1 + duelos por tu criterio
+        g1 = pd.to_numeric(df.get("1v1 Ganado", 0), errors="coerce").fillna(0)
+        p1 = pd.to_numeric(df.get("1v1 perdido", 0), errors="coerce").fillna(0)
+        rec_du = pd.to_numeric(df.get("Recuperacion x Duelo", 0), errors="coerce").fillna(0)
+        per_du = pd.to_numeric(df.get("Pérdida x Duelo", 0), errors="coerce").fillna(0)
+        df["% Duelos Ganados"] = ratio(g1 + rec_du, g1 + p1 + rec_du + per_du) * 100
+    
+        # -------- Tiros
+        ta  = pd.to_numeric(df.get("Tiro al arco", 0), errors="coerce").fillna(0)
+        th  = pd.to_numeric(df.get("Tiro Hecho", 0), errors="coerce").fillna(0)
+        gol = pd.to_numeric(df.get("Gol", 0), errors="coerce").fillna(0)
+        if (th > 0).any():
             df["Tiros - % al arco"] = ratio(ta, th) * 100
+        if (ta > 0).any():
             df["Tiros - % Goles/Tiro al arco"] = ratio(gol, ta) * 100
-
-        # Recuperaciones / Pérdidas
-        rec_cols = GROUPS["Recuperaciones"]; per_cols = GROUPS["Perdidas"]
+    
+        # -------- Recuperaciones / Pérdidas
+        rec_cols = ["Recuperacion x Duelo","Recuperación x Interceptacion","Recuperacion x Mal Control",
+                    "Recuperacion x Mal Pase Rival","Recuperacion x Robo"]
+        per_cols = ["Pérdida x Duelo","Pérdida x Interceptacion Rival","Pérdida x Mal Control",
+                    "Pérdida x Mal Pase","Pérdida x Robo Rival"]
         df["Recuperaciones - Total"] = s(*rec_cols)
         df["Perdidas - Total"]      = s(*per_cols)
-        df["% Recuperaciones"]      = ratio(df["Recuperaciones - Total"], df["Recuperaciones - Total"] + df["Perdidas - Total"]) * 100
-
-        # % Pases
-        passlike = [k for k in GROUPS if k.startswith("Pase ")]
+        df["% Recuperaciones"]      = ratio(df["Recuperaciones - Total"],
+                                            df["Recuperaciones - Total"] + df["Perdidas - Total"]) * 100
+    
+        # -------- % Pases por familia (Base, Completado, OK)
+        passlike = [k for k in GROUPS if k.startswith("Pase ")]  # agrega "or k.startswith('Arquero Pase')" si querés
         for gname in passlike:
             base, comp, ok = GROUPS[gname]
             if base in df.columns:
-                b = pd.to_numeric(df[base], errors="coerce").fillna(0)
+                b = pd.to_numeric(df.get(base, 0), errors="coerce").fillna(0)
                 c = pd.to_numeric(df.get(comp, 0), errors="coerce").fillna(0)
                 o = pd.to_numeric(df.get(ok, 0), errors="coerce").fillna(0)
                 df[f"% {base}"] = ratio(o, b) * 100
                 df[f"% {comp}"] = ratio(c, b) * 100
-
-        # Índice positivo (simple)
+    
+        # -------- Índice Positivo (simple)
         posit = []
         posit += [c for c in df.columns if "Completado" in c and not c.strip().startswith("%")]
         posit += ["Centros Rematados","Tiro al arco",
@@ -3723,14 +3741,16 @@ if menu == "📈 Radar comparativo":
                   "Recuperaciones - Total","1v1 Ganado","Asistencia","Pase Clave","Gol","Conduccion"]
         posit = list(dict.fromkeys([c for c in posit if c in df.columns]))
         tot = [c for c in df.columns if c in ALL_ACTIONS]
-
+    
         def s_cols(cols):
             return sum(pd.to_numeric(df[c], errors="coerce").fillna(0) for c in cols) if cols else pd.Series(0, index=df.index)
-
+    
         df["Acciones Positivas - Total"] = s_cols(posit)
         df["Acciones - Total"] = s_cols(tot)
         df["% Acciones Positivas"] = ratio(df["Acciones Positivas - Total"], df["Acciones - Total"]) * 100
+    
         return df
+
 
     @st.cache_data(show_spinner=True)
     def build_matrix_counts(DIR_MATRIX: Path) -> pd.DataFrame:
