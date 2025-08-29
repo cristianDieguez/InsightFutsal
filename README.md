@@ -31,24 +31,24 @@ Integra los registros obtenidos en **NacSport**, procesados en **Python**, y gen
 
 ---
 
-## 📂 Estructura del proyecto
 📦 InsightFutsal
+├─ 📂 data/                 # Entradas
+│  ├─ 📂 minutos/           # XML “TotalValues” (por partido)
+│  └─ 📂 matrix/            # XLSX “Matrix” (por partido)
+├─ 📂 src/                  # Procesamiento y helpers
+├─ 📂 notebooks/            # Colab/Jupyter (exploración)
+├─ 📂 visuals/              # Gráficos exportados
+├─ app.py                   # App principal Streamlit
+├─ requirements.txt         # Dependencias
+└─ README.md
 
-┣ 📂 data/ # Archivos de entrada (XML, XLSX)
+Formato esperado de archivos (recomendado):
 
-┣ 📂 src/ # Scripts de procesamiento y análisis
+data/minutos/Fecha N - Rival - XML TotalValues.xml
+data/matrix/Fecha N - Rival - Matrix.xlsx
 
-┣ 📂 notebooks/ # Desarrollo en Google Colab / Jupyter
-
-┣ 📂 visuals/ # Gráficos y recursos generados
-
-┣ app.py # App principal de Streamlit
-
-┣ requirements.txt # Librerías necesarias
-
-┗ README.md
-
-
+El módulo de Minutos acepta instancias sin labels o con labels del canon:
+Valla Invicta en cancha, Goles a favor en cancha, Participa en Gol Hecho, Gol Rival en cancha, Involucrado en gol recibido.
 ---
 
 ## ▶️ Cómo ejecutar la app
@@ -66,6 +66,28 @@ Integra los registros obtenidos en **NacSport**, procesados en **Python**, y gen
   ```bash
   streamlit run app.py
   ```
+
+🧭 Uso rápido
+
+Elegí el menú (Minutos, Tiros, Mapas, Red de pases, Radar, etc.).
+Fijá el alcance (partido único o todos los partidos).
+En Radar, podés comparar “Jugador total”, “Por rol” o “Jugador y rol”.
+Métricas % se grafican tal cual (0–100).
+Métricas absolutas se normalizan por el máximo global del grupo (a 40’ por partido), y los anillos muestran los valores de referencia coherentes con la tabla.
+
+🧩 Entradas “Matrix” (agrupaciones usadas)
+
+Pases: Corto/Progresivo × Frontal/Lateral (+ Completado/OK)
+Centros (+ rematados)
+Tiros: intentos, al arco, bloqueados, desviados, goles
+Regates: conseguidos/no conseguidos × (mantiene/pierde)
+Pivot: aguanta/gira
+Presión: presiona/presionado
+Faltas: hechas/recibidas
+Recuperaciones/Perdidas (por causa)
+1v1: ganado/perdido
+Asistencia / Pase Clave, Conducción, Despeje, Gol
+El README refleja las métricas derivadas: % Regates Exitosos, % Duelos Ganados, Tiros - % al arco, Tiros - % Goles/TA, % Recuperaciones, % Acciones Positivas, etc.
 
 🎯 Objetivo del proyecto
 
