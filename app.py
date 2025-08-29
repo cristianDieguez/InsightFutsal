@@ -2809,19 +2809,28 @@ if menu == "🎯 Mapa de tiros":
 
     sel = st.selectbox("Elegí partido", matches, index=0)
     rival = rival_from_label(sel)
-    XML_PATH, _ = infer_paths_for_label(sel)
 
+    # Preferir XML TotalValues; si no existe, caer al que discover_matches eligió
+    XML_PATH, _MATRIX = infer_paths_for_label(sel)   # -> .../Fecha X - Rival - XML TotalValues.xml
+    if not XML_PATH or not os.path.isfile(XML_PATH):
+        # fallback suave al mejor XML encontrado (NacSport o TotalValues)
+        mobj = get_match_by_label(sel) or {}
+        XML_PATH = (mobj.get("xml_players") if mobj else None)
     if not XML_PATH or not os.path.isfile(XML_PATH):
         st.error("No encontré el XML de Jugadores/TotalValues para este partido.")
         st.stop()
 
     # ---- Helpers específicos del módulo de tiros (NO tocan nada del resto) ----
+    import re
+    from typing import Tuple, List
+
     def _is_shot_from_row(row) -> bool:
-        # Dispara si en code/labels aparece "tiro" o "remate"
+        # Dispara si en code/labels aparece "tiro" o "remate" (tolerancias comunes)
         code = nlower(row.get("jugador", ""))
         lbls = [nlower(l or "") for l in row.get("labels", [])]
         patt = re.compile(r"\b(tiro|remate)\b", re.I)
-        if patt.search(code): return True
+        if patt.search(code): 
+            return True
         return any(patt.search(l) for l in lbls)
 
     _ROLE_RE = re.compile(r"^\s*([^(]+?)\s*\(([^)]+)\)\s*$")
@@ -2831,7 +2840,7 @@ if menu == "🎯 Mapa de tiros":
         if not m: return None, None
         return ntext(m.group(1)).strip(), ntext(m.group(2)).strip()
 
-    # Clasificación estricta del resultado
+    # Clasificación estricta del resultado (por keywords en code/labels)
     _KEYS = {
         "gol":        re.compile(r"\bgol\b", re.I),
         "ataj":       re.compile(r"\bataj", re.I),
@@ -2844,11 +2853,11 @@ if menu == "🎯 Mapa de tiros":
     def _shot_result_strict(code: str, labels: List[str]) -> str:
         s = nlower(code or ""); ll = [nlower(l or "") for l in (labels or [])]
         def _has(p): return bool(p.search(s) or any(p.search(x) for x in ll))
-        if _has(_KEYS["gol"]):                         return "Gol"
-        if _has(_KEYS["ataj"]) or _has(_KEYS["al_arco"]):  return "Tiro Atajado"
-        if _has(_KEYS["bloqueado"]):                   return "Tiro Bloqueado"
-        if _has(_KEYS["desviado"]):                    return "Tiro Desviado"
-        if _has(_KEYS["errado"]) or _has(_KEYS["pifia"]):  return "Tiro Errado - Pifia"
+        if _has(_KEYS["gol"]):                               return "Gol"
+        if _has(_KEYS["ataj"]) or _has(_KEYS["al_arco"]):    return "Tiro Atajado"
+        if _has(_KEYS["bloqueado"]):                         return "Tiro Bloqueado"
+        if _has(_KEYS["desviado"]):                          return "Tiro Desviado"
+        if _has(_KEYS["errado"]) or _has(_KEYS["pifia"]):    return "Tiro Errado - Pifia"
         return "Sin clasificar"
 
     # Característica del origen
@@ -2856,7 +2865,7 @@ if menu == "🎯 Mapa de tiros":
         ("de Corner (desde Banda)", re.compile(r"corner\s*\(desde\s*banda\)", re.I)),
         ("de Corner (centro)",      re.compile(r"corner\s*\(centro\)", re.I)),
         ("de Jugada (centro)",      re.compile(r"jugada\s*\(centro\)", re.I)),
-        ("de Tiro Libre",           re.compile(r"tiro\s*libre", re.I)),
+        ("de Tiro Libre",           re.compile(r"\btiro\s*libre\b", re.I)),
         ("de Rebote",               re.compile(r"\brebote\b", re.I)),
         ("de Lateral",              re.compile(r"\blateral\b", re.I)),
         ("de Jugada",               re.compile(r"\bde\s*jugada\b", re.I)),
@@ -2883,8 +2892,8 @@ if menu == "🎯 Mapa de tiros":
         y = float(np.clip(y, 0.0, ALTO))
         return x, y
 
-    # ---- Cargar XML y preparar universe de filtros ----
-    df_raw = cargar_datos_nacsport(XML_PATH)  # ya la tenés en tu app
+    # ---- Cargar XML y preparar universo de filtros ----
+    df_raw = cargar_datos_nacsport(XML_PATH)  # ya definida en tu app
     if df_raw.empty:
         st.info("Sin instancias en el XML.")
         st.stop()
@@ -2925,7 +2934,8 @@ if menu == "🎯 Mapa de tiros":
 
         xs = r.get("pos_x_list") or []
         ys = r.get("pos_y_list") or []
-        if not (xs and ys): continue
+        if not (xs and ys): 
+            continue  # sin coordenadas no se puede pintar
 
         # Mapeo de toda la trayectoria
         coords = [_map_raw_to_pitch(xr, yr, max_x, max_y,
@@ -2952,12 +2962,12 @@ if menu == "🎯 Mapa de tiros":
 
     order = ["Gol","Tiro Atajado","Tiro Bloqueado","Tiro Desviado","Tiro Errado - Pifia","Sin clasificar"]
     COLORS = {
-        "Gol":                "#FFD54F",
-        "Tiro Atajado":       "#FFFFFF",
-        "Tiro Bloqueado":     "#FF5252",
-        "Tiro Desviado":      "#FF7043",
-        "Tiro Errado - Pifia":"#6B6F76",
-        "Sin clasificar":     "#BDBDBD",
+        "Gol":                 "#FFD54F",
+        "Tiro Atajado":        "#FFFFFF",
+        "Tiro Bloqueado":      "#FF5252",
+        "Tiro Desviado":       "#FF7043",
+        "Tiro Errado - Pifia": "#6B6F76",
+        "Sin clasificar":      "#BDBDBD",
     }
 
     for res in order:
@@ -2994,7 +3004,7 @@ if menu == "🎯 Mapa de tiros":
     c_res = Counter(s["result"] for s in shots if s["result"] != "Sin clasificar")
     total_res = sum(c_res.values())
     df_res = pd.DataFrame({
-        "Categoría": res_order + (["TOTAL"] if True else []),
+        "Categoría": res_order + ["TOTAL"],
         "Conteo": [c_res.get(k,0) for k in res_order] + [total_res],
         "%": [f"{(c_res.get(k,0)/total_res*100 if total_res else 0):.1f}%" for k in res_order] + ["100.0%" if total_res else "0.0%"]
     })
@@ -3015,7 +3025,6 @@ if menu == "🎯 Mapa de tiros":
     with col2:
         st.markdown("**Característica del origen**")
         st.dataframe(df_char, use_container_width=True)
-
 
 # =========================
 # 📬 DESTINO DE PASES (equipo / jugador / jugador-rol + tipos de pase)
