@@ -3965,7 +3965,7 @@ if menu == "📈 Radar comparativo":
     fig.subplots_adjust(top=0.84, bottom=0.12, left=0.07, right=0.86)
     
     ax.grid(False)
-    ax.set_ylim(0, 1.0)   # 1.0 = anillo exterior (no lo estires a 1.10)
+    ax.set_ylim(0, 1.10)   # 1.0 = anillo exterior (no lo estires a 1.10)
     
     # anillos base
     theta = np.linspace(0, 2*np.pi, 512)
@@ -4043,11 +4043,11 @@ if menu == "📈 Radar comparativo":
               [f"{n} ({int(round(m))}m)" for n, m in zip(names, minutes)],
               loc="upper left", bbox_to_anchor=(1.02, 1.00), frameon=False, fontsize=9)
 
-    plt.title(
-        "Radar — Jugadores" if scope == "Jugador total"
-        else ("Radar — Rol" if scope == "Por rol" else "Radar — Jugador & Rol"),
-        fontsize=26, pad=18, color="#FFFFFF", weight="bold"
-    )
+    #plt.title(
+    #    "Radar — Jugadores" if scope == "Jugador total"
+    #    else ("Radar — Rol" if scope == "Por rol" else "Radar — Jugador & Rol"),
+    #    fontsize=26, pad=18, color="#FFFFFF", weight="bold"
+    #)
     #fig.text(0.50, 0.03, "Escala radial relativa (0–100%). % reales; absolutos normalizados por el máximo global del grupo a 40’.",
     #         ha="center", fontsize=8, color="#D6D9DE")
 
