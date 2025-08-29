@@ -3996,7 +3996,15 @@ if menu == "📈 Radar comparativo":
         # fallback si comparás muchísimos jugadores
         cmap = plt.cm.tab20(np.linspace(0, 1, n))
         return [mpl.colors.to_hex(c) for c in cmap]
+        
+    # usar las métricas elegidas como ejes del radar
+    labels = metrics[:]  # <-- 🔧 esta línea evita el NameError
     
+    labels_wrapped = [_wrap_lbl(l) for l in labels]
+    N = len(labels_wrapped)
+    angles = [n / float(N) * 2 * np.pi for n in range(N)]
+    angles += angles[:1]
+
     labels_wrapped = [_wrap_lbl(l) for l in labels]
     N = len(labels_wrapped)
     angles = [n / float(N) * 2 * np.pi for n in range(N)]
