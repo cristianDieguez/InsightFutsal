@@ -2609,6 +2609,7 @@ elif menu == "🔗 Red de Pases":
 # 🛡️ PÉRDIDAS Y RECUPERACIONES
 # =========================
 elif menu == "🛡️ Pérdidas y Recuperaciones":
+    # 1) Partidos disponibles
     matches = discover_matches()
     if not matches:
         st.warning("No encontré partidos en data/minutos.")
@@ -2617,12 +2618,12 @@ elif menu == "🛡️ Pérdidas y Recuperaciones":
     sel = st.selectbox("Elegí partido", [m["label"] for m in matches], index=0)
     match = get_match_by_label(sel)
 
-    # Carga cruda (sin filtrar)
+    # 2) Carga cruda (sin filtrar)
     df_raw  = pr_cargar_datos(match["xml_players"]) if match else pd.DataFrame()
     df_pres = pr_cargar_presencias_equipo(match["xml_players"]) if match else pd.DataFrame()
-    # df_pres DEBE conservar columnas: nombre, rol, start_s, end_s  (no renombrar)
+    # IMPORTANTE: df_pres conserva columnas originales: nombre, rol, start_s, end_s
 
-    # ====== NUEVO: nivel de análisis ======
+    # 3) Nivel de análisis (Equipo / Jugador / Jugador (rol))
     st.markdown("##### Nivel de análisis")
     col_lvl, col_jug, col_rol = st.columns([1.15, 1.6, 1.6])
 
@@ -2635,7 +2636,7 @@ elif menu == "🛡️ Pérdidas y Recuperaciones":
             label_visibility="collapsed"
         )
 
-    # Derivados de nombres/roles solo en df_raw (NO tocar df_pres)
+    # Derivados de nombres/roles SOLO en df_raw (NO tocar df_pres)
     if not df_raw.empty:
         nr = df_raw["jugador"].apply(pr_split_name_role)
         df_raw = df_raw.assign(
@@ -2645,7 +2646,7 @@ elif menu == "🛡️ Pérdidas y Recuperaciones":
 
     selected_players, selected_roles = [], []
 
-    # Selectores y filtros
+    # 4) Selectores y filtros
     if nivel_analisis in {"Jugador", "Jugador (rol)"} and not df_raw.empty:
         jugadores = (df_raw["_nombre"].dropna().astype(str).sort_values().unique().tolist())
         with col_jug:
@@ -2664,12 +2665,12 @@ elif menu == "🛡️ Pérdidas y Recuperaciones":
                 df_pres = df_pres[df_pres["nombre"].astype(str).isin(selected_players)]
 
     if nivel_analisis == "Jugador (rol)" and not df_raw.empty:
-        roles_disp = (df_raw["_rol"].dropna().astype(str).sort_values().unique().tolist())
+        roles_disp = (df_raw["_rol"].dropna().astype[str].sort_values().unique().tolist())
         with col_rol:
             selected_roles = st.multiselect(
                 "Rol(es)",
                 options=roles_disp,
-                default=roles_disp,
+                default=roles_disp,  # por defecto todos los roles disponibles
                 help="Podés limitar a uno o varios roles."
             )
         if selected_roles:
@@ -2679,7 +2680,7 @@ elif menu == "🛡️ Pérdidas y Recuperaciones":
             if not df_pres.empty and "rol" in df_pres.columns:
                 df_pres = df_pres[df_pres["rol"].astype(str).isin(selected_roles)]
 
-    # Contexto informativo
+    # 5) Contexto informativo (no altera cálculos)
     contexto_txt = "Equipo"
     if selected_players:
         contexto_txt = "Jugador/es: " + ", ".join(selected_players)
@@ -2687,7 +2688,8 @@ elif menu == "🛡️ Pérdidas y Recuperaciones":
             contexto_txt += " | Rol/es: " + ", ".join(selected_roles)
     st.caption(f"Contexto: {contexto_txt}")
 
-    # Lógica intacta — pasamos df_raw/df_pres filtrados; SIN jugador_filter (ya filtramos arriba)
+    # 6) Cálculo (lógica intacta)
+    #    Pasamos df_raw/df_pres ya filtrados; SIN jugador_filter (ya filtramos arriba)
     total_acc, perdidas, recupera, porc_perd, porc_recu, df_reg = pr_procesar(
         df_raw.copy(),
         df_pres.copy(),
@@ -2695,22 +2697,99 @@ elif menu == "🛡️ Pérdidas y Recuperaciones":
     )
     df_resumen = pr_resumen_df(total_acc, perdidas, recupera, porc_perd, porc_recu)
 
-    st.subheader("📋 Resumen pérdidas/recuperaciones")
-    st.dataframe(df_resumen)
+    # 7) Presentación: selector de visualizaciones (sin tabla)
+    st.markdown("#### Visualizaciones")
+    opciones = st.multiselect(
+        "Elegí qué ver",
+        options=[
+            "🔥 Heatmap de pérdidas (%)",
+            "🔥 Heatmap de recuperaciones (%)",
+            "📊 Barras: pérdidas por zona",
+            "📊 Barras: recuperaciones por zona",
+            "🟰 Scatter pérdidas vs recuperaciones",
+        ],
+        default=["🔥 Heatmap de pérdidas (%)", "🔥 Heatmap de recuperaciones (%)"]
+    )
 
-    st.subheader("🔥 Heatmap de pérdidas (%)")
-    st.pyplot(pr_heatmap(porc_perd, total_acc, "Pérdidas sobre total", good_high=False), use_container_width=True)
+    # Helper local: scatter pérdidas (Y) vs recuperaciones (X)
+    def _fig_scatter_pr(df):
+        import numpy as np
+        from matplotlib.ticker import FuncFormatter
+        fig, ax = plt.subplots(figsize=(8.2, 6.2))
 
-    st.subheader("🔥 Heatmap de recuperaciones (%)")
-    st.pyplot(pr_heatmap(porc_recu, total_acc, "Recuperaciones sobre total", good_high=True), use_container_width=True)
+        if df is None or df.empty:
+            ax.text(0.5, 0.5, "Sin datos para el filtro", ha="center", va="center")
+            return fig
 
-    st.subheader("📊 Ranking de zonas con más pérdidas")
-    st.pyplot(pr_bars(df_resumen, "%_perdidas_sobre_total", "Zonas con más pérdidas"), use_container_width=True)
+        # columnas de proporción ya vienen en df_resumen
+        x = df["%_recuperaciones_sobre_total"].astype(float)
+        y = df["%_perdidas_sobre_total"].astype(float)
 
-    st.subheader("📊 Ranking de zonas con más recuperaciones")
-    st.pyplot(pr_bars(df_resumen, "%_recuperaciones_sobre_total", "Zonas con más recuperaciones"), use_container_width=True)
+        # puntos + etiquetas "Z#"
+        ax.scatter(x, y, s=70, alpha=0.9)
+        for _, r in df.iterrows():
+            ax.text(
+                float(r["%_recuperaciones_sobre_total"]),
+                float(r["%_perdidas_sobre_total"]),
+                f"Z{int(r['zona'])}",
+                ha="center", va="center", fontsize=9.5, fontweight="bold"
+            )
 
+        # promedios (líneas punteadas)
+        mx, my = float(np.nanmean(x)), float(np.nanmean(y))
+        ax.axvline(mx, ls="--", lw=1.2, alpha=0.9)
+        ax.axhline(my, ls="--", lw=1.2, alpha=0.9)
+        # anotar valores promedio en %
+        x1, x2 = ax.get_xlim()
+        y1, y2 = ax.get_ylim()
+        ax.text(mx, y2, f"  μX={mx*100:.1f}%", va="bottom", fontsize=9)
+        ax.text(x2, my, f"μY={my*100:.1f}%  ", ha="right", va="bottom", fontsize=9)
 
+        # ejes en %
+        from matplotlib.ticker import FuncFormatter
+        fmt = FuncFormatter(lambda v,_: f"{v*100:.0f}%")
+        ax.xaxis.set_major_formatter(fmt)
+        ax.yaxis.set_major_formatter(fmt)
+
+        ax.set_xlabel("Recuperaciones / Acciones (proporción)")
+        ax.set_ylabel("Pérdidas / Acciones (proporción)")
+        ax.set_title("Pérdidas (Y) vs Recuperaciones (X) por Zona")
+        ax.grid(True, ls=":", alpha=0.35)
+        plt.tight_layout()
+        return fig
+
+    # 8) Render condicional según selección
+    if "🔥 Heatmap de pérdidas (%)" in opciones:
+        st.subheader("🔥 Heatmap de pérdidas (%)")
+        st.pyplot(
+            pr_heatmap(porc_perd, total_acc, "Pérdidas sobre total", good_high=False),
+            use_container_width=True
+        )
+
+    if "🔥 Heatmap de recuperaciones (%)" in opciones:
+        st.subheader("🔥 Heatmap de recuperaciones (%)")
+        st.pyplot(
+            pr_heatmap(porc_recu, total_acc, "Recuperaciones sobre total", good_high=True),
+            use_container_width=True
+        )
+
+    if "📊 Barras: pérdidas por zona" in opciones:
+        st.subheader("📊 Barras: pérdidas por zona")
+        st.pyplot(
+            pr_bars(df_resumen, "%_perdidas_sobre_total", "Zonas con más pérdidas"),
+            use_container_width=True
+        )
+
+    if "📊 Barras: recuperaciones por zona" in opciones:
+        st.subheader("📊 Barras: recuperaciones por zona")
+        st.pyplot(
+            pr_bars(df_resumen, "%_recuperaciones_sobre_total", "Zonas con más recuperaciones"),
+            use_container_width=True
+        )
+
+    if "🟰 Scatter pérdidas vs recuperaciones" in opciones:
+        st.subheader("🟰 Scatter pérdidas vs recuperaciones")
+        st.pyplot(_fig_scatter_pr(df_resumen), use_container_width=True)
 
 # =========================
 # 🎯 MAPA DE TIROS
