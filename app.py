@@ -1192,7 +1192,7 @@ def red_de_pases_por_rol(df: pd.DataFrame):
         rol_coords["Arq"] = (3.0, 10.0)  # bajo y centrado
 
     # Si Ala I y Ala D quedaron invertidos en Y, los swap
-    if "Ala I" in rol_coords and "Ala D" in rol_coords and rol_coords["Ala I"][1] < rol_coords["Ala D"][1]:
+    if "Ala I" in rol_coords and "Ala D" in rol_coords and rol_coords["Ala I"][1] > rol_coords["Ala D"][1]:
         rol_coords["Ala I"], rol_coords["Ala D"] = rol_coords["Ala D"], rol_coords["Ala I"]
         # re-map de conteos y totales al swap
         new_edges = defaultdict(int)
