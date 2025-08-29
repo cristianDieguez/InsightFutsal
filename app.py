@@ -2058,12 +2058,9 @@ elif menu == "🔥 Mapas de calor":
             title_suffix = "Equipo"
 
     # Dibujar
-    fig = fig_heatmap(df_rot, f"Mapa de calor — {sel} — {title_suffix}")
+    fig = fig_heatmap(df_rot, f"Mapa de calor — {title_suffix}")
     st.pyplot(fig, use_container_width=True)
 
-# =========================
-# 🕓 DISTRIBUCIÓN DE MINUTOS
-# =========================
 # =========================
 # 🕓 DISTRIBUCIÓN DE MINUTOS
 # =========================
