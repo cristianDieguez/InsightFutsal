@@ -2665,7 +2665,7 @@ elif menu == "🛡️ Pérdidas y Recuperaciones":
                 df_pres = df_pres[df_pres["nombre"].astype(str).isin(selected_players)]
 
     if nivel_analisis == "Jugador (rol)" and not df_raw.empty:
-        roles_disp = (df_raw["_rol"].dropna().astype[str].sort_values().unique().tolist())
+        roles_disp = (df_raw["_rol"].dropna().astype(str).sort_values().unique().tolist())
         with col_rol:
             selected_roles = st.multiselect(
                 "Rol(es)",
@@ -2711,7 +2711,7 @@ elif menu == "🛡️ Pérdidas y Recuperaciones":
         default=["🔥 Heatmap de pérdidas (%)", "🔥 Heatmap de recuperaciones (%)"]
     )
 
-    # Helper local: scatter pérdidas (Y) vs recuperaciones (X)
+    # Helper local: scatter pérdidas (Y invertido) vs recuperaciones (X)
     def _fig_scatter_pr(df):
         import numpy as np
         from matplotlib.ticker import FuncFormatter
@@ -2721,9 +2721,9 @@ elif menu == "🛡️ Pérdidas y Recuperaciones":
             ax.text(0.5, 0.5, "Sin datos para el filtro", ha="center", va="center")
             return fig
 
-        # columnas de proporción ya vienen en df_resumen
-        x = df["%_recuperaciones_sobre_total"].astype(float)
-        y = df["%_perdidas_sobre_total"].astype(float)
+        # columnas proporcionales
+        x = df["%_recuperaciones_sobre_total"].astype(float)  # Eje X
+        y = df["%_perdidas_sobre_total"].astype(float)        # Eje Y (invertido)
 
         # puntos + etiquetas "Z#"
         ax.scatter(x, y, s=70, alpha=0.9)
@@ -2735,25 +2735,29 @@ elif menu == "🛡️ Pérdidas y Recuperaciones":
                 ha="center", va="center", fontsize=9.5, fontweight="bold"
             )
 
-        # promedios (líneas punteadas)
+        # promedios (líneas punteadas) — SIN "μY=", sólo % como referencia
         mx, my = float(np.nanmean(x)), float(np.nanmean(y))
         ax.axvline(mx, ls="--", lw=1.2, alpha=0.9)
         ax.axhline(my, ls="--", lw=1.2, alpha=0.9)
-        # anotar valores promedio en %
-        x1, x2 = ax.get_xlim()
-        y1, y2 = ax.get_ylim()
-        ax.text(mx, y2, f"  μX={mx*100:.1f}%", va="bottom", fontsize=9)
-        ax.text(x2, my, f"μY={my*100:.1f}%  ", ha="right", va="bottom", fontsize=9)
 
         # ejes en %
-        from matplotlib.ticker import FuncFormatter
         fmt = FuncFormatter(lambda v,_: f"{v*100:.0f}%")
         ax.xaxis.set_major_formatter(fmt)
         ax.yaxis.set_major_formatter(fmt)
 
+        # invertir eje Y (más pérdidas = más abajo visualmente)
+        ax.invert_yaxis()
+
+        # anotar % de referencia cerca de los promedios (sin prefijos de texto)
+        x1, x2 = ax.get_xlim()
+        y1, y2 = ax.get_ylim()
+        # Ojo: como Y está invertido, y1>y2; colocamos textos con coordenadas del límite "alto" visual
+        ax.text(mx, y2, f" {mx*100:.1f}%", va="bottom", fontsize=9)        # sobre la línea vertical (arriba)
+        ax.text(x2, my, f"{my*100:.1f}% ", ha="right", va="bottom", fontsize=9)  # al final de la línea horizontal
+
         ax.set_xlabel("Recuperaciones / Acciones (proporción)")
         ax.set_ylabel("Pérdidas / Acciones (proporción)")
-        ax.set_title("Pérdidas (Y) vs Recuperaciones (X) por Zona")
+        ax.set_title("Pérdidas (Y, invertido) vs Recuperaciones (X) por Zona")
         ax.grid(True, ls=":", alpha=0.35)
         plt.tight_layout()
         return fig
