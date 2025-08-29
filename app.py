@@ -3837,9 +3837,34 @@ if menu == "📈 Radar comparativo":
         grouped[pct_cols] = grouped[pct_cols].round(2)
         return grouped
 
+    def weighted_percentages(df, scope_cols):
+    out = df.copy()
+    # Tiros - % al arco -> ponderado por Tiro Hecho
+    if set(["Tiro al arco","Tiro Hecho","Tiros - % al arco"]).issubset(out.columns):
+        w = out.groupby(scope_cols, as_index=False).agg(
+            TA=("Tiro al arco","sum"),
+            TH=("Tiro Hecho","sum")
+        )
+        w["Tiros - % al arco"] = np.where(w["TH"]>0, w["TA"]/w["TH"]*100, np.nan)
+        out = out.drop(columns=["Tiros - % al arco"]).merge(w[scope_cols+["Tiros - % al arco"]], on=scope_cols, how="left")
+
+    # Tiros - % Goles/Tiro al arco -> ponderado por Tiro al arco
+    if set(["Gol","Tiro al arco","Tiros - % Goles/Tiro al arco"]).issubset(out.columns):
+        w = out.groupby(scope_cols, as_index=False).agg(
+            G=("Gol","sum"),
+            TA=("Tiro al arco","sum")
+        )
+        w["Tiros - % Goles/Tiro al arco"] = np.where(w["TA"]>0, w["G"]/w["TA"]*100, np.nan)
+        out = out.drop(columns=["Tiros - % Goles/Tiro al arco"]).merge(w[scope_cols+["Tiros - % Goles/Tiro al arco"]], on=scope_cols, how="left")
+
+    return out
+
     df_avg_por_rol      = normalize_and_avg(join_rol, by_cols=["jugador","rol"])
     df_avg_por_jugador  = normalize_and_avg(join_jug, by_cols=["jugador"])
-
+    # Uso:
+    df_avg_por_jugador = weighted_percentages(df_avg_por_jugador, ["jugador"])
+    df_avg_por_rol     = weighted_percentages(df_avg_por_rol, ["jugador","rol"])
+    
     # ---------- UI ----------
     scope = st.radio("Ámbito de comparación", ["Jugador total", "Por rol", "Jugador y rol"], horizontal=True)
 
