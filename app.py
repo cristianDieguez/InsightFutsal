@@ -4037,6 +4037,21 @@ if menu == "📈 Radar comparativo":
     ax.spines["polar"].set_color("#C1C9D3")
     ax.spines["polar"].set_linewidth(1.4)
 
+    # SOLO el nombre del eje (sin “0–100%” en el chip)
+    ax.set_xticks(angles[:-1])
+    ax.set_xticklabels([])
+    for a, lbl in zip(angles[:-1], labels_wrapped):
+        ax.text(a, 1.02, lbl, ha="center", va="center", fontsize=8.5, fontweight="bold",
+                color="#2B2F36",
+                bbox=dict(boxstyle="round,pad=0.20", fc="#ECEFF4", ec="#C9D1DB", lw=0.9))
+
+    # Referencias en CADA anillo
+    ax.set_yticks(rings)
+    ax.set_yticklabels([f"{int(r*100)}%" for r in rings], fontsize=8.2, color="#6B7280")
+    ax.set_rlabel_position(95)      # ubica los numeritos arriba
+    ax.tick_params(axis="y", pad=3) # separa un poquito del anillo
+
+
     # etiquetas y pistas por eje
     ax.set_xticks(angles[:-1]); ax.set_xticklabels([]); ax.set_yticks([])
     for a, lbl, raw in zip(angles[:-1], labels_wrapped, labels):
@@ -4077,6 +4092,9 @@ if menu == "📈 Radar comparativo":
         else ("Radar — Rol" if scope == "Por rol" else "Radar — Jugador & Rol"),
         fontsize=16, pad=14, color="#2B2F36", weight="bold"
     )
+    fig.text(0.5, 0.02, "Escala radial relativa (0–100%). % reales se muestran tal cual; absolutos se normalizan por min–max del grupo a 40’",
+            ha="center", fontsize=8, color="#6B7280")
+
     st.pyplot(fig, use_container_width=True)
     # ---------- /RADAR ----------
 
