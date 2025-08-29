@@ -3716,82 +3716,82 @@ if menu == "📈 Radar comparativo":
         return r
 
     def add_derived_percentages(df):
-    if df.empty: return df
-    df = df.copy()
-
-    def s(*cols):
-        vals = [pd.to_numeric(df.get(c, 0), errors="coerce").fillna(0) for c in cols if c in df.columns]
-        return sum(vals) if vals else pd.Series(0, index=df.index)
-
-    # --- mapa para buscar columnas por nombre "normalizado"
-    def _norm(s): 
-        import unicodedata as ud, re
-        s = ud.normalize("NFKD", str(s)).encode("ascii","ignore").decode("ascii")
-        return re.sub(r"\s+"," ", s.strip().lower())
-    colmap = {_norm(c): c for c in df.columns}
-
-    # Regates
-    rcols = GROUPS["Regates"]
-    if all(c in df.columns for c in rcols):
-        df["Regates - Total"] = s(*rcols)
-        exi = pd.to_numeric(df["Regate conseguido - Mantiene pelota"], errors="coerce").fillna(0)
-        den = df["Regates - Total"].replace(0, np.nan)
-        df["% Regates Exitosos"] = (exi / den) * 100
-
-    # 1v1 (robusto a variantes)
-    g1_col = colmap.get(_norm("1v1 Ganado"))
-    p1_col = colmap.get(_norm("1v1 perdido")) or colmap.get(_norm("1v1 Perdido"))
-    if g1_col and p1_col:
-        g1 = pd.to_numeric(df[g1_col], errors="coerce").fillna(0)
-        p1 = pd.to_numeric(df[p1_col], errors="coerce").fillna(0)
-        den = (g1 + p1).replace(0, np.nan)
-        df["% Duelos Ganados"] = (g1 / den) * 100  # queda NaN si no hubo duelos
-
-    # Tiros
-    if "Tiro al arco" in df.columns and "Tiro Hecho" in df.columns:
-        ta = pd.to_numeric(df["Tiro al arco"], errors="coerce").fillna(0)
-        th = pd.to_numeric(df["Tiro Hecho"], errors="coerce").fillna(0)
-        gol = pd.to_numeric(df.get("Gol", 0), errors="coerce").fillna(0)
-        df["Tiros - % al arco"] = np.where(th>0, ta/th, np.nan) * 100
-        df["Tiros - % Goles/Tiro al arco"] = np.where(ta>0, gol/ta, np.nan) * 100
-
-    # Recuperaciones / Pérdidas
-    rec_cols = GROUPS["Recuperaciones"]
-    per_cols = GROUPS["Perdidas"]
-    df["Recuperaciones - Total"] = s(*rec_cols)
-    df["Perdidas - Total"]      = s(*per_cols)
-    den = (df["Recuperaciones - Total"] + df["Perdidas - Total"]).replace(0, np.nan)
-    df["% Recuperaciones"]      = (df["Recuperaciones - Total"] / den) * 100
-
-    # % Pases (OK/Base y Completado/Base)
-    passlike = [k for k in GROUPS if k.startswith("Pase ") or k.startswith("Arquero Pase")]
-    for gname in passlike:
-        base, comp, ok = GROUPS[gname]
-        if base in df.columns:
-            b = pd.to_numeric(df[base], errors="coerce").fillna(0)
-            c = pd.to_numeric(df.get(comp, 0), errors="coerce").fillna(0)
-            o = pd.to_numeric(df.get(ok, 0), errors="coerce").fillna(0)
-            df[f"% {base}"] = np.where(b>0, o/b, np.nan) * 100
-            df[f"% {comp}"] = np.where(b>0, c/b, np.nan) * 100
-
-    # Índice positivo (simple)
-    posit = []
-    posit += [c for c in df.columns if "Completado" in c and not c.strip().startswith("%")]
-    posit += ["Centros Rematados","Tiro al arco",
-              "Regate conseguido - Mantiene pelota",
-              "Aguanta Pivotea","Gira","Faltas Recibidas",
-              "Recuperaciones - Total","1v1 Ganado","Asistencia","Pase Clave","Gol","Conduccion"]
-    posit = list(dict.fromkeys([c for c in posit if c in df.columns]))
-    tot = [c for c in df.columns if c in ALL_ACTIONS]
-
-    def s_cols(cols):
-        return sum(pd.to_numeric(df[c], errors="coerce").fillna(0) for c in cols) if cols else pd.Series(0, index=df.index)
-
-    df["Acciones Positivas - Total"] = s_cols(posit)
-    df["Acciones - Total"] = s_cols(tot)
-    den = df["Acciones - Total"].replace(0, np.nan)
-    df["% Acciones Positivas"] = (df["Acciones Positivas - Total"] / den) * 100
-    return df
+        if df.empty: return df
+        df = df.copy()
+    
+        def s(*cols):
+            vals = [pd.to_numeric(df.get(c, 0), errors="coerce").fillna(0) for c in cols if c in df.columns]
+            return sum(vals) if vals else pd.Series(0, index=df.index)
+    
+        # --- mapa para buscar columnas por nombre "normalizado"
+        def _norm(s): 
+            import unicodedata as ud, re
+            s = ud.normalize("NFKD", str(s)).encode("ascii","ignore").decode("ascii")
+            return re.sub(r"\s+"," ", s.strip().lower())
+        colmap = {_norm(c): c for c in df.columns}
+    
+        # Regates
+        rcols = GROUPS["Regates"]
+        if all(c in df.columns for c in rcols):
+            df["Regates - Total"] = s(*rcols)
+            exi = pd.to_numeric(df["Regate conseguido - Mantiene pelota"], errors="coerce").fillna(0)
+            den = df["Regates - Total"].replace(0, np.nan)
+            df["% Regates Exitosos"] = (exi / den) * 100
+    
+        # 1v1 (robusto a variantes)
+        g1_col = colmap.get(_norm("1v1 Ganado"))
+        p1_col = colmap.get(_norm("1v1 perdido")) or colmap.get(_norm("1v1 Perdido"))
+        if g1_col and p1_col:
+            g1 = pd.to_numeric(df[g1_col], errors="coerce").fillna(0)
+            p1 = pd.to_numeric(df[p1_col], errors="coerce").fillna(0)
+            den = (g1 + p1).replace(0, np.nan)
+            df["% Duelos Ganados"] = (g1 / den) * 100  # queda NaN si no hubo duelos
+    
+        # Tiros
+        if "Tiro al arco" in df.columns and "Tiro Hecho" in df.columns:
+            ta = pd.to_numeric(df["Tiro al arco"], errors="coerce").fillna(0)
+            th = pd.to_numeric(df["Tiro Hecho"], errors="coerce").fillna(0)
+            gol = pd.to_numeric(df.get("Gol", 0), errors="coerce").fillna(0)
+            df["Tiros - % al arco"] = np.where(th>0, ta/th, np.nan) * 100
+            df["Tiros - % Goles/Tiro al arco"] = np.where(ta>0, gol/ta, np.nan) * 100
+    
+        # Recuperaciones / Pérdidas
+        rec_cols = GROUPS["Recuperaciones"]
+        per_cols = GROUPS["Perdidas"]
+        df["Recuperaciones - Total"] = s(*rec_cols)
+        df["Perdidas - Total"]      = s(*per_cols)
+        den = (df["Recuperaciones - Total"] + df["Perdidas - Total"]).replace(0, np.nan)
+        df["% Recuperaciones"]      = (df["Recuperaciones - Total"] / den) * 100
+    
+        # % Pases (OK/Base y Completado/Base)
+        passlike = [k for k in GROUPS if k.startswith("Pase ") or k.startswith("Arquero Pase")]
+        for gname in passlike:
+            base, comp, ok = GROUPS[gname]
+            if base in df.columns:
+                b = pd.to_numeric(df[base], errors="coerce").fillna(0)
+                c = pd.to_numeric(df.get(comp, 0), errors="coerce").fillna(0)
+                o = pd.to_numeric(df.get(ok, 0), errors="coerce").fillna(0)
+                df[f"% {base}"] = np.where(b>0, o/b, np.nan) * 100
+                df[f"% {comp}"] = np.where(b>0, c/b, np.nan) * 100
+    
+        # Índice positivo (simple)
+        posit = []
+        posit += [c for c in df.columns if "Completado" in c and not c.strip().startswith("%")]
+        posit += ["Centros Rematados","Tiro al arco",
+                  "Regate conseguido - Mantiene pelota",
+                  "Aguanta Pivotea","Gira","Faltas Recibidas",
+                  "Recuperaciones - Total","1v1 Ganado","Asistencia","Pase Clave","Gol","Conduccion"]
+        posit = list(dict.fromkeys([c for c in posit if c in df.columns]))
+        tot = [c for c in df.columns if c in ALL_ACTIONS]
+    
+        def s_cols(cols):
+            return sum(pd.to_numeric(df[c], errors="coerce").fillna(0) for c in cols) if cols else pd.Series(0, index=df.index)
+    
+        df["Acciones Positivas - Total"] = s_cols(posit)
+        df["Acciones - Total"] = s_cols(tot)
+        den = df["Acciones - Total"].replace(0, np.nan)
+        df["% Acciones Positivas"] = (df["Acciones Positivas - Total"] / den) * 100
+        return df
 
 
     @st.cache_data(show_spinner=True)
