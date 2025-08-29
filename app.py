@@ -2505,7 +2505,7 @@ elif menu == "🕓 Distribución de minutos":
         scope = st.radio("Ver:", ["Jugador total", "Por rol"], horizontal=True)
 
         if scope == "Jugador total":
-            st.subheader("⏱️ Minutos totales por jugador (con descriptores)")
+            st.subheader("⏱️ Minutos totales por jugador")
             view = _prep_minutes_table(dj_merged, include_role=False)
             show_full_table(view)
             if not dj_merged.empty:
