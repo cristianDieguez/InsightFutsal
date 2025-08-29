@@ -2665,6 +2665,61 @@ elif menu == "🔗 Red de Pases":
     df_raw = cargar_datos_nacsport(match["xml_players"]) if match else pd.DataFrame()
 
     fig = red_de_pases_por_rol(df_raw)
+    # --- NUEVO: Top-5 jugadores por intentos de pase (estricto) ---
+    # Usa exactamente estos nombres como "intento de pase" (en labels):
+    STRICT_PASS_NAMES = [
+        "Pase Progresivo Frontal",
+        "Pase Progresivo Lateral",
+        "Pase Corto Frontal",
+        "Pase Corto Lateral",
+        "Pase Progresivo Frontal cPie",
+        "Pase Progresivo Lateral cPie",
+        "Salida de arco progresivo cMano",
+        "Pase Corto Frontal cPie",
+        "Pase Corto Lateral cPie",
+        "Salida de arco corto cMano",
+    ]
+    
+    def _norm(s: str) -> str:
+        # normaliza: sin tildes, minúsculas, colapsa espacios (usa tus helpers)
+        return re.sub(r"\s+", " ", nlower(s or "")).strip()
+    
+    STRICT_PASS_SET = {_norm(x) for x in STRICT_PASS_NAMES}
+    # tolerancia a 'progesivo/progresivo' (por si viene con typo)
+    STRICT_PASS_SET |= {s.replace("progresivo", "progesivo") for s in STRICT_PASS_SET}
+    STRICT_PASS_SET |= {s.replace("progresiva", "progesiva") for s in STRICT_PASS_SET}
+    
+    from collections import Counter
+    cnt_intentos = Counter()
+    
+    for _, r in df_raw.iterrows():
+        code = r.get("jugador") or ""
+        if not is_player_code(code):
+            continue
+        labels = r.get("labels") or []
+        # cuenta 1 si ALGÚN label coincide exactamente (normalizado) con la lista estricta
+        if any(_norm(l) in STRICT_PASS_SET for l in labels):
+            nombre, _ = _split_name_role(code)
+            if nombre:
+                cnt_intentos[nombre] += 1
+    
+    top5 = cnt_intentos.most_common(5)
+    
+    # Armar texto del recuadro (si no hay datos, aviso)
+    if not top5:
+        box_txt = "TOP 5 intentos de pase\n— Sin datos —"
+    else:
+        lines = [f"{i}. {nom}: {cnt}" for i, (nom, cnt) in enumerate(top5, 1)]
+        box_txt = "TOP 5 intentos de pase\n" + "\n".join(lines)
+    
+    # Pintar el recuadro en el margen superior derecho del gráfico
+    ax = fig.axes[0] if fig.axes else plt.gca()
+    ax.text(
+        0.985, 0.985, box_txt,
+        transform=ax.transAxes, ha="right", va="top", fontsize=10, color="black",
+        bbox=dict(boxstyle="round", facecolor="white", edgecolor="black", alpha=0.92, pad=0.45),
+        zorder=10
+    )
     st.pyplot(fig, use_container_width=True)
 
 # =========================
