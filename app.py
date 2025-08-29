@@ -2796,7 +2796,7 @@ elif menu == "🛡️ Pérdidas y Recuperaciones":
         st.pyplot(_fig_scatter_pr(df_resumen), use_container_width=True)
 
 # =========================
-# 🎯 MAPA DE TIROS
+# 🎯 MAPA DE TIROS (solo NacSport)
 # =========================
 if menu == "🎯 Mapa de tiros":
 
@@ -2808,14 +2808,27 @@ if menu == "🎯 Mapa de tiros":
         st.stop()
 
     sel = st.selectbox("Elegí partido", matches, index=0)
-    match = get_match_by_label(sel)
 
-    XML_PATH = (match or {}).get("xml_players")
-    if not XML_PATH or not os.path.isfile(XML_PATH):
-        st.error("No encontré el XML (NacSport/TotalValues) para este partido.")
+    # Forzar NacSport: buscar SOLO archivos que contengan 'NacSport'
+    def _find_nacsport_xml_for_label(label: str) -> str | None:
+        # intento directo
+        cand = os.path.join(DATA_MINUTOS, f"{label} - XML NacSport.xml")
+        if os.path.isfile(cand): 
+            return cand
+        # búsqueda amplia: cualquier archivo que incluya label y 'NacSport'
+        patt = os.path.join(DATA_MINUTOS, f"*{label}*NacSport*.xml")
+        glb = sorted(glob.glob(patt))
+        return glb[0] if glb else None
+
+    XML_PATH = _find_nacsport_xml_for_label(sel)
+    if not XML_PATH:
+        st.error("No encontré el XML de **NacSport** para este partido. Asegurate de que exista un archivo '*NacSport*.xml'.")
         st.stop()
 
     # ---- Helpers específicos del módulo de tiros ----
+    import re
+    from typing import Tuple, List
+
     # Disparo si aparece una de estas palabras en code o labels
     SHOT_PATT = re.compile(r"\b(tiro|remate|disparo|finalizaci[oó]n)\b", re.I)
 
@@ -2905,10 +2918,10 @@ if menu == "🎯 Mapa de tiros":
         y = float(np.clip(y, 0.0, ALTO))
         return x, y
 
-    # ---- Cargar XML (NacSport/TotalValues) y preparar universo ----
+    # ---- Cargar XML (solo NacSport) y preparar universo ----
     df_raw = cargar_datos_nacsport(XML_PATH)
     if df_raw.empty:
-        st.info("Sin instancias en el XML.")
+        st.info("Sin instancias en el XML de NacSport.")
         st.stop()
 
     # Detectar tiros en TODAS las instancias (no filtramos por is_player_code)
@@ -3002,13 +3015,7 @@ if menu == "🎯 Mapa de tiros":
         elif res == "Sin clasificar":
             ax.scatter(xs, ys, s=70,  c=COLORS[res], edgecolors="black", linewidths=0.4, zorder=2, label=res)
 
-    f_players = ", ".join(sel_players) if sel_players else "Todos"
-    f_roles   = ", ".join(sel_roles)   if sel_roles   else "Todos"
-    f_char    = sel_char
-    ax.set_title(
-        f"{sel} — SHOTS (origen) | Jugadores: {f_players} | Roles: {f_roles} | Característica: {f_char}",
-        fontsize=13, pad=6, weight="bold"
-    )
+    ax.set_title(f"{sel} — SHOTS (origen) | Jugadores/Roles filtrados", fontsize=13, pad=6, weight="bold")
     ax.legend(loc="upper left", frameon=True)
     st.pyplot(fig, use_container_width=True)
     plt.close(fig)
@@ -3040,6 +3047,7 @@ if menu == "🎯 Mapa de tiros":
     with col2:
         st.markdown("**Característica del origen**")
         st.dataframe(df_char, use_container_width=True)
+
 
 # =========================
 # 📬 DESTINO DE PASES (equipo / jugador / jugador-rol + tipos de pase)
