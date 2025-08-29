@@ -2757,7 +2757,7 @@ elif menu == "🛡️ Pérdidas y Recuperaciones":
 
         ax.set_xlabel("Recuperaciones / Acciones (proporción)")
         ax.set_ylabel("Pérdidas / Acciones (proporción)")
-        ax.set_title("Pérdidas (Y, invertido) vs Recuperaciones (X) por Zona")
+        ax.set_title("Pérdidas vs Recuperaciones por Zona")
         ax.grid(True, ls=":", alpha=0.35)
         plt.tight_layout()
         return fig
