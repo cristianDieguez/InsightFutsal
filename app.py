@@ -3962,10 +3962,10 @@ if menu == "📈 Radar comparativo":
         fontsize=28, color="#FFFFFF", weight="bold", y=0.965
     )
     # ↓ Más chico el 'top' = más aire verde entre título y radar
-    fig.subplots_adjust(top=0.64, bottom=0.01, left=0.07, right=0.86)
+    fig.subplots_adjust(top=0.94, bottom=0.12, left=0.07, right=0.86)
     
     ax.grid(False)
-    ax.set_ylim(0, 1.10)   # 1.0 = anillo exterior (no lo estires a 1.10)
+    ax.set_ylim(0, 1.20)   # 1.0 = anillo exterior (no lo estires a 1.10)
     
     # anillos base
     theta = np.linspace(0, 2*np.pi, 512)
