@@ -4006,67 +4006,67 @@ if menu == "📈 Radar comparativo":
         if n <= len(base): return base[:n]
         return [mpl.colors.to_hex(c) for c in plt.cm.tab20(np.linspace(0,1,n))]
 
-# --- datos base ---
-rad = base[[label_col, "minutos"] + metrics].copy()
-
-# NORMALIZACIÓN + referencias por eje
-def _fmt(x):
-    if not np.isfinite(x): return "-"
-    return f"{x:.1f}" if abs(x) < 10 and abs(x) != int(round(x)) else f"{int(round(x))}"
-
-rad_norm = rad.copy()
-axis_ref = {}   # texto a mostrar bajo cada chip (por métrica)
-
-for c in metrics:
-    raw = pd.to_numeric(rad[c], errors="coerce")
-    if "%" in c:
-        rad_norm[c] = raw / 100.0
-        axis_ref[c] = "0–100%"
-    else:
-        mn = float(np.nanmin(raw.values))
-        mx = float(np.nanmax(raw.values))
-        if np.isfinite(mn) and np.isfinite(mx) and mx > mn:
-            rad_norm[c] = (raw - mn) / (mx - mn)
+    # --- datos base ---
+    rad = base[[label_col, "minutos"] + metrics].copy()
+    
+    # NORMALIZACIÓN + referencias por eje
+    def _fmt(x):
+        if not np.isfinite(x): return "-"
+        return f"{x:.1f}" if abs(x) < 10 and abs(x) != int(round(x)) else f"{int(round(x))}"
+    
+    rad_norm = rad.copy()
+    axis_ref = {}   # texto a mostrar bajo cada chip (por métrica)
+    
+    for c in metrics:
+        raw = pd.to_numeric(rad[c], errors="coerce")
+        if "%" in c:
+            rad_norm[c] = raw / 100.0
+            axis_ref[c] = "0–100%"
         else:
-            rad_norm[c] = 0.5
-        # referencia explícita del rango real (después de normalizar a 40’)
-        axis_ref[c] = f"{_fmt(mn)}–{_fmt(mx)} (40’)"
-
-rad_norm[metrics] = rad_norm[metrics].clip(0.0, 1.0)
-
-labels = metrics[:]
-labels_wrapped = [_wrap_lbl(l) for l in labels]
-N = len(labels_wrapped)
-angles = [n / float(N) * 2 * np.pi for n in range(N)]
-angles += angles[:1]
-
-# --- lienzo ---
-plt.close("all")
-fig = plt.figure(figsize=(9.2, 8.7))
-ax = fig.add_subplot(111, polar=True)
-fig.patch.set_facecolor("#F3F5F8")
-ax.set_facecolor("#E9EDF2")
-ax.grid(False)
-ax.set_ylim(0, 1.0)
-
-# anillos + radios
-rings = [0.2, 0.4, 0.6, 0.8, 1.0]
-for r in rings:
-    ax.plot(np.linspace(0, 2*np.pi, 512), [r]*512, lw=1.1, color="#D4DAE2", zorder=1)
-for a in angles[:-1]:
-    ax.plot([a, a], [0, 1.0], lw=0.9, color="#D4DAE2", zorder=1)
-ax.spines["polar"].set_color("#C1C9D3")
-ax.spines["polar"].set_linewidth(1.4)
-
-# Chips + subtítulo de referencia (si es % → 0–100%; si es ABS → min–max del grupo)
-ax.set_xticks(angles[:-1])
-ax.set_xticklabels([])
-for a, lbl, raw in zip(angles[:-1], labels_wrapped, labels):
-    ax.text(a, 1.02, lbl, ha="center", va="center", fontsize=8.5, fontweight="bold",
-            color="#2B2F36",
-            bbox=dict(boxstyle="round,pad=0.20", fc="#ECEFF4", ec="#C9D1DB", lw=0.9))
-    ax.text(a, 1.075, axis_ref[raw], ha="center", va="center",
-            fontsize=7.2, color="#6B7280")
+            mn = float(np.nanmin(raw.values))
+            mx = float(np.nanmax(raw.values))
+            if np.isfinite(mn) and np.isfinite(mx) and mx > mn:
+                rad_norm[c] = (raw - mn) / (mx - mn)
+            else:
+                rad_norm[c] = 0.5
+            # referencia explícita del rango real (después de normalizar a 40’)
+            axis_ref[c] = f"{_fmt(mn)}–{_fmt(mx)} (40’)"
+    
+    rad_norm[metrics] = rad_norm[metrics].clip(0.0, 1.0)
+    
+    labels = metrics[:]
+    labels_wrapped = [_wrap_lbl(l) for l in labels]
+    N = len(labels_wrapped)
+    angles = [n / float(N) * 2 * np.pi for n in range(N)]
+    angles += angles[:1]
+    
+    # --- lienzo ---
+    plt.close("all")
+    fig = plt.figure(figsize=(9.2, 8.7))
+    ax = fig.add_subplot(111, polar=True)
+    fig.patch.set_facecolor("#F3F5F8")
+    ax.set_facecolor("#E9EDF2")
+    ax.grid(False)
+    ax.set_ylim(0, 1.0)
+    
+    # anillos + radios
+    rings = [0.2, 0.4, 0.6, 0.8, 1.0]
+    for r in rings:
+        ax.plot(np.linspace(0, 2*np.pi, 512), [r]*512, lw=1.1, color="#D4DAE2", zorder=1)
+    for a in angles[:-1]:
+        ax.plot([a, a], [0, 1.0], lw=0.9, color="#D4DAE2", zorder=1)
+    ax.spines["polar"].set_color("#C1C9D3")
+    ax.spines["polar"].set_linewidth(1.4)
+    
+    # Chips + subtítulo de referencia (si es % → 0–100%; si es ABS → min–max del grupo)
+    ax.set_xticks(angles[:-1])
+    ax.set_xticklabels([])
+    for a, lbl, raw in zip(angles[:-1], labels_wrapped, labels):
+        ax.text(a, 1.02, lbl, ha="center", va="center", fontsize=8.5, fontweight="bold",
+                color="#2B2F36",
+                bbox=dict(boxstyle="round,pad=0.20", fc="#ECEFF4", ec="#C9D1DB", lw=0.9))
+        ax.text(a, 1.075, axis_ref[raw], ha="center", va="center",
+                fontsize=7.2, color="#6B7280")
 
 
     # Referencias en CADA anillo (0–100%)
