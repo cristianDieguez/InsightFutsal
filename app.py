@@ -3100,7 +3100,7 @@ if menu == "🎯 Mapa de tiros":
                       "player": player, "role": role})
 
     # ---- Plot ----
-    st.subheader("Mapa de tiros — Origen (punto más lejano al arco derecho)")
+    st.subheader("Mapa de tiros")
     plt.close("all")
     fig = plt.figure(figsize=(10.5, 7))
     ax  = fig.add_axes([0.04, 0.06, 0.92, 0.88])
@@ -3133,7 +3133,7 @@ if menu == "🎯 Mapa de tiros":
         elif res == "Sin clasificar":
             ax.scatter(xs, ys, s=70,  c=COLORS[res], edgecolors="black", linewidths=0.4, zorder=2, label=res)
 
-    ax.set_title(f"{sel} — SHOTS (origen) | Jugadores/Roles filtrados", fontsize=13, pad=6, weight="bold")
+    ax.set_title(f"{sel}", fontsize=13, pad=6, weight="bold")
     ax.legend(loc="upper left", frameon=True)
     st.pyplot(fig, use_container_width=True)
     plt.close(fig)
