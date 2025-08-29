@@ -3984,7 +3984,7 @@ if menu == "📈 Radar comparativo":
     
     # --- Chips de variables (FUERA del anillo, sin tocarlo) ---
     ax.set_xticks(angles[:-1]); ax.set_xticklabels([])
-    R_LABEL = 1.045  # ← distancia del chip respecto al anillo
+    R_LABEL = 1.145  # ← distancia del chip respecto al anillo
     for a, lbl in zip(angles[:-1], labels_wrapped):
         ax.text(a, R_LABEL, lbl,
                 ha="center", va="center", fontsize=8.0, fontweight="bold",
