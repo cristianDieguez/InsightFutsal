@@ -2811,26 +2811,22 @@ if menu == "🎯 Mapa de tiros":
 
     # Forzar NacSport: buscar SOLO archivos que contengan 'NacSport'
     def _find_nacsport_xml_for_label(label: str) -> str | None:
-        # intento directo
         cand = os.path.join(DATA_MINUTOS, f"{label} - XML NacSport.xml")
-        if os.path.isfile(cand): 
+        if os.path.isfile(cand):
             return cand
-        # búsqueda amplia: cualquier archivo que incluya label y 'NacSport'
         patt = os.path.join(DATA_MINUTOS, f"*{label}*NacSport*.xml")
         glb = sorted(glob.glob(patt))
         return glb[0] if glb else None
 
     XML_PATH = _find_nacsport_xml_for_label(sel)
     if not XML_PATH:
-        st.error("No encontré el XML de **NacSport** para este partido. Asegurate de que exista un archivo '*NacSport*.xml'.")
+        st.error("No encontré el XML de **NacSport** para este partido. Debe existir un archivo '*NacSport*.xml'.")
         st.stop()
 
     # ---- Helpers específicos del módulo de tiros ----
-    import re
-    from typing import Tuple, List
-
-    # Disparo si aparece una de estas palabras en code o labels
     SHOT_PATT = re.compile(r"\b(tiro|remate|disparo|finalizaci[oó]n)\b", re.I)
+    VALID_ROLES = {"Ala D","Ala I","Cierre","Pivot","Arq"}
+    PSEUDO_PLAYERS = {"corner","de corner","jugada","de jugada","lateral","tiro libre","rebote","penal"}
 
     def _is_shot_from_row(row) -> bool:
         code = nlower(row.get("jugador", ""))
@@ -2839,7 +2835,6 @@ if menu == "🎯 Mapa de tiros":
             return True
         return any(SHOT_PATT.search(l) for l in lbls)
 
-    # Extraer Nombre (Rol) desde code o (si no) desde labels
     _ROLE_STRICT = re.compile(r"^\s*([^(]+?)\s*\(([^)]+)\)\s*$")
     _ROLE_FLEX   = re.compile(r"([^(]+?)\s*\(([^)]+)\)")
 
@@ -2855,18 +2850,17 @@ if menu == "🎯 Mapa de tiros":
         return None, None
 
     def _name_and_role_from_row(row) -> Tuple[str|None, str|None]:
-        # 1) en code
+        # 1) en code (jugador)
         name, role = _name_and_role_from_text(row.get("jugador", ""))
-        if name:
+        if name and role in VALID_ROLES:
             return name, role
-        # 2) en labels
+        # 2) en labels (solo roles válidos)
         for l in (row.get("labels") or []):
             nm, rl = _name_and_role_from_text(l or "")
-            if nm:
+            if nm and rl in VALID_ROLES:
                 return nm, rl
         return None, None
 
-    # Clasificación del resultado (keywords en code/labels)
     _KEYS = {
         "gol":        re.compile(r"\bgol\b", re.I),
         "ataj":       re.compile(r"\bataj", re.I),
@@ -2879,14 +2873,13 @@ if menu == "🎯 Mapa de tiros":
     def _shot_result_strict(code: str, labels: List[str]) -> str:
         s = nlower(code or ""); ll = [nlower(l or "") for l in (labels or [])]
         def _has(p): return bool(p.search(s) or any(p.search(x) for x in ll))
-        if _has(_KEYS["gol"]):                               return "Gol"
-        if _has(_KEYS["ataj"]) or _has(_KEYS["al_arco"]):    return "Tiro Atajado"
-        if _has(_KEYS["bloqueado"]):                         return "Tiro Bloqueado"
-        if _has(_KEYS["desviado"]):                          return "Tiro Desviado"
-        if _has(_KEYS["errado"]) or _has(_KEYS["pifia"]):    return "Tiro Errado - Pifia"
+        if _has(_KEYS["gol"]):                             return "Gol"
+        if _has(_KEYS["ataj"]) or _has(_KEYS["al_arco"]):  return "Tiro Atajado"
+        if _has(_KEYS["bloqueado"]):                       return "Tiro Bloqueado"
+        if _has(_KEYS["desviado"]):                        return "Tiro Desviado"
+        if _has(_KEYS["errado"]) or _has(_KEYS["pifia"]):  return "Tiro Errado - Pifia"
         return "Sin clasificar"
 
-    # Característica del origen
     _CHAR_PATTS = [
         ("de Corner (desde Banda)", re.compile(r"corner\s*\(desde\s*banda\)", re.I)),
         ("de Corner (centro)",      re.compile(r"corner\s*\(centro\)", re.I)),
@@ -2902,11 +2895,10 @@ if menu == "🎯 Mapa de tiros":
             if patt.search(s): return name
         return "de Jugada"
 
-    # Mapeo a cancha 35x20 (desde coords XML 0..20 x, 0..40 y)
+    # ---- Mapeo a cancha 35x20 ----
     FLIP_TO_RIGHT = True
     FLIP_VERTICAL = True
     GOAL_PULL = 0.60
-
     def _map_raw_to_pitch(x_raw, y_raw, max_x, max_y, flip=True, pull=0.0, flip_v=False):
         x = (y_raw / max_y) * ANCHO
         y = (x_raw / max_x) * ALTO
@@ -2918,7 +2910,7 @@ if menu == "🎯 Mapa de tiros":
         y = float(np.clip(y, 0.0, ALTO))
         return x, y
 
-    # ---- Cargar XML (solo NacSport) y preparar universo ----
+    # ---- Cargar XML NacSport y preparar universo ----
     df_raw = cargar_datos_nacsport(XML_PATH)
     if df_raw.empty:
         st.info("Sin instancias en el XML de NacSport.")
@@ -2928,15 +2920,25 @@ if menu == "🎯 Mapa de tiros":
     mask_shot_all = df_raw.apply(_is_shot_from_row, axis=1)
     df_shot_all = df_raw[mask_shot_all].copy()
 
-    # Extraer Jugador (Rol) desde code o labels
+    # Extraer Jugador (Rol) desde code o labels (solo roles válidos)
     name_role = df_shot_all.apply(_name_and_role_from_row, axis=1)
     df_shot_all["player"] = [nr[0] for nr in name_role]
     df_shot_all["role"]   = [nr[1] for nr in name_role]
-    df_shot_all["player"] = df_shot_all["player"].fillna("(sin jugador)")
 
-    # Listas para filtros
-    players_present = sorted(df_shot_all["player"].dropna().unique().tolist())
-    roles_present   = sorted([r for r in df_shot_all["role"].dropna().unique().tolist()])
+    # --- Filtrar: quitar (sin jugador) y "pseudo jugadores" (Corner/Jugada/...) ---
+    df_shot_all["player"] = df_shot_all["player"].astype("string")
+    mask_valid_role   = df_shot_all["role"].isin(VALID_ROLES)
+    mask_valid_player = (
+        df_shot_all["player"].notna()
+        & df_shot_all["player"].str.strip().ne("")
+        & df_shot_all["player"].str.strip().ne("(sin jugador)")
+        & ~df_shot_all["player"].str.lower().isin(PSEUDO_PLAYERS)
+    )
+    df_shot_all = df_shot_all[mask_valid_role & mask_valid_player].copy()
+
+    # Listas para filtros (ya limpias)
+    players_present = sorted(df_shot_all["player"].unique().tolist())
+    roles_present   = sorted(VALID_ROLES.intersection(set(df_shot_all["role"].unique().tolist())))
 
     # ---- UI: Filtros ----
     sel_players = st.multiselect("Jugadores", players_present, default=players_present)
@@ -2957,16 +2959,15 @@ if menu == "🎯 Mapa de tiros":
     shots = []
     for _, r in df_shot_all.iterrows():
         player, role = r.get("player"), r.get("role")
-
         if sel_players and player not in sel_players:
             continue
-        if sel_roles and role is not None and role not in sel_roles:
+        if sel_roles and role not in sel_roles:
             continue
 
         xs = r.get("pos_x_list") or []
         ys = r.get("pos_y_list") or []
         if not (xs and ys):
-            continue  # sin coordenadas no se puede pintar
+            continue
 
         coords = [_map_raw_to_pitch(xr, yr, max_x, max_y,
                                     flip=FLIP_TO_RIGHT, pull=GOAL_PULL, flip_v=FLIP_VERTICAL)
@@ -3047,7 +3048,6 @@ if menu == "🎯 Mapa de tiros":
     with col2:
         st.markdown("**Característica del origen**")
         st.dataframe(df_char, use_container_width=True)
-
 
 # =========================
 # 📬 DESTINO DE PASES (equipo / jugador / jugador-rol + tipos de pase)
