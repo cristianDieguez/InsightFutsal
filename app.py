@@ -1,4 +1,4 @@
-# app.py — InsightFutsal (Optimizado, MISMA LÓGICA Y RESULTADOS)
+# app.py — InsightFutsal 
 
 # =========================
 # IMPORTS
