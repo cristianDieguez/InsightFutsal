@@ -1089,82 +1089,144 @@ def fig_barh_minutos(labels, vals_sec, title, xlabel="Minutos"):
     return fig
 
 # =========================
-# RED DE PASES — POR ROL
+# 🔗 RED DE PASES — SOLO 10 ETIQUETAS BASE
 # =========================
-PASS_KEYWORDS = KEYWORDS_PASES  # mismos keywords
-
 def red_de_pases_por_rol(df: pd.DataFrame):
+    """
+    Cuenta como INTENTO de pase solo si en labels aparece (exactamente, de forma canónica)
+    alguna de estas 10 etiquetas:
+      1) Pase Progresivo Frontal
+      2) Pase Progresivo Lateral
+      3) Pase Corto Frontal
+      4) Pase Corto Lateral
+      5) Pase Progresivo Frontal cPie
+      6) Pase Progresivo Lateral cPie
+      7) Salida de arco progresivo cMano
+      8) Pase Corto Frontal cPie
+      9) Pase Corto Lateral cPie
+     10) Salida de arco corto cMano
+    """
+    # ---- helpers locales (no afectan al resto del archivo) ----
+    import unicodedata, re
+    from collections import defaultdict
+
+    def _canon(s: str) -> str:
+        s = unicodedata.normalize("NFD", str(s))
+        s = "".join(ch for ch in s if unicodedata.category(ch) != "Mn").lower()
+        s = re.sub(r"\s+", " ", s).strip()
+        return s
+
+    PASS_BASE_LABELS = [
+        "Pase Progresivo Frontal",
+        "Pase Progresivo Lateral",
+        "Pase Corto Frontal",
+        "Pase Corto Lateral",
+        "Pase Progresivo Frontal cPie",
+        "Pase Progresivo Lateral cPie",
+        "Salida de arco progresivo cMano",
+        "Pase Corto Frontal cPie",
+        "Pase Corto Lateral cPie",
+        "Salida de arco corto cMano",
+    ]
+    PASS_ALLOWED_SET = { _canon(x) for x in PASS_BASE_LABELS }
+
+    def es_pase_base(labels: list[str]) -> bool:
+        # True si ALGUNA label coincide exactamente (canónica) con las 10 permitidas
+        return any(_canon(lbl) in PASS_ALLOWED_SET for lbl in (labels or []))
+
     fig, ax = plt.subplots(figsize=(10, 6))
     draw_futsal_pitch_grid(ax)
 
-    coords_origen = defaultdict(list)
-    totales_hechos_por_rol = defaultdict(int)
-    conteo_roles_total = defaultdict(int)
+    coords_origen = defaultdict(list)          # rol -> [(x0,y0), ...] (origen pase)
+    totales_hechos_por_rol = defaultdict(int)  # rol -> intentos (suma de las 10 etiquetas)
+    conteo_roles_total = defaultdict(int)      # (rolA,rolB) ordenado -> #conexiones
 
     for _, row in df.iterrows():
         code = row.get("jugador") or ""
-        if not is_player_code(code): continue
-        labels_lower = [(_strip_accents(lbl).lower() if lbl else "") for lbl in row.get("labels", [])]
-        if not any(k in lbl for lbl in labels_lower for k in PASS_KEYWORDS): continue
+        if not is_player_code(code):
+            continue
 
-        rol_origen = _NAME_ROLE_RE.match(code).group(2).strip()
+        labels = row.get("labels", [])
+        if not es_pase_base(labels):
+            continue  # <- clave: solo intentos válidos (10 etiquetas)
+
+        m = _NAME_ROLE_RE.match(code)
+        if not m:
+            continue
+        rol_origen = m.group(2).strip()
+
+        # Destino por rol si en algún label viene "(Rol)"
         rol_destino = None
-        for lbl in row.get("labels", []):
+        for lbl in labels:
             if lbl and "(" in lbl and ")" in lbl:
-                pos = lbl.split("(")[1].replace(")", "").strip()
-                if pos and pos != rol_origen:
-                    rol_destino = pos; break
+                maybe = lbl.split("(", 1)[1].split(")", 1)[0].strip()
+                if maybe and maybe != rol_origen:
+                    rol_destino = maybe
+                    break
 
         px, py = row.get("pos_x_list") or [], row.get("pos_y_list") or []
         if px and py:
-            x0 = 35 - (py[0] * (35.0 / 40.0))  # y original (0..40) -> x cancha 35
-            y0 = px[0]                         # x original (0..20) -> y cancha 20
+            # XML (0..20, 0..40) -> cancha (35x20), atacando a la derecha (mapeo igual al de tu versión)
+            x0 = 35.0 - ( (py[0]) * (35.0 / 40.0) )  # y XML -> x cancha (flip a derecha)
+            y0 = px[0]                               # x XML -> y cancha
             coords_origen[rol_origen].append((x0, y0))
 
+        # suma INTENTO para el rol origen
         totales_hechos_por_rol[rol_origen] += 1
-        if rol_destino and rol_destino != rol_origen:
-            conteo_roles_total[tuple(sorted([rol_origen, rol_destino]))] += 1
 
-    # promedio por rol
+        # si hay rol destino (distinto) contamos conexión (indistinta A-B)
+        if rol_destino and rol_destino != rol_origen:
+            key = tuple(sorted([rol_origen, rol_destino]))
+            conteo_roles_total[key] += 1
+
+    # posición promedio por rol (centroide de orígenes)
     rol_coords = {}
     for rol, coords in coords_origen.items():
+        if not coords:
+            continue
         arr = np.array(coords)
-        rol_coords[rol] = (arr[:,0].mean(), arr[:,1].mean())
+        rol_coords[rol] = (float(arr[:,0].mean()), float(arr[:,1].mean()))
 
-    # Ajustes heurísticos y swap si Ala I/D quedan invertidos
-    if "Arq" in rol_coords: rol_coords["Arq"] = (3, 10)
+    # Heurística de ubicación/ajuste (conserva comportamiento previo)
+    if "Arq" in rol_coords:
+        rol_coords["Arq"] = (3.0, 10.0)  # bajo y centrado
+
+    # Si Ala I y Ala D quedaron invertidos en Y, los swap
     if "Ala I" in rol_coords and "Ala D" in rol_coords and rol_coords["Ala I"][1] < rol_coords["Ala D"][1]:
         rol_coords["Ala I"], rol_coords["Ala D"] = rol_coords["Ala D"], rol_coords["Ala I"]
-        new_counts = defaultdict(int)
-        for (a,b), v in conteo_roles_total.items():
-            aa = "Ala D" if a=="Ala I" else ("Ala I" if a=="Ala D" else a)
-            bb = "Ala D" if b=="Ala I" else ("Ala I" if b=="Ala D" else b)
-            new_counts[tuple(sorted([aa,bb]))] += v
-        conteo_roles_total = new_counts
+        # re-map de conteos y totales al swap
+        new_edges = defaultdict(int)
+        for (a, b), v in conteo_roles_total.items():
+            aa = "Ala D" if a == "Ala I" else ("Ala I" if a == "Ala D" else a)
+            bb = "Ala D" if b == "Ala I" else ("Ala I" if b == "Ala D" else b)
+            new_edges[tuple(sorted([aa, bb]))] += v
+        conteo_roles_total = new_edges
+
         new_tot = defaultdict(int)
-        for r,t in totales_hechos_por_rol.items():
-            if r=="Ala I": new_tot["Ala D"] = t
-            elif r=="Ala D": new_tot["Ala I"] = t
+        for r, t in totales_hechos_por_rol.items():
+            if r == "Ala I": new_tot["Ala D"] = t
+            elif r == "Ala D": new_tot["Ala I"] = t
             else: new_tot[r] = t
         totales_hechos_por_rol = new_tot
 
-    # edges
+    # --- Dibujar edges (con grosor según cantidad) ---
     max_pases = max(conteo_roles_total.values()) if conteo_roles_total else 1
     for (ra, rb), count in conteo_roles_total.items():
         if ra in rol_coords and rb in rol_coords:
-            x1,y1 = rol_coords[ra]; x2,y2 = rol_coords[rb]
+            x1, y1 = rol_coords[ra]; x2, y2 = rol_coords[rb]
             lw = 1 + (count / max_pases) * 5
-            ax.plot([x1,x2], [y1,y2], color='red', linewidth=lw, alpha=0.7, zorder=3)
-            ax.text((x1+x2)/2, (y1+y2)/2, str(count), color='blue', fontsize=10,
+            ax.plot([x1, x2], [y1, y2], color='red', linewidth=lw, alpha=0.7, zorder=3)
+            ax.text((x1 + x2) / 2, (y1 + y2) / 2, str(count), color='blue', fontsize=10,
                     ha='center', va='center', fontweight='bold', zorder=6)
 
-    # nodos
-    for rol, (x,y) in rol_coords.items():
+    # --- Dibujar nodos (círculo con INTENTOS del rol) ---
+    for rol, (x, y) in rol_coords.items():
         ax.scatter(x, y, s=2000, color='white', edgecolors='black', zorder=5)
-        ax.text(x, y, f"{rol}\n{totales_hechos_por_rol.get(rol,0)}", ha='center', va='center',
-                fontsize=10, fontweight='bold', color='black', zorder=7)
+        ax.text(x, y, f"{rol}\n{totales_hechos_por_rol.get(rol, 0)}",
+                ha='center', va='center', fontsize=10, fontweight='bold',
+                color='black', zorder=7)
 
-    ax.set_title("Red de Pases por Rol", fontsize=13)
+    ax.set_title("Red de Pases por Rol (solo intentos base)", fontsize=13)
     plt.tight_layout()
     return fig
 
@@ -2588,7 +2650,7 @@ elif menu == "🕓 Distribución de minutos e Impacto":
                 st.pyplot(fig_sc, use_container_width=True)
 
 # =========================
-# 🔗 RED DE PASES
+# 🔗 RED DE PASES (MENÚ)
 # =========================
 elif menu == "🔗 Red de Pases":
     matches = discover_matches()
@@ -2598,7 +2660,10 @@ elif menu == "🔗 Red de Pases":
 
     sel = st.selectbox("Elegí partido", [m["label"] for m in matches], index=0)
     match = get_match_by_label(sel)
+
+    # Cargar del XML preferido (campo 'xml_players' que arma discover_matches)
     df_raw = cargar_datos_nacsport(match["xml_players"]) if match else pd.DataFrame()
+
     fig = red_de_pases_por_rol(df_raw)
     st.pyplot(fig, use_container_width=True)
 
