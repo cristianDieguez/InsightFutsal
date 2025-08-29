@@ -3946,39 +3946,51 @@ if menu == "📈 Radar comparativo":
     angles = [n / float(N) * 2 * np.pi for n in range(N)]
     angles += angles[:1]
 
-    # ===== Lienzo grande con aire arriba (entre título y círculo) =====
+    # ===== Lienzo con aire entre título y radar =====
     plt.close("all")
     fig = plt.figure(figsize=(9.4, 8.6))
-    ax = fig.add_subplot(111, polar=True)
+    ax  = fig.add_subplot(111, polar=True)
+    
+    # fondos
     fig.patch.set_facecolor("#0C5C3B")
     ax.set_facecolor("#E9EDF2")
-
-    # más espacio ARRIBA (no abajo)
-    fig.subplots_adjust(top=0.64, bottom=0.01, left=0.07, right=0.84)
-
+    
+    # TÍTULO (de la figura) y margen verde debajo del título
+    fig.suptitle(
+        "Radar — Jugadores" if scope == "Jugador total"
+        else ("Radar — Rol" if scope == "Por rol" else "Radar — Jugador & Rol"),
+        fontsize=28, color="#FFFFFF", weight="bold", y=0.965
+    )
+    # ↓ Más chico el 'top' = más aire verde entre título y radar
+    fig.subplots_adjust(top=0.84, bottom=0.12, left=0.07, right=0.86)
+    
     ax.grid(False)
-    ax.set_ylim(0, 1.10)  # deja margen para chips sin tocar el anillo
-
+    ax.set_ylim(0, 1.0)   # 1.0 = anillo exterior (no lo estires a 1.10)
+    
     # anillos base
-    base_rings = [0.2, 0.4, 0.6, 0.8, 1.0]
     theta = np.linspace(0, 2*np.pi, 512)
+    base_rings = [0.2, 0.4, 0.6, 0.8, 1.0]
     for r in base_rings:
         ax.plot(theta, [r]*theta.size, lw=1.0, color="#D4DAE2", zorder=1)
-    # radios hasta el borde del anillo base
+    # (opcional estético) anillo finito por fuera
+    ax.plot(theta, [1.02]*theta.size, lw=0.8, color="#C9D1DB", alpha=0.6, zorder=1)
+    
+    # radios
     for a in angles[:-1]:
         ax.plot([a, a], [0, 1.0], lw=0.9, color="#D4DAE2", zorder=1)
-
+    
     ax.spines["polar"].set_color("#C1C9D3")
     ax.spines["polar"].set_linewidth(1.3)
-
-    # ===== chips de ejes: AFUERA, chicos y sin tocar el anillo =====
-    CHIP_R = 1.195  # fuera del 1.0 pero cerquita
+    
+    # --- Chips de variables (FUERA del anillo, sin tocarlo) ---
     ax.set_xticks(angles[:-1]); ax.set_xticklabels([])
+    R_LABEL = 1.045  # ← distancia del chip respecto al anillo
     for a, lbl in zip(angles[:-1], labels_wrapped):
-        ax.text(a, CHIP_R, lbl, ha="center", va="center",
-                fontsize=7.2, fontweight="semibold", color="#2B2F36",
-                clip_on=False,
-                bbox=dict(boxstyle="round,pad=0.15", fc="#ECEFF4", ec="#C9D1DB", lw=0.9))
+        ax.text(a, R_LABEL, lbl,
+                ha="center", va="center", fontsize=8.0, fontweight="bold",
+                color="#2B2F36", clip_on=False,
+                bbox=dict(boxstyle="round,pad=0.18", fc="#ECEFF4", ec="#C9D1DB", lw=0.9))
+
 
     # y-ticks por anillo (números por eje, no en el borde global)
     ax.set_yticks(base_rings); ax.set_yticklabels([])
