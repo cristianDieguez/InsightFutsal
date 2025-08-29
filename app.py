@@ -3719,18 +3719,24 @@ if menu == "📈 Radar comparativo":
         if df.empty: return df
         df = df.copy()
     
+        import re, unicodedata as ud
+        def _norm(s):
+            s = ud.normalize("NFKD", str(s)).encode("ascii","ignore").decode("ascii")
+            return re.sub(r"\s+"," ", s.strip().lower())
+    
+        # Buscar columnas por patrón normalizado
+        norm_cols = {_norm(c): c for c in df.columns}
+        def find_col(regex_pat):
+            for k, orig in norm_cols.items():
+                if re.search(regex_pat, k):
+                    return orig
+            return None
+    
         def s(*cols):
             vals = [pd.to_numeric(df.get(c, 0), errors="coerce").fillna(0) for c in cols if c in df.columns]
             return sum(vals) if vals else pd.Series(0, index=df.index)
     
-        # --- mapa para buscar columnas por nombre "normalizado"
-        def _norm(s): 
-            import unicodedata as ud, re
-            s = ud.normalize("NFKD", str(s)).encode("ascii","ignore").decode("ascii")
-            return re.sub(r"\s+"," ", s.strip().lower())
-        colmap = {_norm(c): c for c in df.columns}
-    
-        # Regates
+        # ---------- Regates
         rcols = GROUPS["Regates"]
         if all(c in df.columns for c in rcols):
             df["Regates - Total"] = s(*rcols)
@@ -3738,16 +3744,16 @@ if menu == "📈 Radar comparativo":
             den = df["Regates - Total"].replace(0, np.nan)
             df["% Regates Exitosos"] = (exi / den) * 100
     
-        # 1v1 (robusto a variantes)
-        g1_col = colmap.get(_norm("1v1 Ganado"))
-        p1_col = colmap.get(_norm("1v1 perdido")) or colmap.get(_norm("1v1 Perdido"))
+        # ---------- 1v1 (muy tolerante con nombres)
+        g1_col = find_col(r"^1\s*v\s*1.*ganad")  # 1 v 1, 1v1, 1 vs 1, etc.
+        p1_col = find_col(r"^1\s*v\s*1.*perdid")
         if g1_col and p1_col:
             g1 = pd.to_numeric(df[g1_col], errors="coerce").fillna(0)
             p1 = pd.to_numeric(df[p1_col], errors="coerce").fillna(0)
             den = (g1 + p1).replace(0, np.nan)
-            df["% Duelos Ganados"] = (g1 / den) * 100  # queda NaN si no hubo duelos
+            df["% Duelos Ganados"] = (g1 / den) * 100
     
-        # Tiros
+        # ---------- Tiros
         if "Tiro al arco" in df.columns and "Tiro Hecho" in df.columns:
             ta = pd.to_numeric(df["Tiro al arco"], errors="coerce").fillna(0)
             th = pd.to_numeric(df["Tiro Hecho"], errors="coerce").fillna(0)
@@ -3755,15 +3761,14 @@ if menu == "📈 Radar comparativo":
             df["Tiros - % al arco"] = np.where(th>0, ta/th, np.nan) * 100
             df["Tiros - % Goles/Tiro al arco"] = np.where(ta>0, gol/ta, np.nan) * 100
     
-        # Recuperaciones / Pérdidas
-        rec_cols = GROUPS["Recuperaciones"]
-        per_cols = GROUPS["Perdidas"]
+        # ---------- Recuperaciones / Pérdidas
+        rec_cols = GROUPS["Recuperaciones"]; per_cols = GROUPS["Perdidas"]
         df["Recuperaciones - Total"] = s(*rec_cols)
         df["Perdidas - Total"]      = s(*per_cols)
         den = (df["Recuperaciones - Total"] + df["Perdidas - Total"]).replace(0, np.nan)
         df["% Recuperaciones"]      = (df["Recuperaciones - Total"] / den) * 100
     
-        # % Pases (OK/Base y Completado/Base)
+        # ---------- % Pases (OK/Base y Completado/Base)
         passlike = [k for k in GROUPS if k.startswith("Pase ") or k.startswith("Arquero Pase")]
         for gname in passlike:
             base, comp, ok = GROUPS[gname]
@@ -3774,13 +3779,13 @@ if menu == "📈 Radar comparativo":
                 df[f"% {base}"] = np.where(b>0, o/b, np.nan) * 100
                 df[f"% {comp}"] = np.where(b>0, c/b, np.nan) * 100
     
-        # Índice positivo (simple)
+        # ---------- Índice positivo (simple)
         posit = []
         posit += [c for c in df.columns if "Completado" in c and not c.strip().startswith("%")]
         posit += ["Centros Rematados","Tiro al arco",
-                  "Regate conseguido - Mantiene pelota",
-                  "Aguanta Pivotea","Gira","Faltas Recibidas",
-                  "Recuperaciones - Total","1v1 Ganado","Asistencia","Pase Clave","Gol","Conduccion"]
+                  "Regate conseguido - Mantiene pelota","Aguanta Pivotea","Gira",
+                  "Faltas Recibidas","Recuperaciones - Total","1v1 Ganado",
+                  "Asistencia","Pase Clave","Gol","Conduccion"]
         posit = list(dict.fromkeys([c for c in posit if c in df.columns]))
         tot = [c for c in df.columns if c in ALL_ACTIONS]
     
@@ -3792,7 +3797,6 @@ if menu == "📈 Radar comparativo":
         den = df["Acciones - Total"].replace(0, np.nan)
         df["% Acciones Positivas"] = (df["Acciones Positivas - Total"] / den) * 100
         return df
-
 
     @st.cache_data(show_spinner=True)
     def build_matrix_counts(DIR_MATRIX: Path) -> pd.DataFrame:
@@ -4009,19 +4013,20 @@ if menu == "📈 Radar comparativo":
     # --- datos base ---
     rad = base[[label_col, "minutos"] + metrics].copy()
     
-    # NORMALIZACIÓN + referencias por eje
+    # NORMALIZACIÓN + info de rangos por eje
     def _fmt(x):
         if not np.isfinite(x): return "-"
-        return f"{x:.1f}" if abs(x) < 10 and abs(x) != int(round(x)) else f"{int(round(x))}"
+        # números chicos con un decimal, el resto enteros
+        return f"{x:.1f}" if (abs(x) < 10 and abs(x) != int(round(x))) else f"{int(round(x))}"
     
     rad_norm = rad.copy()
-    axis_ref = {}   # texto a mostrar bajo cada chip (por métrica)
+    axis_info = {}  # métrica -> dict(is_pct, mn, mx)
     
     for c in metrics:
         raw = pd.to_numeric(rad[c], errors="coerce")
         if "%" in c:
-            rad_norm[c] = raw / 100.0
-            axis_ref[c] = "0–100%"
+            rad_norm[c] = (raw / 100.0).fillna(0.0)  # si no hubo duelos, mostramos 0 en el radar
+            axis_info[c] = {"is_pct": True, "mn": 0.0, "mx": 100.0}
         else:
             mn = float(np.nanmin(raw.values))
             mx = float(np.nanmax(raw.values))
@@ -4029,8 +4034,7 @@ if menu == "📈 Radar comparativo":
                 rad_norm[c] = (raw - mn) / (mx - mn)
             else:
                 rad_norm[c] = 0.5
-            # referencia explícita del rango real (después de normalizar a 40’)
-            axis_ref[c] = f"{_fmt(mn)}–{_fmt(mx)} (40’)"
+            axis_info[c] = {"is_pct": False, "mn": mn, "mx": mx}
     
     rad_norm[metrics] = rad_norm[metrics].clip(0.0, 1.0)
     
@@ -4058,22 +4062,32 @@ if menu == "📈 Radar comparativo":
     ax.spines["polar"].set_color("#C1C9D3")
     ax.spines["polar"].set_linewidth(1.4)
     
-    # Chips + subtítulo de referencia (si es % → 0–100%; si es ABS → min–max del grupo)
-    ax.set_xticks(angles[:-1])
-    ax.set_xticklabels([])
-    for a, lbl, raw in zip(angles[:-1], labels_wrapped, labels):
+    # Chips SOLO con el nombre del eje
+    ax.set_xticks(angles[:-1]); ax.set_xticklabels([])
+    for a, lbl in zip(angles[:-1], labels_wrapped):
         ax.text(a, 1.02, lbl, ha="center", va="center", fontsize=8.5, fontweight="bold",
                 color="#2B2F36",
                 bbox=dict(boxstyle="round,pad=0.20", fc="#ECEFF4", ec="#C9D1DB", lw=0.9))
-        ax.text(a, 1.075, axis_ref[raw], ha="center", va="center",
-                fontsize=7.2, color="#6B7280")
+    
+    # Quitar las etiquetas globales del radio
+    ax.set_yticks(rings); ax.set_yticklabels([])
+    
+    # Referencias en CADA anillo y CADA eje (como pediste)
+    for a, key in zip(angles[:-1], labels):
+        info = axis_info[key]
+        mn, mx, is_pct = info["mn"], info["mx"], info["is_pct"]
+        for r in rings:
+            if is_pct:
+                txt = f"{int(r*100)}%"
+            else:
+                val = mn + r*(mx - mn)
+                txt = _fmt(val)
+            # un pelín afuera del anillo para que no lo tape la línea
+            rr = r + 0.012
+            ax.text(a, rr, txt, ha="center", va="center", fontsize=7.0, color="#6B7280",
+                    bbox=dict(boxstyle="round,pad=0.16", fc="#F3F5F8", ec="#D4DAE2", lw=0.4, alpha=0.95),
+                    zorder=10)
 
-
-    # Referencias en CADA anillo (0–100%)
-    ax.set_yticks(rings)
-    ax.set_yticklabels([f"{int(r*100)}%" for r in rings], fontsize=8.2, color="#6B7280")
-    ax.set_rlabel_position(95)      # ubicación de numeritos
-    ax.tick_params(axis="y", pad=3) # separación
 
     # --- series (relleno suave + estilos de línea para no taparse) ---
     names   = rad_norm[label_col].tolist()
