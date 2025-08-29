@@ -3998,6 +3998,8 @@ if menu == "📈 Radar comparativo":
         return [mpl.colors.to_hex(c) for c in cmap]
         
     # usar las métricas elegidas como ejes del radar
+    rad = base[[label_col, "minutos"] + metrics].copy()  # <-- 🔧 crea 'rad'
+    
     labels = metrics[:]  # <-- 🔧 esta línea evita el NameError
 
     labels_wrapped = [_wrap_lbl(l) for l in labels]
@@ -4038,7 +4040,7 @@ if menu == "📈 Radar comparativo":
     ax.set_yticks(rings)
     ax.set_yticklabels([f"{int(r*100)}%" for r in rings], fontsize=9, color="#4C5563")
     ax.set_rlabel_position(0)
-    
+
     # --- series ---
     series = rad[label_col].tolist()
     vals_mat = rad[labels].values  # ya normalizado: %→0–1, abs→min-max
