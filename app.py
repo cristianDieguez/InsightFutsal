@@ -3443,106 +3443,106 @@ if menu == "📈 Radar comparativo":
 
     # ---------- 1) MINUTOS: XML TotalValues ----------
     @st.cache_data(show_spinner=True)
-def build_minutos_por_partido(DIR_MINUTOS: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """
-    Devuelve:
-      - df_por_rol: minutos POR PARTIDO por (nombre, rol) + fecha, rival, partido_id
-      - df_por_jugador: minutos POR PARTIDO por jugador total (sumando roles)
-    Usa el mismo criterio de aceptación que el menú 'Minutos':
-      * Instancias con labels vacíos, o
-      * Labels dentro del canon (Valla invicta..., etc.)
-    """
-    DESC_CANON = [
-        "Valla Invicta en cancha","Goles a favor en cancha","Participa en Gol Hecho",
-        "Gol Rival en cancha","Involucrado en gol recibido",
-    ]
-    CANON_LC = {norm_txt(x) for x in DESC_CANON}
-
-    def accept_labels(inst) -> bool:
-        labs = []
-        for lab in inst.findall("./label"):
-            t = (lab.findtext("text") or "").strip()
-            if t: labs.append(norm_txt(t))
-        if not labs: 
-            return True
-        return any(l in CANON_LC for l in labs)
-
-    def merge_intervals(intervals):
-        if not intervals: return []
-        ints = []
-        for s, e in intervals:
+    def build_minutos_por_partido(DIR_MINUTOS: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
+        """
+        Devuelve:
+          - df_por_rol: minutos POR PARTIDO por (nombre, rol) + fecha, rival, partido_id
+          - df_por_jugador: minutos POR PARTIDO por jugador total (sumando roles)
+        Usa el mismo criterio de aceptación que el menú 'Minutos':
+          * Instancias con labels vacíos, o
+          * Labels dentro del canon (Valla invicta..., etc.)
+        """
+        DESC_CANON = [
+            "Valla Invicta en cancha","Goles a favor en cancha","Participa en Gol Hecho",
+            "Gol Rival en cancha","Involucrado en gol recibido",
+        ]
+        CANON_LC = {norm_txt(x) for x in DESC_CANON}
+    
+        def accept_labels(inst) -> bool:
+            labs = []
+            for lab in inst.findall("./label"):
+                t = (lab.findtext("text") or "").strip()
+                if t: labs.append(norm_txt(t))
+            if not labs: 
+                return True
+            return any(l in CANON_LC for l in labs)
+    
+        def merge_intervals(intervals):
+            if not intervals: return []
+            ints = []
+            for s, e in intervals:
+                try:
+                    s = float(s); e = float(e)
+                except: 
+                    continue
+                if e <= s: e = s + 0.04
+                ints.append((s, e))
+            ints.sort()
+            merged = [list(ints[0])]
+            for s, e in ints[1:]:
+                if s <= merged[-1][1]:
+                    merged[-1][1] = max(merged[-1][1], e)
+                else:
+                    merged.append([s, e])
+            return [(s, e) for s, e in merged]
+    
+        rows_rol, rows_jug = [], []
+        xmls = sorted(DIR_MINUTOS.rglob("*.xml"))
+        for p in xmls:
+            if "TotalValues" not in p.stem:
+                continue
+            fecha, rival, partido_id = parse_fecha_rival_from_name(p.stem, is_minutos=True)
             try:
-                s = float(s); e = float(e)
-            except: 
+                root = ET.parse(p).getroot()
+            except Exception:
                 continue
-            if e <= s: e = s + 0.04
-            ints.append((s, e))
-        ints.sort()
-        merged = [list(ints[0])]
-        for s, e in ints[1:]:
-            if s <= merged[-1][1]:
-                merged[-1][1] = max(merged[-1][1], e)
-            else:
-                merged.append([s, e])
-        return [(s, e) for s, e in merged]
-
-    rows_rol, rows_jug = [], []
-    xmls = sorted(DIR_MINUTOS.rglob("*.xml"))
-    for p in xmls:
-        if "TotalValues" not in p.stem:
-            continue
-        fecha, rival, partido_id = parse_fecha_rival_from_name(p.stem, is_minutos=True)
-        try:
-            root = ET.parse(p).getroot()
-        except Exception:
-            continue
-
-        # acumulo por (nombre, rol) — POR PARTIDO
-        agg = {}
-        for inst in root.findall(".//instance"):
-            code = inst.findtext("code") or ""
-            m = NAME_ROLE_RE.match(code)
-            if not m: 
-                continue
-            if not accept_labels(inst):
-                continue
-            nombre = m.group(1).strip()
-            rol    = m.group(2).strip()
-            s = inst.findtext("start"); e = inst.findtext("end")
-            try:
-                s = float(s); e = float(e)
-            except:
-                continue
-            if e <= s: e = s + 0.04
-
-            key = (nombre, rol)
-            agg.setdefault(key, []).append((s, e))
-
-        # filas por (jug, rol) y por jugador — POR PARTIDO
-        by_player_secs = {}
-        for (nombre, rol), intervals in agg.items():
-            merged = merge_intervals(intervals)
-            seg = sum(e - s for s, e in merged)
-            by_player_secs[nombre] = by_player_secs.get(nombre, 0.0) + seg
-            rows_rol.append({
-                "partido_id": partido_id, "fecha": fecha, "rival": rival,
-                "nombre": nombre, "rol": rol,
-                "segundos": int(round(seg)),
-                "mmss": mmss(seg),
-                "minutos": round(seg/60.0, 2),
-            })
-        for nombre, seg in by_player_secs.items():
-            rows_jug.append({
-                "partido_id": partido_id, "fecha": fecha, "rival": rival,
-                "nombre": nombre,
-                "segundos": int(round(seg)),
-                "mmss": mmss(seg),
-                "minutos": round(seg/60.0, 2),
-            })
-
-    df_por_rol = pd.DataFrame(rows_rol)
-    df_por_jug = pd.DataFrame(rows_jug)
-    return df_por_rol, df_por_jug
+    
+            # acumulo por (nombre, rol) — POR PARTIDO
+            agg = {}
+            for inst in root.findall(".//instance"):
+                code = inst.findtext("code") or ""
+                m = NAME_ROLE_RE.match(code)
+                if not m: 
+                    continue
+                if not accept_labels(inst):
+                    continue
+                nombre = m.group(1).strip()
+                rol    = m.group(2).strip()
+                s = inst.findtext("start"); e = inst.findtext("end")
+                try:
+                    s = float(s); e = float(e)
+                except:
+                    continue
+                if e <= s: e = s + 0.04
+    
+                key = (nombre, rol)
+                agg.setdefault(key, []).append((s, e))
+    
+            # filas por (jug, rol) y por jugador — POR PARTIDO
+            by_player_secs = {}
+            for (nombre, rol), intervals in agg.items():
+                merged = merge_intervals(intervals)
+                seg = sum(e - s for s, e in merged)
+                by_player_secs[nombre] = by_player_secs.get(nombre, 0.0) + seg
+                rows_rol.append({
+                    "partido_id": partido_id, "fecha": fecha, "rival": rival,
+                    "nombre": nombre, "rol": rol,
+                    "segundos": int(round(seg)),
+                    "mmss": mmss(seg),
+                    "minutos": round(seg/60.0, 2),
+                })
+            for nombre, seg in by_player_secs.items():
+                rows_jug.append({
+                    "partido_id": partido_id, "fecha": fecha, "rival": rival,
+                    "nombre": nombre,
+                    "segundos": int(round(seg)),
+                    "mmss": mmss(seg),
+                    "minutos": round(seg/60.0, 2),
+                })
+    
+        df_por_rol = pd.DataFrame(rows_rol)
+        df_por_jug = pd.DataFrame(rows_jug)
+        return df_por_rol, df_por_jug
 
 
     # ---------- 2) MATRIX desde XLSX ----------
