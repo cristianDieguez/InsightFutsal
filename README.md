@@ -56,9 +56,6 @@ data/minutos/Fecha N - Rival - XML TotalValues.xml
 
 data/matrix/Fecha N - Rival - Matrix.xlsx
 
-El módulo de Minutos acepta instancias sin labels o con labels del canon:
-
-Valla Invicta en cancha, Goles a favor en cancha, Participa en Gol Hecho, Gol Rival en cancha, Involucrado en gol recibido.
 ---
 
 ## ▶️ Cómo ejecutar la app
