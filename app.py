@@ -3954,7 +3954,7 @@ if menu == "📈 Radar comparativo":
     ax.set_facecolor("#E9EDF2")
 
     # más espacio ARRIBA (no abajo)
-    fig.subplots_adjust(top=0.74, bottom=0.08, left=0.07, right=0.84)
+    fig.subplots_adjust(top=0.84, bottom=0.08, left=0.07, right=0.84)
 
     ax.grid(False)
     ax.set_ylim(0, 1.10)  # deja margen para chips sin tocar el anillo
