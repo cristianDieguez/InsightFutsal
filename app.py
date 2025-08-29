@@ -3407,17 +3407,16 @@ if menu == "📈 Radar comparativo":
     import numpy as np
     import matplotlib.pyplot as plt
     import matplotlib as mpl
-    from math import pi
 
     st.subheader("Radar comparativo (multijugador / multirol)")
 
-    # --- rutas por defecto (sin inputs en este menú) ---
+    # --- rutas por defecto ---
     DIR_MINUTOS = Path("data/minutos").expanduser().resolve()
     DIR_MATRIX  = Path("data/matrix").expanduser().resolve()
     if not DIR_MINUTOS.exists(): st.error(f"No existe carpeta MINUTOS: {DIR_MINUTOS}"); st.stop()
     if not DIR_MATRIX.exists():  st.error(f"No existe carpeta MATRIX:  {DIR_MATRIX}");  st.stop()
 
-    # ---------- helpers texto ----------
+    # ---------- helpers ----------
     def norm_txt(s: str) -> str:
         if s is None: return ""
         s = str(s)
@@ -3426,7 +3425,6 @@ if menu == "📈 Radar comparativo":
         return s
 
     NAME_ROLE_RE = re.compile(r"^\s*([^(]+?)\s*\(([^)]+)\)")
-
     RE_FECHA_RIVAL_MIN = re.compile(r"Fecha\s*(?:N[º°o]\.?\s*)?(\d+)\s*-\s*(.+?)\s*-\s*XML\s*TotalValues", re.IGNORECASE)
     RE_FECHA_RIVAL_MAT = re.compile(r"Fecha\s*(\d+)\s*-\s*(.+?)\s*-\s*Matrix", re.IGNORECASE)
 
@@ -3444,14 +3442,6 @@ if menu == "📈 Radar comparativo":
     # ---------- 1) MINUTOS: XML TotalValues ----------
     @st.cache_data(show_spinner=True)
     def build_minutos_por_partido(DIR_MINUTOS: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
-        """
-        Devuelve:
-          - df_por_rol: minutos POR PARTIDO por (nombre, rol) + fecha, rival, partido_id
-          - df_por_jugador: minutos POR PARTIDO por jugador total (sumando roles)
-        Usa el mismo criterio de aceptación que el menú 'Minutos':
-          * Instancias con labels vacíos, o
-          * Labels dentro del canon (Valla invicta..., etc.)
-        """
         DESC_CANON = [
             "Valla Invicta en cancha","Goles a favor en cancha","Participa en Gol Hecho",
             "Gol Rival en cancha","Involucrado en gol recibido",
@@ -3463,55 +3453,39 @@ if menu == "📈 Radar comparativo":
             for lab in inst.findall("./label"):
                 t = (lab.findtext("text") or "").strip()
                 if t: labs.append(norm_txt(t))
-            if not labs:
-                return True
-            return any(l in CANON_LC for l in labs)
+            return (not labs) or any(l in CANON_LC for l in labs)
 
         def merge_intervals(intervals):
             if not intervals: return []
             ints = []
             for s, e in intervals:
-                try:
-                    s = float(s); e = float(e)
-                except:
-                    continue
+                try: s = float(s); e = float(e)
+                except: continue
                 if e <= s: e = s + 0.04
                 ints.append((s, e))
             ints.sort()
             merged = [list(ints[0])]
             for s, e in ints[1:]:
-                if s <= merged[-1][1]:
-                    merged[-1][1] = max(merged[-1][1], e)
-                else:
-                    merged.append([s, e])
+                if s <= merged[-1][1]: merged[-1][1] = max(merged[-1][1], e)
+                else: merged.append([s, e])
             return [(s, e) for s, e in merged]
 
         rows_rol, rows_jug = [], []
-        xmls = sorted(DIR_MINUTOS.rglob("*.xml"))
-        for p in xmls:
-            if "TotalValues" not in p.stem:
-                continue
+        for p in sorted(DIR_MINUTOS.rglob("*.xml")):
+            if "TotalValues" not in p.stem: continue
             fecha, rival, partido_id = parse_fecha_rival_from_name(p.stem, is_minutos=True)
-            try:
-                root = ET.parse(p).getroot()
-            except Exception:
-                continue
+            try: root = ET.parse(p).getroot()
+            except Exception: continue
 
             agg = {}
             for inst in root.findall(".//instance"):
                 code = inst.findtext("code") or ""
                 m = NAME_ROLE_RE.match(code)
-                if not m:
-                    continue
-                if not accept_labels(inst):
-                    continue
-                nombre = m.group(1).strip()
-                rol    = m.group(2).strip()
+                if not m or not accept_labels(inst): continue
+                nombre = m.group(1).strip(); rol = m.group(2).strip()
                 s = inst.findtext("start"); e = inst.findtext("end")
-                try:
-                    s = float(s); e = float(e)
-                except:
-                    continue
+                try: s = float(s); e = float(e)
+                except: continue
                 if e <= s: e = s + 0.04
                 agg.setdefault((nombre, rol), []).append((s, e))
 
@@ -3523,23 +3497,17 @@ if menu == "📈 Radar comparativo":
                 rows_rol.append({
                     "partido_id": partido_id, "fecha": fecha, "rival": rival,
                     "nombre": nombre, "rol": rol,
-                    "segundos": int(round(seg)),
-                    "mmss": mmss(seg),
+                    "segundos": int(round(seg)), "mmss": mmss(seg),
                     "minutos": round(seg/60.0, 2),
                 })
             for nombre, seg in by_player_secs.items():
                 rows_jug.append({
                     "partido_id": partido_id, "fecha": fecha, "rival": rival,
-                    "nombre": nombre,
-                    "segundos": int(round(seg)),
-                    "mmss": mmss(seg),
+                    "nombre": nombre, "segundos": int(round(seg)), "mmss": mmss(seg),
                     "minutos": round(seg/60.0, 2),
                 })
 
-        df_por_rol = pd.DataFrame(rows_rol)
-        df_por_jug = pd.DataFrame(rows_jug)
-        return df_por_rol, df_por_jug
-
+        return pd.DataFrame(rows_rol), pd.DataFrame(rows_jug)
 
     # ---------- 2) MATRIX desde XLSX ----------
     GROUPS = {
@@ -3661,13 +3629,6 @@ if menu == "📈 Radar comparativo":
             vals = [pd.to_numeric(df.get(c, 0), errors="coerce").fillna(0) for c in cols if c in df.columns]
             return sum(vals) if vals else pd.Series(0, index=df.index)
 
-        def ratio(num, den):
-            num = pd.to_numeric(num, errors="coerce").fillna(0)
-            den = pd.to_numeric(den, errors="coerce").fillna(0)
-            with np.errstate(divide='ignore', invalid='ignore'):
-                r = np.where(den > 0, num / den, np.nan)
-            return r
-
         # Totales base
         df["Regates - Total"]        = s("Regate conseguido - Mantiene pelota",
                                          "Regate conseguido - Pierde pelota",
@@ -3682,15 +3643,13 @@ if menu == "📈 Radar comparativo":
         reg_exitos = s("Regate conseguido - Mantiene pelota","Regate conseguido - Pierde pelota")
         df["% Regates Exitosos"] = ratio(reg_exitos, df["Regates - Total"]) * 100
 
-        # % Duelos Ganados
+        # % Duelos Ganados extendido
         duelos_num = s("1v1 Ganado","Recuperacion x Duelo")
         duelos_den = s("1v1 Ganado","1v1 perdido","Recuperacion x Duelo","Pérdida x Duelo")
         df["% Duelos Ganados"] = ratio(duelos_num, duelos_den) * 100
 
         # Tiros
-        ta  = s("Tiro al arco")
-        th  = s("Tiro Hecho")
-        gol = s("Gol")
+        ta  = s("Tiro al arco"); th = s("Tiro Hecho"); gol = s("Gol")
         df["Tiros - % al arco"]            = ratio(ta, th) * 100
         df["Tiros - % Goles/Tiro al arco"] = ratio(gol, ta) * 100
 
@@ -3698,17 +3657,17 @@ if menu == "📈 Radar comparativo":
         df["% Recuperaciones"] = ratio(df["Recuperaciones - Total"],
                                        df["Recuperaciones - Total"] + df["Perdidas - Total"]) * 100
 
-        # % Pases
+        # % Pases por tipo
         pass_groups = {
             "Pase Corto Frontal":      ["Pase Corto Frontal", "Pase Corto Frontal Completado", "Pase Corto Frontal OK"],
             "Pase Corto Lateral":      ["Pase Corto Lateral", "Pase Corto Lateral Completado", "Pase Corto Lateral OK"],
             "Pase Progresivo Frontal": ["Pase Progresivo Frontal", "Pase Progresivo Frontal Completado", "Pase Progresivo Frontal OK"],
             "Pase Progresivo Lateral": ["Pase Progresivo Lateral", "Pase Progesivo Lateral Completado", "Pase Progresivo Lateral OK"],
         }
-        for g, (base, comp, ok) in pass_groups.items():
-            b = s(base); c = s(comp); o = s(ok)
-            df[f"% {base}"] = ratio(o, b) * 100
-            df[f"% {comp}"] = ratio(c, b) * 100
+        for _, (base_accion, comp, ok) in pass_groups.items():
+            b = s(base_accion); c = s(comp); o = s(ok)
+            df[f"% {base_accion}"] = ratio(o, b) * 100
+            df[f"% {comp}"]        = ratio(c, b) * 100
 
         # Índice Acciones Positivas
         positivos = []
@@ -3726,19 +3685,15 @@ if menu == "📈 Radar comparativo":
         df["Acciones Positivas - Total"] = s_cols(positivos)
         df["Acciones - Total"]           = s_cols(base_acc)
         df["% Acciones Positivas"]       = ratio(df["Acciones Positivas - Total"], df["Acciones - Total"]) * 100
-
         return df
-
 
     @st.cache_data(show_spinner=True)
     def build_matrix_counts(DIR_MATRIX: Path) -> pd.DataFrame:
         rows = []
         for xlsx in sorted(DIR_MATRIX.glob("*.xlsx")):
             fecha, rival, partido_id = parse_fecha_rival_from_name(xlsx.stem, is_minutos=False)
-            try:
-                sheets = pd.read_excel(xlsx, sheet_name=None)
-            except Exception:
-                continue
+            try: sheets = pd.read_excel(xlsx, sheet_name=None)
+            except Exception: continue
             for sh, df in (sheets or {}).items():
                 if df is None or df.empty: continue
                 df = normalize_columns(df)
@@ -3746,8 +3701,7 @@ if menu == "📈 Radar comparativo":
 
                 alineacion_pat = re.compile(r".+\((?:cierre|pivot|ala\s*[di])\)$", flags=re.I)
                 cols_alineacion = [c for c in df.columns if alineacion_pat.match(str(c))]
-                if cols_alineacion:
-                    df = df.drop(columns=cols_alineacion, errors="ignore")
+                if cols_alineacion: df = df.drop(columns=cols_alineacion, errors="ignore")
 
                 long_df = wide_or_long_to_wide(df)
                 if long_df.empty: continue
@@ -3769,16 +3723,13 @@ if menu == "📈 Radar comparativo":
         df_min_rol, df_min_jug = build_minutos_por_partido(DIR_MINUTOS)
         df_mat_rol = build_matrix_counts(DIR_MATRIX)
 
-    if df_mat_rol.empty:
-        st.warning("No se pudo leer MATRIX (XLSX)."); st.stop()
-    if df_min_rol.empty and df_min_jug.empty:
-        st.warning("No se pudo leer MINUTOS (XML TotalValues)."); st.stop()
+    if df_mat_rol.empty: st.warning("No se pudo leer MATRIX (XLSX)."); st.stop()
+    if df_min_rol.empty and df_min_jug.empty: st.warning("No se pudo leer MINUTOS (XML TotalValues)."); st.stop()
 
-    # join por rol / jugador
+    # joins
     if not df_min_rol.empty:
         join_rol = pd.merge(
-            df_mat_rol,
-            df_min_rol[["partido_id","fecha","rival","nombre","rol","minutos"]],
+            df_mat_rol, df_min_rol[["partido_id","fecha","rival","nombre","rol","minutos"]],
             left_on=["partido_id","fecha","rival","jugador","rol"],
             right_on=["partido_id","fecha","rival","nombre","rol"],
             how="inner"
@@ -3788,8 +3739,7 @@ if menu == "📈 Radar comparativo":
 
     if not df_min_jug.empty:
         join_jug = pd.merge(
-            df_mat_rol,
-            df_min_jug[["partido_id","fecha","rival","nombre","minutos"]],
+            df_mat_rol, df_min_jug[["partido_id","fecha","rival","nombre","minutos"]],
             left_on=["partido_id","fecha","rival","jugador"],
             right_on=["partido_id","fecha","rival","nombre"],
             how="inner"
@@ -3807,6 +3757,7 @@ if menu == "📈 Radar comparativo":
         if df.empty: return df
         abs_cols, pct_cols = split_pct_abs(df)
         out = df.copy()
+        # escalar ABS a 40' por partido antes de promediar
         for c in abs_cols:
             out[c] = pd.to_numeric(out[c], errors="coerce")
             out[c] = out[c] * (40.0 / out["minutos"].replace(0, np.nan))
@@ -3815,45 +3766,34 @@ if menu == "📈 Radar comparativo":
         grouped[pct_cols] = grouped[pct_cols].round(2)
         return grouped
 
+    # ponderaciones para % de tiros (agregado por volumen)
     def weighted_percentages(df, scope_cols):
         out = df.copy()
-        # Tiros - % al arco -> ponderado por Tiro Hecho
         if set(["Tiro al arco","Tiro Hecho","Tiros - % al arco"]).issubset(out.columns):
-            w = out.groupby(scope_cols, as_index=False).agg(
-                TA=("Tiro al arco","sum"),
-                TH=("Tiro Hecho","sum")
-            )
+            w = out.groupby(scope_cols, as_index=False).agg(TA=("Tiro al arco","sum"), TH=("Tiro Hecho","sum"))
             w["Tiros - % al arco"] = np.where(w["TH"]>0, w["TA"]/w["TH"]*100, np.nan)
             out = out.drop(columns=["Tiros - % al arco"]).merge(w[scope_cols+["Tiros - % al arco"]], on=scope_cols, how="left")
-    
-        # Tiros - % Goles/Tiro al arco -> ponderado por Tiro al arco
         if set(["Gol","Tiro al arco","Tiros - % Goles/Tiro al arco"]).issubset(out.columns):
-            w = out.groupby(scope_cols, as_index=False).agg(
-                G=("Gol","sum"),
-                TA=("Tiro al arco","sum")
-            )
+            w = out.groupby(scope_cols, as_index=False).agg(G=("Gol","sum"), TA=("Tiro al arco","sum"))
             w["Tiros - % Goles/Tiro al arco"] = np.where(w["TA"]>0, w["G"]/w["TA"]*100, np.nan)
             out = out.drop(columns=["Tiros - % Goles/Tiro al arco"]).merge(w[scope_cols+["Tiros - % Goles/Tiro al arco"]], on=scope_cols, how="left")
-    
         return out
 
     df_avg_por_rol      = normalize_and_avg(join_rol, by_cols=["jugador","rol"])
     df_avg_por_jugador  = normalize_and_avg(join_jug, by_cols=["jugador"])
     df_avg_por_jugador = weighted_percentages(df_avg_por_jugador, ["jugador"])
     df_avg_por_rol     = weighted_percentages(df_avg_por_rol, ["jugador","rol"])
-    
+
     # ---------- UI ----------
     scope = st.radio("Ámbito de comparación", ["Jugador total", "Por rol", "Jugador y rol"], horizontal=True)
 
     candidates = sorted([c for c in df_mat_rol.columns if c not in {"partido_id","fecha","rival","archivo","hoja","jugador","rol"}])
-
     DEFAULT_METRICS = [
         "% Acciones Positivas", "% Duelos Ganados", "% Recuperaciones",
         "Tiros - % al arco", "Tiros - % Goles/Tiro al arco", "% Regates Exitosos",
         "Pase Clave", "Gol", "Recuperaciones - Total", "Regates - Total",
         "Tiro al arco", "Tiro Hecho"
     ]
-
     pct_candidates = [c for c in candidates if "%" in c]
     abs_candidates = [c for c in candidates if "%" not in c]
 
@@ -3865,14 +3805,13 @@ if menu == "📈 Radar comparativo":
     with c2:
         mets_abs = st.multiselect("Métricas absolutas", abs_candidates,
                                   default=[m for m in DEFAULT_METRICS if m in abs_candidates])
-
     metrics = [*mets_pct, *mets_abs]
-    if not metrics:
-        st.info("Elegí al menos una métrica para comparar."); st.stop()
+    if not metrics: st.info("Elegí al menos una métrica para comparar."); st.stop()
 
     min_minutos = st.number_input("Minutos mínimos totales (para incluir en la comparación)", min_value=0.0, value=20.0, step=5.0)
 
-    DEFAULT_PLAYERS = ["Bruno", "JuanBe", "Zurdo"]  # 🟢 defaults pedidos
+    # preselección deseada
+    PREF_JUGS = ["Bruno","JuanBe","Zurdo"]
 
     if scope == "Jugador total":
         base = df_avg_por_jugador.copy()
@@ -3881,8 +3820,8 @@ if menu == "📈 Radar comparativo":
         base = pd.merge(base, mins_valid, on="jugador", how="left", suffixes=("","_tot"))
         base = base[base["minutos"] >= min_minutos].copy()
         jugadores = sorted(base["jugador"].unique().tolist())
-        default_jug = [j for j in DEFAULT_PLAYERS if j in jugadores] or jugadores[:min(6, len(jugadores))]
-        sel_jug = st.multiselect("Jugadores a comparar", jugadores, default=default_jug)
+        default_names = [n for n in PREF_JUGS if n in jugadores] or jugadores[:min(6, len(jugadores))]
+        sel_jug = st.multiselect("Jugadores a comparar", jugadores, default=default_names)
         base = base[base["jugador"].isin(sel_jug)]
         label_col = "jugador"
         global_df_for_max = df_avg_por_jugador
@@ -3895,8 +3834,8 @@ if menu == "📈 Radar comparativo":
         sel_rol = st.selectbox("Rol", roles, index=0 if roles else None)
         base = base[(base["rol"] == sel_rol) & (base["minutos"] >= min_minutos)].copy()
         jugadores = sorted(base["jugador"].unique().tolist())
-        default_jug = [j for j in DEFAULT_PLAYERS if j in jugadores] or jugadores[:min(6, len(jugadores))]
-        sel_jug = st.multiselect("Jugadores a comparar", jugadores, default=default_jug)
+        default_names = [n for n in PREF_JUGS if n in jugadores] or jugadores[:min(6, len(jugadores))]
+        sel_jug = st.multiselect("Jugadores a comparar", jugadores, default=default_names)
         base = base[base["jugador"].isin(sel_jug)]
         label_col = "jugador"
         global_df_for_max = df_avg_por_rol
@@ -3907,17 +3846,15 @@ if menu == "📈 Radar comparativo":
         base = pd.merge(base, mins_valid, on=["jugador","rol"], how="left")
         base["jug_rol"] = base["jugador"] + " (" + base["rol"].astype(str) + ")"
         combos = sorted(base["jug_rol"].unique().tolist())
-        sel_combo = st.multiselect("Jugador (Rol)", combos, default=combos[:min(6, len(combos))])
+        pref_combos = [c for c in combos if any(c.startswith(p + " ") for p in PREF_JUGS)]
+        sel_combo = st.multiselect("Jugador (Rol)", combos, default=(pref_combos[:6] or combos[:6]))
         base = base[base["jug_rol"].isin(sel_combo) & (base["minutos"] >= min_minutos)].copy()
         label_col = "jug_rol"
         global_df_for_max = df_avg_por_rol
 
-    if base.empty:
-        st.warning("No hay filas luego de aplicar filtros."); st.stop()
-
+    if base.empty: st.warning("No hay filas luego de aplicar filtros."); st.stop()
     miss = [m for m in metrics if m not in base.columns]
-    if miss:
-        st.error(f"Faltan columnas en los datos: {miss}"); st.stop()
+    if miss: st.error(f"Faltan columnas en los datos: {miss}"); st.stop()
 
     # ---------- RADAR (visual) ----------
     def _wrap_lbl(lbl: str, maxlen: int = 12) -> str:
@@ -3942,30 +3879,26 @@ if menu == "📈 Radar comparativo":
         if n <= len(base): return base[:n]
         return [mpl.colors.to_hex(c) for c in plt.cm.tab20(np.linspace(0,1,n))]
 
-    # base (y valores nulos → 0)
+    # base (NaN → 0)
     rad = base[[label_col, "minutos"] + metrics].copy()
-    for c in metrics:
-        rad[c] = pd.to_numeric(rad[c], errors="coerce").fillna(0)
+    for c in metrics: rad[c] = pd.to_numeric(rad[c], errors="coerce").fillna(0)
 
-    # normalización para la forma del radar
+    # máximos GLOBALes para ABS (para forma + referencias)
+    global_abs_max = {}
+    if not global_df_for_max.empty:
+        for c in [m for m in metrics if "%" not in m]:
+            s_all = pd.to_numeric(global_df_for_max.get(c, pd.Series(dtype=float)), errors="coerce")
+            global_abs_max[c] = float(s_all.max(skipna=True))
+
+    # normalización: % → /100 ; ABS → /MAX_GLOBAL
     rad_norm = rad.copy()
     for c in metrics:
         s = pd.to_numeric(rad_norm[c], errors="coerce").fillna(0)
         if "%" in c:
             rad_norm[c] = (s / 100.0).clip(0, 1)
         else:
-            mn, mx = float(np.nanmin(s.values)), float(np.nanmax(s.values))
-            if np.isfinite(mn) and np.isfinite(mx) and mx > mn:
-                rad_norm[c] = (s - mn) / (mx - mn)
-            else:
-                rad_norm[c] = 0.0
-
-    # máximos globales para ABS (referencias de anillos por eje)
-    global_abs_max = {}
-    if not global_df_for_max.empty:
-        for c in [m for m in metrics if "%" not in m]:
-            global_abs_max[c] = pd.to_numeric(global_df_for_max.get(c, pd.Series(dtype=float)),
-                                              errors="coerce").max(skipna=True)
+            mx = global_abs_max.get(c, np.nan)
+            rad_norm[c] = (s / mx).clip(0, 1) if np.isfinite(mx) and mx > 0 else 0.0
 
     labels = metrics[:]
     labels_wrapped = [_wrap_lbl(l) for l in labels]
@@ -3973,36 +3906,32 @@ if menu == "📈 Radar comparativo":
     angles = [n / float(N) * 2 * np.pi for n in range(N)]
     angles += angles[:1]
 
-    # --- lienzo más chico y con margen; título blanco ---
+    # lienzo (más chico) + margen al título + chips fuera
     plt.close("all")
-    fig = plt.figure(figsize=(8.6, 7.6))                 # más compacto
+    fig = plt.figure(figsize=(8.7, 7.6))
     ax = fig.add_subplot(111, polar=True)
     fig.patch.set_facecolor("#0C5C3B")
     ax.set_facecolor("#E9EDF2")
-    fig.subplots_adjust(top=0.76, bottom=0.14, left=0.10, right=0.82)
-    ax.grid(False)
-    ax.set_ylim(0, 1.0)
+    fig.subplots_adjust(top=0.74, bottom=0.14, left=0.08, right=0.84)  # MÁS MARGEN ARRIBA/ABAJO
+    ax.grid(False); ax.set_ylim(0, 1.0)
 
     rings = [0.2, 0.4, 0.6, 0.8, 1.0]
     for r in rings:
-        ax.plot(np.linspace(0, 2*np.pi, 512), [r]*512, lw=1.1, color="#D4DAE2", zorder=1)
+        ax.plot(np.linspace(0, 2*np.pi, 512), [r]*512, lw=1.0, color="#D4DAE2", zorder=1)
     for a in angles[:-1]:
         ax.plot([a, a], [0, 1.0], lw=0.9, color="#D4DAE2", zorder=1)
-    ax.spines["polar"].set_color("#C1C9D3")
-    ax.spines["polar"].set_linewidth(1.4)
+    ax.spines["polar"].set_color("#C1C9D3"); ax.spines["polar"].set_linewidth(1.3)
 
-    # --- etiquetas de ejes (chips) por fuera del círculo ---
-    CHIP_R = 1.12  # radio > 1 => fuera del último anillo
+    # etiquetas (chips) por fuera del círculo
     ax.set_xticks(angles[:-1]); ax.set_xticklabels([])
+    CHIP_R = 1.08
     for a, lbl in zip(angles[:-1], labels_wrapped):
-        ax.text(a, CHIP_R, lbl, ha="center", va="center",
-                fontsize=8.2, fontweight="bold", color="#2B2F36",
-                clip_on=False,
+        ax.text(a, CHIP_R, lbl, ha="center", va="center", fontsize=8.2, fontweight="bold",
+                color="#2B2F36", clip_on=False,
                 bbox=dict(boxstyle="round,pad=0.20", fc="#ECEFF4", ec="#C9D1DB", lw=0.9))
 
-    # sin etiquetas globales de anillos (ponemos referencias por eje abajo)
-    ax.set_yticks(rings); ax.set_yticklabels([])
-    ax.set_rlabel_position(95); ax.tick_params(axis="y", pad=2)
+    # labels de anillos por eje
+    ax.set_yticks(rings); ax.set_yticklabels([]); ax.set_rlabel_position(95); ax.tick_params(axis="y", pad=1)
 
     def _fmt_num(v):
         if pd.isna(v): return ""
@@ -4010,16 +3939,15 @@ if menu == "📈 Radar comparativo":
         if abs(v) >= 10:  return f"{v:.1f}".rstrip("0").rstrip(".")
         return f"{v:.2f}".rstrip("0").rstrip(".")
 
-    # referencias por anillo y por eje
     for a, raw in zip(angles[:-1], labels):
         if "%" in raw:
             for r in rings:
-                ax.text(a, r, f"{int(r*100)}%", ha="center", va="center", fontsize=7.6, color="#6B7280")
+                ax.text(a, r, f"{int(r*100)}%", ha="center", va="center", fontsize=7.5, color="#6B7280")
         else:
             mx = global_abs_max.get(raw, np.nan)
             if np.isfinite(mx) and mx > 0:
                 for r in rings:
-                    ax.text(a, r, _fmt_num(r * mx), ha="center", va="center", fontsize=7.6, color="#6B7280")
+                    ax.text(a, r, _fmt_num(r*mx), ha="center", va="center", fontsize=7.5, color="#6B7280")
 
     # series
     names   = rad_norm[label_col].tolist()
@@ -4028,18 +3956,16 @@ if menu == "📈 Radar comparativo":
     colors  = _palette(len(names))
     line_styles = ["-","--","-.",":"]
 
-    # relleno
     for i, row in enumerate(vals_M):
         vals = row.tolist() + row[:1].tolist()
         edge = colors[i]; fill = _tint(edge, 0.62)
         ax.fill(angles, vals, facecolor=fill, edgecolor="none",
-                alpha=0.18 if len(names) > 1 else 0.28, zorder=2)
+                alpha=0.16 if len(names) > 1 else 0.26, zorder=2)
 
-    # líneas + marcadores
     for i, row in enumerate(vals_M):
         vals = row.tolist() + row[:1].tolist()
         edge = colors[i]
-        ax.plot(angles, vals, color=edge, linewidth=2.6, linestyle=line_styles[i % len(line_styles)], zorder=5)
+        ax.plot(angles, vals, color=edge, linewidth=2.4, linestyle=line_styles[i % len(line_styles)], zorder=5)
         ax.scatter(angles[:-1], row, s=26, zorder=6, color=edge, edgecolors="white", linewidths=1.0)
 
     ax.legend([plt.Line2D([0],[0], color=c, lw=3, linestyle=line_styles[i % len(line_styles)],
@@ -4051,13 +3977,13 @@ if menu == "📈 Radar comparativo":
     plt.title(
         "Radar — Jugadores" if scope == "Jugador total"
         else ("Radar — Rol" if scope == "Por rol" else "Radar — Jugador & Rol"),
-        fontsize=18, pad=12, color="#FFFFFF", weight="bold"
+        fontsize=20, pad=18, color="#FFFFFF", weight="bold"
     )
-    fig.text(0.50, 0.03, "Escala radial relativa (0–100%). % reales se muestran tal cual; absolutos se normalizan con el máximo global del grupo a 40’",
+    fig.text(0.50, 0.06,
+             "Escala radial relativa (0–100%). % reales; absolutos normalizados por el máximo global del grupo a 40’.",
              ha="center", fontsize=8, color="#D6D9DE")
 
     st.pyplot(fig, use_container_width=True)
-    # ---------- /RADAR ----------
 
     # ---------- Tabla de valores ----------
     tabla = base[[label_col, "minutos"] + metrics].copy()
