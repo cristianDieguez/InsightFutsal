@@ -3716,70 +3716,83 @@ if menu == "📈 Radar comparativo":
         return r
 
     def add_derived_percentages(df):
-        if df.empty: return df
-        df = df.copy()
+    if df.empty: return df
+    df = df.copy()
 
-        def s(*cols):
-            vals = [pd.to_numeric(df.get(c, 0), errors="coerce").fillna(0) for c in cols if c in df.columns]
-            return sum(vals) if vals else pd.Series(0, index=df.index)
+    def s(*cols):
+        vals = [pd.to_numeric(df.get(c, 0), errors="coerce").fillna(0) for c in cols if c in df.columns]
+        return sum(vals) if vals else pd.Series(0, index=df.index)
 
-        # Regates
-        rcols = GROUPS["Regates"]
-        if all(c in df.columns for c in rcols):
-            df["Regates - Total"] = s(*rcols)
-            exi = pd.to_numeric(df["Regate conseguido - Mantiene pelota"], errors="coerce").fillna(0)
-            df["% Regates Exitosos"] = ratio(exi, df["Regates - Total"]) * 100
+    # --- mapa para buscar columnas por nombre "normalizado"
+    def _norm(s): 
+        import unicodedata as ud, re
+        s = ud.normalize("NFKD", str(s)).encode("ascii","ignore").decode("ascii")
+        return re.sub(r"\s+"," ", s.strip().lower())
+    colmap = {_norm(c): c for c in df.columns}
 
-        # 1v1
-        if "1v1 Ganado" in df.columns and "1v1 perdido" in df.columns:
-            g1 = pd.to_numeric(df["1v1 Ganado"], errors="coerce").fillna(0)
-            p1 = pd.to_numeric(df["1v1 perdido"], errors="coerce").fillna(0)
-            df["% Duelos Ganados"] = ratio(g1, g1 + p1) * 100
+    # Regates
+    rcols = GROUPS["Regates"]
+    if all(c in df.columns for c in rcols):
+        df["Regates - Total"] = s(*rcols)
+        exi = pd.to_numeric(df["Regate conseguido - Mantiene pelota"], errors="coerce").fillna(0)
+        den = df["Regates - Total"].replace(0, np.nan)
+        df["% Regates Exitosos"] = (exi / den) * 100
 
-        # Tiros
-        if "Tiro al arco" in df.columns and "Tiro Hecho" in df.columns:
-            ta = pd.to_numeric(df["Tiro al arco"], errors="coerce").fillna(0)
-            th = pd.to_numeric(df["Tiro Hecho"], errors="coerce").fillna(0)
-            gol = pd.to_numeric(df.get("Gol", 0), errors="coerce").fillna(0)
-            df["Tiros - % al arco"] = ratio(ta, th) * 100
-            df["Tiros - % Goles/Tiro al arco"] = ratio(gol, ta) * 100
+    # 1v1 (robusto a variantes)
+    g1_col = colmap.get(_norm("1v1 Ganado"))
+    p1_col = colmap.get(_norm("1v1 perdido")) or colmap.get(_norm("1v1 Perdido"))
+    if g1_col and p1_col:
+        g1 = pd.to_numeric(df[g1_col], errors="coerce").fillna(0)
+        p1 = pd.to_numeric(df[p1_col], errors="coerce").fillna(0)
+        den = (g1 + p1).replace(0, np.nan)
+        df["% Duelos Ganados"] = (g1 / den) * 100  # queda NaN si no hubo duelos
 
-        # Recuperaciones / Pérdidas
-        rec_cols = GROUPS["Recuperaciones"]
-        per_cols = GROUPS["Perdidas"]
-        df["Recuperaciones - Total"] = s(*rec_cols)
-        df["Perdidas - Total"]      = s(*per_cols)
-        df["% Recuperaciones"]      = ratio(df["Recuperaciones - Total"], df["Recuperaciones - Total"] + df["Perdidas - Total"]) * 100
+    # Tiros
+    if "Tiro al arco" in df.columns and "Tiro Hecho" in df.columns:
+        ta = pd.to_numeric(df["Tiro al arco"], errors="coerce").fillna(0)
+        th = pd.to_numeric(df["Tiro Hecho"], errors="coerce").fillna(0)
+        gol = pd.to_numeric(df.get("Gol", 0), errors="coerce").fillna(0)
+        df["Tiros - % al arco"] = np.where(th>0, ta/th, np.nan) * 100
+        df["Tiros - % Goles/Tiro al arco"] = np.where(ta>0, gol/ta, np.nan) * 100
 
-        # % Pases (OK/Base y Completado/Base)
-        passlike = [k for k in GROUPS if k.startswith("Pase ") or k.startswith("Arquero Pase")]
-        for gname in passlike:
-            base, comp, ok = GROUPS[gname]
-            if base in df.columns:
-                b = pd.to_numeric(df[base], errors="coerce").fillna(0)
-                c = pd.to_numeric(df.get(comp, 0), errors="coerce").fillna(0)
-                o = pd.to_numeric(df.get(ok, 0), errors="coerce").fillna(0)
-                df[f"% {base}"] = ratio(o, b) * 100
-                df[f"% {comp}"] = ratio(c, b) * 100
+    # Recuperaciones / Pérdidas
+    rec_cols = GROUPS["Recuperaciones"]
+    per_cols = GROUPS["Perdidas"]
+    df["Recuperaciones - Total"] = s(*rec_cols)
+    df["Perdidas - Total"]      = s(*per_cols)
+    den = (df["Recuperaciones - Total"] + df["Perdidas - Total"]).replace(0, np.nan)
+    df["% Recuperaciones"]      = (df["Recuperaciones - Total"] / den) * 100
 
-        # Índice positivo (simple)
-        posit = []
-        # “Completados”
-        posit += [c for c in df.columns if "Completado" in c and not c.strip().startswith("%")]
-        posit += ["Centros Rematados","Tiro al arco",
-                  "Regate conseguido - Mantiene pelota",
-                  "Aguanta Pivotea","Gira","Faltas Recibidas",
-                  "Recuperaciones - Total","1v1 Ganado","Asistencia","Pase Clave","Gol","Conduccion"]
-        posit = list(dict.fromkeys([c for c in posit if c in df.columns]))
-        tot = [c for c in df.columns if c in ALL_ACTIONS]  # todas las acciones base presentes
+    # % Pases (OK/Base y Completado/Base)
+    passlike = [k for k in GROUPS if k.startswith("Pase ") or k.startswith("Arquero Pase")]
+    for gname in passlike:
+        base, comp, ok = GROUPS[gname]
+        if base in df.columns:
+            b = pd.to_numeric(df[base], errors="coerce").fillna(0)
+            c = pd.to_numeric(df.get(comp, 0), errors="coerce").fillna(0)
+            o = pd.to_numeric(df.get(ok, 0), errors="coerce").fillna(0)
+            df[f"% {base}"] = np.where(b>0, o/b, np.nan) * 100
+            df[f"% {comp}"] = np.where(b>0, c/b, np.nan) * 100
 
-        def s_cols(cols):
-            return sum(pd.to_numeric(df[c], errors="coerce").fillna(0) for c in cols) if cols else pd.Series(0, index=df.index)
+    # Índice positivo (simple)
+    posit = []
+    posit += [c for c in df.columns if "Completado" in c and not c.strip().startswith("%")]
+    posit += ["Centros Rematados","Tiro al arco",
+              "Regate conseguido - Mantiene pelota",
+              "Aguanta Pivotea","Gira","Faltas Recibidas",
+              "Recuperaciones - Total","1v1 Ganado","Asistencia","Pase Clave","Gol","Conduccion"]
+    posit = list(dict.fromkeys([c for c in posit if c in df.columns]))
+    tot = [c for c in df.columns if c in ALL_ACTIONS]
 
-        df["Acciones Positivas - Total"] = s_cols(posit)
-        df["Acciones - Total"] = s_cols(tot)
-        df["% Acciones Positivas"] = ratio(df["Acciones Positivas - Total"], df["Acciones - Total"]) * 100
-        return df
+    def s_cols(cols):
+        return sum(pd.to_numeric(df[c], errors="coerce").fillna(0) for c in cols) if cols else pd.Series(0, index=df.index)
+
+    df["Acciones Positivas - Total"] = s_cols(posit)
+    df["Acciones - Total"] = s_cols(tot)
+    den = df["Acciones - Total"].replace(0, np.nan)
+    df["% Acciones Positivas"] = (df["Acciones Positivas - Total"] / den) * 100
+    return df
+
 
     @st.cache_data(show_spinner=True)
     def build_matrix_counts(DIR_MATRIX: Path) -> pd.DataFrame:
@@ -3993,54 +4006,68 @@ if menu == "📈 Radar comparativo":
         if n <= len(base): return base[:n]
         return [mpl.colors.to_hex(c) for c in plt.cm.tab20(np.linspace(0,1,n))]
 
-    # --- datos base ---
-    rad = base[[label_col, "minutos"] + metrics].copy()
+# --- datos base ---
+rad = base[[label_col, "minutos"] + metrics].copy()
 
-    # NORMALIZACIÓN: % → 0–1 ; abs → min-max del subconjunto
-    rad_norm = rad.copy()
-    for c in metrics:
-        s = pd.to_numeric(rad_norm[c], errors="coerce")
-        if "%" in c:
-            rad_norm[c] = s / 100.0
+# NORMALIZACIÓN + referencias por eje
+def _fmt(x):
+    if not np.isfinite(x): return "-"
+    return f"{x:.1f}" if abs(x) < 10 and abs(x) != int(round(x)) else f"{int(round(x))}"
+
+rad_norm = rad.copy()
+axis_ref = {}   # texto a mostrar bajo cada chip (por métrica)
+
+for c in metrics:
+    raw = pd.to_numeric(rad[c], errors="coerce")
+    if "%" in c:
+        rad_norm[c] = raw / 100.0
+        axis_ref[c] = "0–100%"
+    else:
+        mn = float(np.nanmin(raw.values))
+        mx = float(np.nanmax(raw.values))
+        if np.isfinite(mn) and np.isfinite(mx) and mx > mn:
+            rad_norm[c] = (raw - mn) / (mx - mn)
         else:
-            mn, mx = float(np.nanmin(s.values)), float(np.nanmax(s.values))
-            if np.isfinite(mn) and np.isfinite(mx) and mx > mn:
-                rad_norm[c] = (s - mn) / (mx - mn)
-            else:
-                rad_norm[c] = 0.5
-    rad_norm[metrics] = rad_norm[metrics].clip(0.0, 1.0)
+            rad_norm[c] = 0.5
+        # referencia explícita del rango real (después de normalizar a 40’)
+        axis_ref[c] = f"{_fmt(mn)}–{_fmt(mx)} (40’)"
 
-    labels = metrics[:]
-    labels_wrapped = [_wrap_lbl(l) for l in labels]
-    N = len(labels_wrapped)
-    angles = [n / float(N) * 2 * np.pi for n in range(N)]
-    angles += angles[:1]
+rad_norm[metrics] = rad_norm[metrics].clip(0.0, 1.0)
 
-    # --- lienzo ---
-    plt.close("all")
-    fig = plt.figure(figsize=(9.2, 8.7))
-    ax = fig.add_subplot(111, polar=True)
-    fig.patch.set_facecolor("#F3F5F8")
-    ax.set_facecolor("#E9EDF2")
-    ax.grid(False)
-    ax.set_ylim(0, 1.0)
+labels = metrics[:]
+labels_wrapped = [_wrap_lbl(l) for l in labels]
+N = len(labels_wrapped)
+angles = [n / float(N) * 2 * np.pi for n in range(N)]
+angles += angles[:1]
 
-    # anillos + radios (con ticks 20/40/60/80/100)
-    rings = [0.2, 0.4, 0.6, 0.8, 1.0]
-    for r in rings:
-        ax.plot(np.linspace(0, 2*np.pi, 512), [r]*512, lw=1.1, color="#D4DAE2", zorder=1)
-    for a in angles[:-1]:
-        ax.plot([a, a], [0, 1.0], lw=0.9, color="#D4DAE2", zorder=1)
-    ax.spines["polar"].set_color("#C1C9D3")
-    ax.spines["polar"].set_linewidth(1.4)
+# --- lienzo ---
+plt.close("all")
+fig = plt.figure(figsize=(9.2, 8.7))
+ax = fig.add_subplot(111, polar=True)
+fig.patch.set_facecolor("#F3F5F8")
+ax.set_facecolor("#E9EDF2")
+ax.grid(False)
+ax.set_ylim(0, 1.0)
 
-    # Chips (solo nombre, chicos)
-    ax.set_xticks(angles[:-1])
-    ax.set_xticklabels([])
-    for a, lbl in zip(angles[:-1], labels_wrapped):
-        ax.text(a, 1.02, lbl, ha="center", va="center", fontsize=8.5, fontweight="bold",
-                color="#2B2F36",
-                bbox=dict(boxstyle="round,pad=0.20", fc="#ECEFF4", ec="#C9D1DB", lw=0.9))
+# anillos + radios
+rings = [0.2, 0.4, 0.6, 0.8, 1.0]
+for r in rings:
+    ax.plot(np.linspace(0, 2*np.pi, 512), [r]*512, lw=1.1, color="#D4DAE2", zorder=1)
+for a in angles[:-1]:
+    ax.plot([a, a], [0, 1.0], lw=0.9, color="#D4DAE2", zorder=1)
+ax.spines["polar"].set_color("#C1C9D3")
+ax.spines["polar"].set_linewidth(1.4)
+
+# Chips + subtítulo de referencia (si es % → 0–100%; si es ABS → min–max del grupo)
+ax.set_xticks(angles[:-1])
+ax.set_xticklabels([])
+for a, lbl, raw in zip(angles[:-1], labels_wrapped, labels):
+    ax.text(a, 1.02, lbl, ha="center", va="center", fontsize=8.5, fontweight="bold",
+            color="#2B2F36",
+            bbox=dict(boxstyle="round,pad=0.20", fc="#ECEFF4", ec="#C9D1DB", lw=0.9))
+    ax.text(a, 1.075, axis_ref[raw], ha="center", va="center",
+            fontsize=7.2, color="#6B7280")
+
 
     # Referencias en CADA anillo (0–100%)
     ax.set_yticks(rings)
