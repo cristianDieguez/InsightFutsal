@@ -3457,23 +3457,23 @@ if menu == "📈 Radar comparativo":
             "Gol Rival en cancha","Involucrado en gol recibido",
         ]
         CANON_LC = {norm_txt(x) for x in DESC_CANON}
-    
+
         def accept_labels(inst) -> bool:
             labs = []
             for lab in inst.findall("./label"):
                 t = (lab.findtext("text") or "").strip()
                 if t: labs.append(norm_txt(t))
-            if not labs: 
+            if not labs:
                 return True
             return any(l in CANON_LC for l in labs)
-    
+
         def merge_intervals(intervals):
             if not intervals: return []
             ints = []
             for s, e in intervals:
                 try:
                     s = float(s); e = float(e)
-                except: 
+                except:
                     continue
                 if e <= s: e = s + 0.04
                 ints.append((s, e))
@@ -3485,7 +3485,7 @@ if menu == "📈 Radar comparativo":
                 else:
                     merged.append([s, e])
             return [(s, e) for s, e in merged]
-    
+
         rows_rol, rows_jug = [], []
         xmls = sorted(DIR_MINUTOS.rglob("*.xml"))
         for p in xmls:
@@ -3496,13 +3496,12 @@ if menu == "📈 Radar comparativo":
                 root = ET.parse(p).getroot()
             except Exception:
                 continue
-    
-            # acumulo por (nombre, rol) — POR PARTIDO
+
             agg = {}
             for inst in root.findall(".//instance"):
                 code = inst.findtext("code") or ""
                 m = NAME_ROLE_RE.match(code)
-                if not m: 
+                if not m:
                     continue
                 if not accept_labels(inst):
                     continue
@@ -3514,11 +3513,8 @@ if menu == "📈 Radar comparativo":
                 except:
                     continue
                 if e <= s: e = s + 0.04
-    
-                key = (nombre, rol)
-                agg.setdefault(key, []).append((s, e))
-    
-            # filas por (jug, rol) y por jugador — POR PARTIDO
+                agg.setdefault((nombre, rol), []).append((s, e))
+
             by_player_secs = {}
             for (nombre, rol), intervals in agg.items():
                 merged = merge_intervals(intervals)
@@ -3539,7 +3535,7 @@ if menu == "📈 Radar comparativo":
                     "mmss": mmss(seg),
                     "minutos": round(seg/60.0, 2),
                 })
-    
+
         df_por_rol = pd.DataFrame(rows_rol)
         df_por_jug = pd.DataFrame(rows_jug)
         return df_por_rol, df_por_jug
@@ -3657,82 +3653,82 @@ if menu == "📈 Radar comparativo":
             r = np.where(den > 0, num / den, np.nan)
         return r
 
-def add_derived_percentages(df):
-    if df.empty: return df
-    df = df.copy()
+    def add_derived_percentages(df):
+        if df.empty: return df
+        df = df.copy()
 
-    def s(*cols):
-        vals = [pd.to_numeric(df.get(c, 0), errors="coerce").fillna(0) for c in cols if c in df.columns]
-        return sum(vals) if vals else pd.Series(0, index=df.index)
+        def s(*cols):
+            vals = [pd.to_numeric(df.get(c, 0), errors="coerce").fillna(0) for c in cols if c in df.columns]
+            return sum(vals) if vals else pd.Series(0, index=df.index)
 
-    def ratio(num, den):
-        num = pd.to_numeric(num, errors="coerce").fillna(0)
-        den = pd.to_numeric(den, errors="coerce").fillna(0)
-        with np.errstate(divide='ignore', invalid='ignore'):
-            r = np.where(den > 0, num / den, np.nan)
-        return r
+        def ratio(num, den):
+            num = pd.to_numeric(num, errors="coerce").fillna(0)
+            den = pd.to_numeric(den, errors="coerce").fillna(0)
+            with np.errstate(divide='ignore', invalid='ignore'):
+                r = np.where(den > 0, num / den, np.nan)
+            return r
 
-    # Totales base que usamos en varios %:
-    df["Regates - Total"]            = s("Regate conseguido - Mantiene pelota",
+        # Totales base
+        df["Regates - Total"]        = s("Regate conseguido - Mantiene pelota",
                                          "Regate conseguido - Pierde pelota",
                                          "Regate No conseguido - Mantiene pelota",
                                          "Regate No conseguido - Pierde pelota")
-    df["Recuperaciones - Total"]     = s("Recuperacion x Duelo","Recuperación x Interceptacion",
+        df["Recuperaciones - Total"] = s("Recuperacion x Duelo","Recuperación x Interceptacion",
                                          "Recuperacion x Mal Control","Recuperacion x Mal Pase Rival","Recuperacion x Robo")
-    df["Perdidas - Total"]           = s("Pérdida x Duelo","Pérdida x Interceptacion Rival",
+        df["Perdidas - Total"]       = s("Pérdida x Duelo","Pérdida x Interceptacion Rival",
                                          "Pérdida x Mal Control","Pérdida x Mal Pase","Pérdida x Robo Rival")
 
-    # % Regates Exitosos (tu opción recomendada)
-    reg_exitos = s("Regate conseguido - Mantiene pelota","Regate conseguido - Pierde pelota")
-    df["% Regates Exitosos"] = ratio(reg_exitos, df["Regates - Total"]) * 100
+        # % Regates (opción recomendada)
+        reg_exitos = s("Regate conseguido - Mantiene pelota","Regate conseguido - Pierde pelota")
+        df["% Regates Exitosos"] = ratio(reg_exitos, df["Regates - Total"]) * 100
 
-    # % Duelos Ganados = (1v1 Ganado + Recuperacion x Duelo) / (1v1 Ganado + 1v1 perdido + Recup x Duelo + Pérdida x Duelo)
-    duelos_num = s("1v1 Ganado","Recuperacion x Duelo")
-    duelos_den = s("1v1 Ganado","1v1 perdido","Recuperacion x Duelo","Pérdida x Duelo")
-    df["% Duelos Ganados"] = ratio(duelos_num, duelos_den) * 100
+        # % Duelos Ganados = (1v1 Ganado + Rec x Duelo) / (1v1 Ganado + 1v1 perdido + Rec x Duelo + Pérdida x Duelo)
+        duelos_num = s("1v1 Ganado","Recuperacion x Duelo")
+        duelos_den = s("1v1 Ganado","1v1 perdido","Recuperacion x Duelo","Pérdida x Duelo")
+        df["% Duelos Ganados"] = ratio(duelos_num, duelos_den) * 100
 
-    # Tiros
-    ta  = s("Tiro al arco")      # al arco
-    th  = s("Tiro Hecho")        # intentos
-    gol = s("Gol")
-    df["Tiros - % al arco"]               = ratio(ta, th) * 100
-    df["Tiros - % Goles/Tiro al arco"]    = ratio(gol, ta) * 100
+        # Tiros
+        ta  = s("Tiro al arco")
+        th  = s("Tiro Hecho")
+        gol = s("Gol")
+        df["Tiros - % al arco"]            = ratio(ta, th) * 100
+        df["Tiros - % Goles/Tiro al arco"] = ratio(gol, ta) * 100
 
-    # % Recuperaciones (recup / (recup + pérdidas))
-    df["% Recuperaciones"] = ratio(df["Recuperaciones - Total"],
-                                   df["Recuperaciones - Total"] + df["Perdidas - Total"]) * 100
+        # % Recuperaciones
+        df["% Recuperaciones"] = ratio(df["Recuperaciones - Total"],
+                                       df["Recuperaciones - Total"] + df["Perdidas - Total"]) * 100
 
-    # % Pases (base = primer elemento del grupo)
-    pass_groups = {
-        "Pase Corto Frontal":       ["Pase Corto Frontal", "Pase Corto Frontal Completado", "Pase Corto Frontal OK"],
-        "Pase Corto Lateral":       ["Pase Corto Lateral", "Pase Corto Lateral Completado", "Pase Corto Lateral OK"],
-        "Pase Progresivo Frontal":  ["Pase Progresivo Frontal", "Pase Progresivo Frontal Completado", "Pase Progresivo Frontal OK"],
-        "Pase Progresivo Lateral":  ["Pase Progresivo Lateral", "Pase Progesivo Lateral Completado", "Pase Progresivo Lateral OK"],
-    }
-    for g, (base, comp, ok) in pass_groups.items():
-        b = s(base)
-        c = s(comp)
-        o = s(ok)
-        df[f"% {base}"] = ratio(o, b) * 100
-        df[f"% {comp}"] = ratio(c, b) * 100
+        # % Pases (base = primer elemento del grupo)
+        pass_groups = {
+            "Pase Corto Frontal":      ["Pase Corto Frontal", "Pase Corto Frontal Completado", "Pase Corto Frontal OK"],
+            "Pase Corto Lateral":      ["Pase Corto Lateral", "Pase Corto Lateral Completado", "Pase Corto Lateral OK"],
+            "Pase Progresivo Frontal": ["Pase Progresivo Frontal", "Pase Progresivo Frontal Completado", "Pase Progresivo Frontal OK"],
+            "Pase Progresivo Lateral": ["Pase Progresivo Lateral", "Pase Progesivo Lateral Completado", "Pase Progresivo Lateral OK"],
+        }
+        for g, (base, comp, ok) in pass_groups.items():
+            b = s(base); c = s(comp); o = s(ok)
+            df[f"% {base}"] = ratio(o, b) * 100
+            df[f"% {comp}"] = ratio(c, b) * 100
 
-    # Índice “Acciones Positivas” (simple)
-    positivos = []
-    positivos += [c for c in df.columns if "Completado" in c and not str(c).strip().startswith("%")]
-    positivos += ["Centros Rematados","Tiro al arco","Regate conseguido - Mantiene pelota",
-                  "Aguanta Pivotea","Gira","Faltas Recibidas","Recuperaciones - Total",
-                  "1v1 Ganado","Asistencia","Pase Clave","Gol","Conduccion"]
-    positivos = [c for c in dict.fromkeys(positivos) if c in df.columns]
-    base_acc  = [c for c in df.columns if c in positivos or c in ["Recuperaciones - Total","Perdidas - Total","Tiro Hecho","Tiro al arco","Gol"]]
+        # Índice Acciones Positivas
+        positivos = []
+        positivos += [c for c in df.columns if "Completado" in c and not str(c).strip().startswith("%")]
+        positivos += ["Centros Rematados","Tiro al arco","Regate conseguido - Mantiene pelota",
+                      "Aguanta Pivotea","Gira","Faltas Recibidas","Recuperaciones - Total",
+                      "1v1 Ganado","Asistencia","Pase Clave","Gol","Conduccion"]
+        positivos = [c for c in dict.fromkeys(positivos) if c in df.columns]
 
-    def s_cols(cols): 
-        return sum(pd.to_numeric(df[c], errors="coerce").fillna(0) for c in cols) if cols else pd.Series(0, index=df.index)
+        def s_cols(cols):
+            return sum(pd.to_numeric(df[c], errors="coerce").fillna(0) for c in cols) if cols else pd.Series(0, index=df.index)
 
-    df["Acciones Positivas - Total"] = s_cols(positivos)
-    df["Acciones - Total"]           = s_cols(base_acc)
-    df["% Acciones Positivas"]       = ratio(df["Acciones Positivas - Total"], df["Acciones - Total"]) * 100
+        base_acc = [c for c in df.columns if c in positivos or c in
+                    ["Recuperaciones - Total","Perdidas - Total","Tiro Hecho","Tiro al arco","Gol"]]
+        df["Acciones Positivas - Total"] = s_cols(positivos)
+        df["Acciones - Total"]           = s_cols(base_acc)
+        df["% Acciones Positivas"]       = ratio(df["Acciones Positivas - Total"], df["Acciones - Total"]) * 100
 
-    return df
+        return df
+
 
     @st.cache_data(show_spinner=True)
     def build_matrix_counts(DIR_MATRIX: Path) -> pd.DataFrame:
