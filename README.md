@@ -33,21 +33,31 @@ Integra los registros obtenidos en **NacSport**, procesados en **Python**, y gen
 
 📦 InsightFutsal
 ├─ 📂 data/                 # Entradas
+
 │  ├─ 📂 minutos/           # XML “TotalValues” (por partido)
+
 │  └─ 📂 matrix/            # XLSX “Matrix” (por partido)
+
 ├─ 📂 src/                  # Procesamiento y helpers
+
 ├─ 📂 notebooks/            # Colab/Jupyter (exploración)
+
 ├─ 📂 visuals/              # Gráficos exportados
+
 ├─ app.py                   # App principal Streamlit
+
 ├─ requirements.txt         # Dependencias
+
 └─ README.md
 
 Formato esperado de archivos (recomendado):
 
 data/minutos/Fecha N - Rival - XML TotalValues.xml
+
 data/matrix/Fecha N - Rival - Matrix.xlsx
 
 El módulo de Minutos acepta instancias sin labels o con labels del canon:
+
 Valla Invicta en cancha, Goles a favor en cancha, Participa en Gol Hecho, Gol Rival en cancha, Involucrado en gol recibido.
 ---
 
