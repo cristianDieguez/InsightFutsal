@@ -1891,7 +1891,7 @@ def tabla_a_jornada(df_res: pd.DataFrame, j_corte: int) -> pd.DataFrame:
 menu = st.sidebar.radio(
     "Menú",
     ["🏆 Tabla & Resultados","📊 Estadísticas de partido", "⏱️ Timeline de Partido", "🔥 Mapas de calor",
-     "🕓 Distribución de minutos","🔗 Red de Pases", "📬 Destino de pases", 
+     "🕓 Distribución de minutos e Impacto","🔗 Red de Pases", "📬 Destino de pases", 
      "🛡️ Pérdidas y Recuperaciones","🎯 Mapa de tiros", "📈 Radar comparativo"
     ],
     index=0
@@ -2061,11 +2061,11 @@ elif menu == "🔥 Mapas de calor":
     fig = fig_heatmap(df_rot, f"Mapa de calor — {title_suffix}")
     st.pyplot(fig, use_container_width=True)
 
-# =========================
-# 🕓 DISTRIBUCIÓN DE MINUTOS
-# =========================
+# ======================================
+# 🕓 DISTRIBUCIÓN DE MINUTOS E IMPACTO
+# ======================================
 
-elif menu == "🕓 Distribución de minutos":
+elif menu == "🕓 Distribución de minutos e Impacto":
     # =========================
     # Config / helpers LOCALES (solo afectan a este menú)
     # =========================
