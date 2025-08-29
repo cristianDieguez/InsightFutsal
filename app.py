@@ -2804,43 +2804,56 @@ if menu == "🎯 Mapa de tiros":
     matches_obj = discover_matches()
     matches = [m["label"] for m in matches_obj]
     if not matches:
-        st.warning("No encontré partidos en data/minutos con patrón: 'Fecha N° - Rival - XML TotalValues.xml'.")
+        st.warning("No encontré partidos en data/minutos.")
         st.stop()
 
     sel = st.selectbox("Elegí partido", matches, index=0)
-    rival = rival_from_label(sel)
+    match = get_match_by_label(sel)
 
-    # Preferir XML TotalValues; si no existe, caer al que discover_matches eligió
-    XML_PATH, _MATRIX = infer_paths_for_label(sel)   # -> .../Fecha X - Rival - XML TotalValues.xml
+    XML_PATH = (match or {}).get("xml_players")
     if not XML_PATH or not os.path.isfile(XML_PATH):
-        # fallback suave al mejor XML encontrado (NacSport o TotalValues)
-        mobj = get_match_by_label(sel) or {}
-        XML_PATH = (mobj.get("xml_players") if mobj else None)
-    if not XML_PATH or not os.path.isfile(XML_PATH):
-        st.error("No encontré el XML de Jugadores/TotalValues para este partido.")
+        st.error("No encontré el XML (NacSport/TotalValues) para este partido.")
         st.stop()
 
-    # ---- Helpers específicos del módulo de tiros (NO tocan nada del resto) ----
-    import re
-    from typing import Tuple, List
+    # ---- Helpers específicos del módulo de tiros ----
+    # Disparo si aparece una de estas palabras en code o labels
+    SHOT_PATT = re.compile(r"\b(tiro|remate|disparo|finalizaci[oó]n)\b", re.I)
 
     def _is_shot_from_row(row) -> bool:
-        # Dispara si en code/labels aparece "tiro" o "remate" (tolerancias comunes)
         code = nlower(row.get("jugador", ""))
         lbls = [nlower(l or "") for l in row.get("labels", [])]
-        patt = re.compile(r"\b(tiro|remate)\b", re.I)
-        if patt.search(code): 
+        if SHOT_PATT.search(code):
             return True
-        return any(patt.search(l) for l in lbls)
+        return any(SHOT_PATT.search(l) for l in lbls)
 
-    _ROLE_RE = re.compile(r"^\s*([^(]+?)\s*\(([^)]+)\)\s*$")
+    # Extraer Nombre (Rol) desde code o (si no) desde labels
+    _ROLE_STRICT = re.compile(r"^\s*([^(]+?)\s*\(([^)]+)\)\s*$")
+    _ROLE_FLEX   = re.compile(r"([^(]+?)\s*\(([^)]+)\)")
 
-    def _name_and_role(code: str) -> Tuple[str|None, str|None]:
-        m = _ROLE_RE.match(code or "")
-        if not m: return None, None
-        return ntext(m.group(1)).strip(), ntext(m.group(2)).strip()
+    def _name_and_role_from_text(text: str) -> Tuple[str|None, str|None]:
+        if not text:
+            return None, None
+        m = _ROLE_STRICT.match(text)
+        if m:
+            return ntext(m.group(1)).strip(), ntext(m.group(2)).strip()
+        m2 = _ROLE_FLEX.search(text)
+        if m2:
+            return ntext(m2.group(1)).strip(), ntext(m2.group(2)).strip()
+        return None, None
 
-    # Clasificación estricta del resultado (por keywords en code/labels)
+    def _name_and_role_from_row(row) -> Tuple[str|None, str|None]:
+        # 1) en code
+        name, role = _name_and_role_from_text(row.get("jugador", ""))
+        if name:
+            return name, role
+        # 2) en labels
+        for l in (row.get("labels") or []):
+            nm, rl = _name_and_role_from_text(l or "")
+            if nm:
+                return nm, rl
+        return None, None
+
+    # Clasificación del resultado (keywords en code/labels)
     _KEYS = {
         "gol":        re.compile(r"\bgol\b", re.I),
         "ataj":       re.compile(r"\bataj", re.I),
@@ -2879,7 +2892,7 @@ if menu == "🎯 Mapa de tiros":
     # Mapeo a cancha 35x20 (desde coords XML 0..20 x, 0..40 y)
     FLIP_TO_RIGHT = True
     FLIP_VERTICAL = True
-    GOAL_PULL = 0.60  # "tirón" hacia el arco derecho
+    GOAL_PULL = 0.60
 
     def _map_raw_to_pitch(x_raw, y_raw, max_x, max_y, flip=True, pull=0.0, flip_v=False):
         x = (y_raw / max_y) * ANCHO
@@ -2892,57 +2905,59 @@ if menu == "🎯 Mapa de tiros":
         y = float(np.clip(y, 0.0, ALTO))
         return x, y
 
-    # ---- Cargar XML y preparar universo de filtros ----
-    df_raw = cargar_datos_nacsport(XML_PATH)  # ya definida en tu app
+    # ---- Cargar XML (NacSport/TotalValues) y preparar universo ----
+    df_raw = cargar_datos_nacsport(XML_PATH)
     if df_raw.empty:
         st.info("Sin instancias en el XML.")
         st.stop()
 
-    # Solo eventos de jugadores (evita códigos de equipo/posesión)
-    df_raw = df_raw[df_raw["jugador"].apply(is_player_code)].copy()
+    # Detectar tiros en TODAS las instancias (no filtramos por is_player_code)
+    mask_shot_all = df_raw.apply(_is_shot_from_row, axis=1)
+    df_shot_all = df_raw[mask_shot_all].copy()
 
-    # Armar listas de jugadores y roles presentes solo en TIROS
-    mask_shot = df_raw.apply(_is_shot_from_row, axis=1)
-    df_shot = df_raw[mask_shot].copy()
+    # Extraer Jugador (Rol) desde code o labels
+    name_role = df_shot_all.apply(_name_and_role_from_row, axis=1)
+    df_shot_all["player"] = [nr[0] for nr in name_role]
+    df_shot_all["role"]   = [nr[1] for nr in name_role]
+    df_shot_all["player"] = df_shot_all["player"].fillna("(sin jugador)")
 
-    # Extraer nombre y rol desde "Nombre (Rol)"
-    name_role = df_shot["jugador"].apply(_name_and_role)
-    df_shot["player"] = name_role.apply(lambda t: t[0])
-    df_shot["role"]   = name_role.apply(lambda t: t[1])
+    # Listas para filtros
+    players_present = sorted(df_shot_all["player"].dropna().unique().tolist())
+    roles_present   = sorted([r for r in df_shot_all["role"].dropna().unique().tolist()])
 
-    players_present = sorted([p for p in df_shot["player"].dropna().unique()])
-    roles_present   = sorted([r for r in df_shot["role"].dropna().unique()])
-
-    # ---- UI: Filtros jugador/rol/característica ----
+    # ---- UI: Filtros ----
     sel_players = st.multiselect("Jugadores", players_present, default=players_present)
     sel_roles   = st.multiselect("Rol", roles_present, default=roles_present)
     char_opts   = ["Todas"] + [n for (n,_) in _CHAR_PATTS]
     sel_char    = st.selectbox("Característica del origen", char_opts, index=0)
 
     # ---- Construir lista de tiros (origen = punto más lejano al arco derecho) ----
-    # Max X/Y reales del XML para escalar
-    max_x = max((max((lst or [0])) for lst in df_shot["pos_x_list"]), default=19)
-    max_y = max((max((lst or [0])) for lst in df_shot["pos_y_list"]), default=34)
-    max_x = float(max_x if max_x else 19)
-    max_y = float(max_y if max_y else 34)
+    def _max_from_lists(series, default_val):
+        try:
+            return float(max((max((lst or [0])) for lst in series), default=default_val))
+        except Exception:
+            return float(default_val)
+
+    max_x = _max_from_lists(df_shot_all["pos_x_list"], 19)
+    max_y = _max_from_lists(df_shot_all["pos_y_list"], 34)
 
     shots = []
-    for _, r in df_shot.iterrows():
+    for _, r in df_shot_all.iterrows():
         player, role = r.get("player"), r.get("role")
-        if player and sel_players and (player not in sel_players): continue
-        if role and sel_roles and (role not in sel_roles): continue
+
+        if sel_players and player not in sel_players:
+            continue
+        if sel_roles and role is not None and role not in sel_roles:
+            continue
 
         xs = r.get("pos_x_list") or []
         ys = r.get("pos_y_list") or []
-        if not (xs and ys): 
+        if not (xs and ys):
             continue  # sin coordenadas no se puede pintar
 
-        # Mapeo de toda la trayectoria
         coords = [_map_raw_to_pitch(xr, yr, max_x, max_y,
                                     flip=FLIP_TO_RIGHT, pull=GOAL_PULL, flip_v=FLIP_VERTICAL)
                   for xr, yr in zip(xs, ys)]
-
-        # Origen = más lejano al arco derecho → menor X después del flip
         origin = coords[0] if len(coords) == 1 else coords[int(np.argmin([c[0] for c in coords]))]
 
         res = _shot_result_strict(r.get("jugador",""), r.get("labels", []))
