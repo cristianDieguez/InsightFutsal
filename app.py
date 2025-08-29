@@ -3395,8 +3395,6 @@ if menu == "📬 Destino de pases":
     plt.close(fig)
 
     st.caption(f"Pases plotteados: {kept}")
-
-
 # =========================
 # 📈 RADAR COMPARATIVO — Jugador total / Por rol / Jugador & Rol
 # =========================
@@ -3664,7 +3662,7 @@ if menu == "📈 Radar comparativo":
         reg_exitos = s("Regate conseguido - Mantiene pelota","Regate conseguido - Pierde pelota")
         df["% Regates Exitosos"] = ratio(reg_exitos, df["Regates - Total"])*100
 
-        # % Duelos Ganados = (1v1 Ganado + Rec x Duelo) / (1v1 Ganado + 1v1 perdido + Rec x Duelo + Pérdida x Duelo)
+        # % Duelos Ganados
         duelos_num = s("1v1 Ganado","Recuperacion x Duelo")
         duelos_den = s("1v1 Ganado","1v1 perdido","Recuperacion x Duelo","Pérdida x Duelo")
         df["% Duelos Ganados"] = ratio(duelos_num, duelos_den)*100
@@ -3689,6 +3687,7 @@ if menu == "📈 Radar comparativo":
             b = s(basec); c = s(comp); o = s(ok)
             df[f"% {basec}"] = ratio(o, b)*100
             df[f"% {comp}"]  = ratio(c, b)*100
+
         # Índice Acciones Positivas
         positivos = []
         positivos += [c for c in df.columns if "Completado" in c and not str(c).strip().startswith("%")]
@@ -3923,22 +3922,25 @@ if menu == "📈 Radar comparativo":
     for c in metrics:
         rad[c] = pd.to_numeric(rad[c], errors="coerce").fillna(0)
 
-    # normalización para la forma del radar
-    rad_norm = rad.copy()
-    for c in metrics:
-        s = pd.to_numeric(rad_norm[c], errors="coerce").fillna(0)
-        if "%" in c:
-            rad_norm[c] = (s / 100.0).clip(0, 1)
-        else:
-            mn, mx = float(np.nanmin(s.values)), float(np.nanmax(s.values))
-            rad_norm[c] = (s - mn) / (mx - mn) if (np.isfinite(mn) and np.isfinite(mx) and mx > mn) else 0.0
-
-    # máximos globales para ABS (referencias)
+    # ===== NUEVO: máximos globales para ABS (para referencias y normalización) =====
     global_abs_max = {}
     if not global_df_for_max.empty:
         for c in [m for m in metrics if "%" not in m]:
-            global_abs_max[c] = pd.to_numeric(global_df_for_max.get(c, pd.Series(dtype=float)),
-                                              errors="coerce").max(skipna=True)
+            mx = pd.to_numeric(global_df_for_max.get(c, pd.Series(dtype=float)), errors="coerce").max(skipna=True)
+            global_abs_max[c] = float(mx) if np.isfinite(mx) else 0.0
+
+    # ===== normalización para la forma del radar (0..1) =====
+    rad_norm = rad.copy()
+    for c in metrics:
+        s = pd.to_numeric(rad[c], errors="coerce").fillna(0)
+        if "%" in c:
+            # % reales 0..100 → 0..1
+            rad_norm[c] = (s / 100.0).clip(0, 1)
+        else:
+            # ABS: relativo al MÁXIMO GLOBAL (consistente con anillos y tabla)
+            mx = global_abs_max.get(c, 0.0)
+            rad_norm[c] = np.where(mx > 0, s / mx, 0.0)
+            rad_norm[c] = rad_norm[c].clip(0, 1)
 
     labels = metrics[:]
     labels_wrapped = [_wrap_lbl(l) for l in labels]
@@ -3965,14 +3967,14 @@ if menu == "📈 Radar comparativo":
     fig.subplots_adjust(top=0.89, bottom=0.12, left=0.07, right=0.86)
     
     ax.grid(False)
-    ax.set_ylim(0, 1.10)   # 1.0 = anillo exterior (no lo estires a 1.10)
+    ax.set_ylim(0, 1.10)   # 1.0 = anillo exterior
     
     # anillos base
     theta = np.linspace(0, 2*np.pi, 512)
     base_rings = [0.2, 0.4, 0.6, 0.8, 1.0]
     for r in base_rings:
         ax.plot(theta, [r]*theta.size, lw=1.0, color="#D4DAE2", zorder=1)
-    # (opcional estético) anillo finito por fuera
+    # anillo fino por fuera (estético)
     ax.plot(theta, [1.02]*theta.size, lw=0.8, color="#C9D1DB", alpha=0.6, zorder=1)
     
     # radios
@@ -3984,13 +3986,12 @@ if menu == "📈 Radar comparativo":
     
     # --- Chips de variables (FUERA del anillo, sin tocarlo) ---
     ax.set_xticks(angles[:-1]); ax.set_xticklabels([])
-    R_LABEL = 1.145  # ← distancia del chip respecto al anillo
+    R_LABEL = 1.145  # distancia del chip respecto al anillo
     for a, lbl in zip(angles[:-1], labels_wrapped):
         ax.text(a, R_LABEL, lbl,
                 ha="center", va="center", fontsize=8.0, fontweight="bold",
                 color="#2B2F36", clip_on=False,
                 bbox=dict(boxstyle="round,pad=0.18", fc="#ECEFF4", ec="#C9D1DB", lw=0.9))
-
 
     # y-ticks por anillo (números por eje, no en el borde global)
     ax.set_yticks(base_rings); ax.set_yticklabels([])
@@ -4003,15 +4004,15 @@ if menu == "📈 Radar comparativo":
         if abs(v) >= 10:  return f"{v:.1f}".rstrip("0").rstrip(".")
         return f"{v:.2f}".rstrip("0").rstrip(".")
 
-    # referencias en cada eje y anillo
+    # referencias en cada eje y anillo (usa los mismos máximos globales)
     for a, raw in zip(angles[:-1], labels):
         if "%" in raw:
             for r in base_rings:
                 ax.text(a, r, f"{int(r*100)}%", ha="center", va="center",
                         fontsize=7.0, color="#6B7280")
         else:
-            mx = global_abs_max.get(raw, np.nan)
-            if np.isfinite(mx) and mx > 0:
+            mx = global_abs_max.get(raw, 0.0)
+            if mx > 0:
                 for r in base_rings:
                     ax.text(a, r, _fmt_num(r*mx), ha="center", va="center",
                             fontsize=7.0, color="#6B7280")
@@ -4042,14 +4043,6 @@ if menu == "📈 Radar comparativo":
                for i, c in enumerate(colors)],
               [f"{n} ({int(round(m))}m)" for n, m in zip(names, minutes)],
               loc="upper left", bbox_to_anchor=(1.02, 1.00), frameon=False, fontsize=9)
-
-    #plt.title(
-    #    "Radar — Jugadores" if scope == "Jugador total"
-    #    else ("Radar — Rol" if scope == "Por rol" else "Radar — Jugador & Rol"),
-    #    fontsize=26, pad=18, color="#FFFFFF", weight="bold"
-    #)
-    #fig.text(0.50, 0.03, "Escala radial relativa (0–100%). % reales; absolutos normalizados por el máximo global del grupo a 40’.",
-    #         ha="center", fontsize=8, color="#D6D9DE")
 
     st.pyplot(fig, use_container_width=True)
     # ---------- /RADAR ----------
