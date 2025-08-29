@@ -3967,36 +3967,40 @@ if menu == "📈 Radar comparativo":
     ax.spines["polar"].set_color("#C1C9D3")
     ax.spines["polar"].set_linewidth(1.4)
 
-    # etiquetas de ejes (chips) + pista arriba
+    # --- etiquetas de ejes (chips) ---
     ax.set_xticks(angles[:-1]); ax.set_xticklabels([])
-    for a, lbl, raw in zip(angles[:-1], labels_wrapped, labels):
+    for a, lbl in zip(angles[:-1], labels_wrapped):
         ax.text(a, 1.03, lbl, ha="center", va="center", fontsize=8.5, fontweight="bold",
                 color="#2B2F36",
                 bbox=dict(boxstyle="round,pad=0.20", fc="#ECEFF4", ec="#C9D1DB", lw=0.9))
-        if "%" in raw:
-            ax.text(a, 1.075, "0–100%", ha="center", va="center", fontsize=7.2, color="#6B7280")
-
-    # referencias de anillos: % en la circunferencia, ABS por eje/anillo usando máximo global
+    
+    # 🔧 Ocultamos etiquetas globales de los anillos (para no duplicar)
     ax.set_yticks(rings)
-    ax.set_yticklabels([f"{int(r*100)}%" for r in rings], fontsize=7.8, color="#6B7280")
+    ax.set_yticklabels([])        # <— nada en el borde global
     ax.set_rlabel_position(95)
     ax.tick_params(axis="y", pad=2)
-
+    
     def _fmt_num(v):
         if pd.isna(v): return ""
         if abs(v) >= 100: return f"{int(round(v))}"
         if abs(v) >= 10:  return f"{v:.1f}".rstrip("0").rstrip(".")
         return f"{v:.2f}".rstrip("0").rstrip(".")
-
+    
+    # 🔧 Referencias en CADA anillo y CADA eje
     for a, raw in zip(angles[:-1], labels):
-        if "%" in raw: 
-            continue
-        mx = global_abs_max.get(raw, np.nan)
-        if not (np.isfinite(mx) and mx > 0):
-            continue
-        for r in rings:
-            ax.text(a, r, _fmt_num(r * mx), ha="center", va="center",
-                    fontsize=7.6, color="#6B7280")
+        if "%" in raw:
+            # porcentuales: 20%, 40%, 60%, 80%, 100% en cada eje
+            for r in rings:
+                ax.text(a, r, f"{int(r*100)}%", ha="center", va="center",
+                        fontsize=7.6, color="#6B7280")
+        else:
+            # absolutos: usando el máximo global por métrica
+            mx = global_abs_max.get(raw, np.nan)
+            if np.isfinite(mx) and mx > 0:
+                for r in rings:
+                    ax.text(a, r, _fmt_num(r * mx), ha="center", va="center",
+                            fontsize=7.6, color="#6B7280")
+
 
     # series
     names   = rad_norm[label_col].tolist()
