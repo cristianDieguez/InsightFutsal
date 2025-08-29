@@ -1164,7 +1164,7 @@ def red_de_pases_por_rol(df: pd.DataFrame):
         ax.text(x, y, f"{rol}\n{totales_hechos_por_rol.get(rol,0)}", ha='center', va='center',
                 fontsize=10, fontweight='bold', color='black', zorder=7)
 
-    ax.set_title("Red de Pases por Rol (NacSport/TotalValues; sólo Jugador (Rol))", fontsize=13)
+    ax.set_title("Red de Pases por Rol", fontsize=13)
     plt.tight_layout()
     return fig
 
