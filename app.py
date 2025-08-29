@@ -3967,22 +3967,22 @@ if menu == "📈 Radar comparativo":
         st.error(f"Faltan columnas en los datos: {miss}")
         st.stop()
 
-            # ---------- RADAR (solo visual, estilo infografía) ----------
+               # ---------- RADAR (solo visual, estilo infografía) ----------
     import matplotlib as mpl
 
-    def _wrap_lbl(lbl: str, maxlen: int = 14) -> str:
+    def _wrap_lbl(lbl: str, maxlen: int = 12) -> str:
         ws = re.split(r"\s+", str(lbl).strip())
-        lines, cur = [], ""
+        out, cur = [], ""
         for w in ws:
             if len(cur) + len(w) + (1 if cur else 0) <= maxlen:
                 cur = (cur + " " + w).strip()
             else:
-                if cur: lines.append(cur)
+                if cur: out.append(cur)
                 cur = w
-        if cur: lines.append(cur)
-        return "\n".join(lines)
+        if cur: out.append(cur)
+        return "\n".join(out)
 
-    def _tint(hex_color: str, t: float = 0.45):
+    def _tint(hex_color: str, t: float = 0.55):
         r, g, b = mpl.colors.to_rgb(hex_color)
         return (r + (1 - r) * t, g + (1 - g) * t, b + (1 - b) * t)
 
@@ -3994,81 +3994,82 @@ if menu == "📈 Radar comparativo":
         return [mpl.colors.to_hex(c) for c in plt.cm.tab20(np.linspace(0,1,n))]
 
     def _axis_hint(lbl: str) -> str:
-        # % → “0–100%”; absolutos (normalizados a 40’) → “rel. (40’)”
         return "0–100%" if "%" in lbl else "rel. (40’)"
 
+    # --- datos base ---
     rad = base[[label_col, "minutos"] + metrics].copy()
+
+    # NORMALIZACIÓN: % → 0–1 ; abs → min-max del subconjunto
+    rad_norm = rad.copy()
+    for c in metrics:
+        s = pd.to_numeric(rad_norm[c], errors="coerce")
+        if "%" in c:
+            rad_norm[c] = s / 100.0
+        else:
+            mn, mx = float(np.nanmin(s.values)), float(np.nanmax(s.values))
+            if np.isfinite(mn) and np.isfinite(mx) and mx > mn:
+                rad_norm[c] = (s - mn) / (mx - mn)
+            else:
+                rad_norm[c] = 0.5
+    rad_norm[metrics] = rad_norm[metrics].clip(0.0, 1.0)
+
     labels = metrics[:]
     labels_wrapped = [_wrap_lbl(l) for l in labels]
     N = len(labels_wrapped)
     angles = [n / float(N) * 2 * np.pi for n in range(N)]
     angles += angles[:1]
 
+    # --- lienzo ---
     plt.close("all")
-    fig = plt.figure(figsize=(9.4, 8.8))
+    fig = plt.figure(figsize=(9.2, 8.7))
     ax = fig.add_subplot(111, polar=True)
-
-    # fondo / grilla
     fig.patch.set_facecolor("#F3F5F8")
     ax.set_facecolor("#E9EDF2")
     ax.grid(False)
-    ax.set_ylim(0, 1.05)
+    ax.set_ylim(0, 1.0)
 
+    # anillos + radios
     rings = [0.2, 0.4, 0.6, 0.8, 1.0]
     for r in rings:
-        ax.plot(np.linspace(0, 2*np.pi, 512), [r]*512, lw=1.2, color="#D4DAE2", alpha=0.9, zorder=1)
+        ax.plot(np.linspace(0, 2*np.pi, 512), [r]*512, lw=1.1, color="#D4DAE2", zorder=1)
     for a in angles[:-1]:
-        ax.plot([a, a], [0, 1.0], lw=0.9, color="#D4DAE2", alpha=0.9, zorder=1)
-
+        ax.plot([a, a], [0, 1.0], lw=0.9, color="#D4DAE2", zorder=1)
     ax.spines["polar"].set_color("#C1C9D3")
-    ax.spines["polar"].set_linewidth(1.6)
+    ax.spines["polar"].set_linewidth(1.4)
 
-    # etiquetas tipo "chip" + pista de escala por eje
-    ax.set_xticks(angles[:-1])
-    ax.set_xticklabels([])          # quitamos texto por defecto
-    ax.set_yticks([])               # quitamos los “100%” repetidos
-
+    # etiquetas y pistas por eje
+    ax.set_xticks(angles[:-1]); ax.set_xticklabels([]); ax.set_yticks([])
     for a, lbl, raw in zip(angles[:-1], labels_wrapped, labels):
-        # label compacta
-        ax.text(a, 1.02, lbl, ha="center", va="center", fontsize=9,
-                fontweight="bold", color="#2B2F36",
-                bbox=dict(boxstyle="round,pad=0.22", fc="#ECEFF4", ec="#C9D1DB", lw=0.9))
-        # hint de unidad (esto reemplaza esos “100%” confusos)
-        ax.text(a, 1.08, _axis_hint(raw), ha="center", va="center",
-                fontsize=8, color="#6B7280")
+        ax.text(a, 1.02, lbl, ha="center", va="center", fontsize=8.5, fontweight="bold",
+                color="#2B2F36",
+                bbox=dict(boxstyle="round,pad=0.20", fc="#ECEFF4", ec="#C9D1DB", lw=0.9))
+        ax.text(a, 1.075, _axis_hint(raw), ha="center", va="center", fontsize=7.5, color="#6B7280")
 
-    # series (mejor lectura con alpha bajo + hatch cuando hay varias)
-    series = rad[label_col].tolist()
-    vals_mat = rad[labels].values
-    cols = _palette(len(series))
-    hatches = ["///", "\\\\", "xx", "..", "oo", "++"]
+    # --- series ---
+    names   = rad_norm[label_col].tolist()
+    minutes = rad["minutos"].tolist()
+    vals_M  = rad_norm[labels].values
+    colors  = _palette(len(names))
+    line_styles = ["-","--","-.",":"]  # alterna para distinguir
 
-    fills = []
-    for i, (name, row) in enumerate(zip(series, vals_mat)):
+    # rellenos suaves debajo
+    for i, row in enumerate(vals_M):
         vals = row.tolist() + row[:1].tolist()
-        edge = cols[i]
-        fill = _tint(edge, 0.55)
+        edge = colors[i]; fill = _tint(edge, 0.62)
+        ax.fill(angles, vals, facecolor=fill, edgecolor="none",
+                alpha=0.18 if len(names) > 1 else 0.28, zorder=2)
 
-        poly = ax.fill(
-            angles, vals,
-            facecolor=fill, edgecolor=edge, linewidth=2.2,
-            alpha=0.32 if len(series) > 1 else 0.55,       # ↓ menos opaco si hay varios
-            hatch=(hatches[i % len(hatches)] if len(series) > 1 else None),
-            zorder=3
-        )
-        fills.append(poly[0])
-
-    # líneas y marcadores por encima de los fills (no quedan tapadas)
-    for i, row in enumerate(vals_mat):
+    # líneas+marcadores por encima (no se tapan)
+    for i, row in enumerate(vals_M):
         vals = row.tolist() + row[:1].tolist()
-        edge = cols[i]
-        ax.plot(angles, vals, color=edge, linewidth=2.6, zorder=5)
-        ax.scatter(angles[:-1], row, s=26, zorder=6, color=edge,
-                   edgecolors="white", linewidths=0.9)
+        edge = colors[i]
+        ax.plot(angles, vals, color=edge, linewidth=2.6, linestyle=line_styles[i % len(line_styles)], zorder=5)
+        ax.scatter(angles[:-1], row, s=26, zorder=6, color=edge, edgecolors="white", linewidths=1.0)
 
-    ax.legend([plt.Line2D([0],[0], color=c, lw=3, marker="o", markersize=6,
-                           markerfacecolor=c) for c in cols],
-              [f"{s} ({int(round(m))}m)" for s, m in zip(series, rad["minutos"])],
+    ax.legend([plt.Line2D([0],[0], color=c, lw=3, linestyle=line_styles[i % len(line_styles)],
+                           marker="o", markersize=6, markerfacecolor=c)
+               for i, c in enumerate(colors)],
+              [f"{n} ({int(round(m))}m)" for n, m in zip(names, minutes)],
               loc="upper left", bbox_to_anchor=(1.02, 1.02), frameon=False, fontsize=9)
 
     plt.title(
