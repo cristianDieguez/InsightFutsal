@@ -3906,48 +3906,71 @@ if menu == "📈 Radar comparativo":
     angles = [n / float(N) * 2 * np.pi for n in range(N)]
     angles += angles[:1]
 
-    # lienzo (más chico) + margen al título + chips fuera
+    # ===== RADAR (visual) — lienzo y anillos =====
     plt.close("all")
-    fig = plt.figure(figsize=(8.7, 7.6))
+    fig = plt.figure(figsize=(8.6, 7.4))
     ax = fig.add_subplot(111, polar=True)
+    
+    # fondo
     fig.patch.set_facecolor("#0C5C3B")
     ax.set_facecolor("#E9EDF2")
-    fig.subplots_adjust(top=0.74, bottom=0.14, left=0.08, right=0.84)  # MÁS MARGEN ARRIBA/ABAJO
-    ax.grid(False); ax.set_ylim(0, 1.0)
-
-    rings = [0.2, 0.4, 0.6, 0.8, 1.0]
-    for r in rings:
-        ax.plot(np.linspace(0, 2*np.pi, 512), [r]*512, lw=1.0, color="#D4DAE2", zorder=1)
+    
+    # MÁS margen arriba (bajo el radar) y un poco más abajo
+    fig.subplots_adjust(top=0.60, bottom=0.18, left=0.08, right=0.84)
+    
+    ax.grid(False)
+    ax.set_ylim(0, 1.12)  # dejamos espacio por fuera de 1.0
+    
+    # anillos
+    base_rings  = [0.2, 0.4, 0.6, 0.8, 1.0]  # estos sí tienen números
+    outer_ring  = 1.08                        # anillo extra, solo cosmético
+    
+    theta = np.linspace(0, 2*np.pi, 512)
+    for r in base_rings:
+        ax.plot(theta, [r]*theta.size, lw=1.0, color="#D4DAE2", zorder=1)
+    
+    # anillo exterior suave (sin etiquetas)
+    ax.plot(theta, [outer_ring]*theta.size, lw=1.0, color="#C8CFD8", zorder=1)
+    
+    # radios (hasta el anillo exterior)
     for a in angles[:-1]:
-        ax.plot([a, a], [0, 1.0], lw=0.9, color="#D4DAE2", zorder=1)
-    ax.spines["polar"].set_color("#C1C9D3"); ax.spines["polar"].set_linewidth(1.3)
-
-    # etiquetas (chips) por fuera del círculo
+        ax.plot([a, a], [0, outer_ring], lw=0.9, color="#D4DAE2", zorder=1)
+    
+    ax.spines["polar"].set_color("#C1C9D3")
+    ax.spines["polar"].set_linewidth(1.3)
+    
+    # ===== etiquetas (chips) por fuera =====
     ax.set_xticks(angles[:-1]); ax.set_xticklabels([])
-    CHIP_R = 1.08
+    CHIP_R = 1.125  # fuera del círculo; no se recorta (clip_on=False)
     for a, lbl in zip(angles[:-1], labels_wrapped):
-        ax.text(a, CHIP_R, lbl, ha="center", va="center", fontsize=8.2, fontweight="bold",
-                color="#2B2F36", clip_on=False,
+        ax.text(a, CHIP_R, lbl, ha="center", va="center",
+                fontsize=8.2, fontweight="bold", color="#2B2F36", clip_on=False,
                 bbox=dict(boxstyle="round,pad=0.20", fc="#ECEFF4", ec="#C9D1DB", lw=0.9))
-
-    # labels de anillos por eje
-    ax.set_yticks(rings); ax.set_yticklabels([]); ax.set_rlabel_position(95); ax.tick_params(axis="y", pad=1)
-
+    
+    # y-ticks: solo los anillos base (el exterior no lleva números)
+    ax.set_yticks(base_rings)
+    ax.set_yticklabels([])
+    ax.set_rlabel_position(95)
+    ax.tick_params(axis="y", pad=1)
+    
     def _fmt_num(v):
         if pd.isna(v): return ""
         if abs(v) >= 100: return f"{int(round(v))}"
         if abs(v) >= 10:  return f"{v:.1f}".rstrip("0").rstrip(".")
         return f"{v:.2f}".rstrip("0").rstrip(".")
-
+    
     for a, raw in zip(angles[:-1], labels):
         if "%" in raw:
-            for r in rings:
-                ax.text(a, r, f"{int(r*100)}%", ha="center", va="center", fontsize=7.5, color="#6B7280")
+            for r in base_rings:
+                ax.text(a, r, f"{int(r*100)}%", ha="center", va="center",
+                        fontsize=7.4, color="#6B7280")
         else:
             mx = global_abs_max.get(raw, np.nan)
             if np.isfinite(mx) and mx > 0:
-                for r in rings:
-                    ax.text(a, r, _fmt_num(r*mx), ha="center", va="center", fontsize=7.5, color="#6B7280")
+                for r in base_rings:
+                    ax.text(a, r, _fmt_num(r*mx), ha="center", va="center",
+                            fontsize=7.4, color="#6B7280")
+    # ===== /RADAR (visual) =====
 
     # series
     names   = rad_norm[label_col].tolist()
